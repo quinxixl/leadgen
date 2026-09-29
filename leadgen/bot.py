@@ -7,7 +7,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from .adapters import collect
-from .app import ROOT, telegram, ingest, deliver, send_lead, classify_for_config, env_load
+from .app import ROOT, telegram, ingest, deliver, send_lead, classify_for_config, env_load, notification_chat_ids
 from .core import TOPICS, Lead, UTC, classify
 
 MENU = {'keyboard':[[{'text':'▶️ Начать'},{'text':'⏸ Остановить'}],
@@ -107,7 +107,14 @@ class Controller:
         msg=(callback or {}).get('message') if callback else update.get('message')
         actor=(callback or msg or {}).get('from',{})
         chat=(msg or {}).get('chat',{})
-        if chat.get('type')!='private' or str(chat.get('id'))!=self.owner or str(actor.get('id'))!=self.owner:
+        chat_id=str(chat.get('id'))
+        if chat.get('type')!='private' or chat_id!=str(actor.get('id')):
+            return
+        if chat_id!=self.owner:
+            if (not callback and chat_id in notification_chat_ids(self.db) and
+                    msg.get('text','').strip() in ('/start','/menu')):
+                self.sender('sendMessage',{'chat_id':chat_id,
+                    'text':'Аккаунт подключён к уведомлениям о новых лидах. Управление настройками доступно владельцу бота.'})
             return
         if callback:
             self.sender('answerCallbackQuery',{'callback_query_id':callback['id']})

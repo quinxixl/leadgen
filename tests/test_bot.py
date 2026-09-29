@@ -33,6 +33,14 @@ class Buttons(unittest.TestCase):
         self.text('▶️ Начать',456);self.callback('budget:1',456)
         self.assertFalse(self.ui.get('active',False));self.assertEqual(self.calls,[])
 
+    def test_notification_recipient_can_confirm_subscription_but_not_manage(self):
+        with patch.dict(os.environ,{'TELEGRAM_NOTIFY_CHAT_IDS':'456'}):
+            self.text('/start',456)
+            self.text('▶️ Начать',456)
+        self.assertFalse(self.ui.get('active',False))
+        self.assertEqual(self.calls[0][1]['chat_id'],'456')
+        self.assertIn('подключён к уведомлениям',self.calls[0][1]['text'])
+
     def test_pause_and_persistence(self):
         self.text('▶️ Начать');self.assertTrue(self.ui.get('active'))
         self.ui.drain=True;self.text('⏸ Остановить')
