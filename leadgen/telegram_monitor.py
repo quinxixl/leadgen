@@ -117,7 +117,8 @@ def run_monitor(db_path,config):
                         db.execute('UPDATE telegram_sources SET last_message_id=?,last_message_at=?,check_reason=? WHERE username=?',
                                    (newest,datetime.now(UTC).isoformat(),'сообщения прочитаны',row['username']))
                 except FloodWaitError as exc:
-                    print(f'Telegram ограничил частоту на {exc.seconds} с.',flush=True)
+                    print(f'Telegram ограничил чтение истории на {exc.seconds} с.; '
+                          'монитор остаётся подключённым и возобновит обход автоматически.',flush=True)
                     await asyncio.sleep(exc.seconds+1)
                 except Exception as exc:
                     with db:

@@ -200,13 +200,24 @@ def run_bot(db,config):
         return True
     if not start_reader_if_ready():
         print('Чтение групп не запущено: выполните setup-telegram после добавления API-параметров.',flush=True)
-    future=None;next_scan=0
+    future=None;next_scan=0;telegram_retry_delay=2
     with ThreadPoolExecutor(max_workers=1) as pool:
         while True:
             try:
                 # The setup wizard can finish while the bot is already running.
                 if start_reader_if_ready():print('Сессия найдена, чтение групп подключается.',flush=True)
-                updates=telegram('getUpdates',{'offset':ui.get('offset',0),'timeout':1,'allowed_updates':['message','callback_query']})
+                try:
+                    updates=telegram('getUpdates',{'offset':ui.get('offset',0),'timeout':1,'allowed_updates':['message','callback_query']})
+                    telegram_retry_delay=2
+                except RuntimeError as exc:
+                    # Short network interruptions must not restart the container and
+                    # reconnect the MTProto reader while Telegram is rate-limiting it.
+                    if not str(exc).startswith('Telegram: '):
+                        raise
+                    print(f'{exc}; повтор через {telegram_retry_delay} с.',flush=True)
+                    time.sleep(telegram_retry_delay)
+                    telegram_retry_delay=min(60,telegram_retry_delay*2)
+                    continue
                 for update in updates:
                     # Persist before side effects: an uncertain reply is not replayed on restart.
                     ui.put('offset',update['update_id']+1)
