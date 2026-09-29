@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.py[cod]
+.DS_Store
+.env
+*.sqlite*
+*.lock
+leadgen/research/*.html
+leadgen/data/
+outputs/

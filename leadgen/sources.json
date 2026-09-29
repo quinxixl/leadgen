@@ -1,0 +1,19 @@
+{
+  "min_budget": 5000,
+  "max_age_hours": 72,
+  "poll_seconds": 300,
+  "notify_without_budget": true,
+  "telegram_source_delay_seconds": 2.0,
+  "sources": [
+    {"id":"fl", "name":"FL.ru", "kind":"fl", "url":"https://www.fl.ru/projects/", "enabled":true},
+    {"id":"freelance", "name":"Freelance.ru", "kind":"freelance", "url":"https://freelance.ru/task", "enabled":true},
+    {"id":"workspace", "name":"Workspace", "kind":"workspace", "url":"https://workspace.ru/tenders/", "enabled":true},
+    {"id":"tg_dev", "name":"Telegram: job_developer", "kind":"telegram", "url":"https://t.me/s/job_developer", "enabled":true},
+    {"id":"tg_frilans", "name":"Telegram: frilans", "kind":"telegram", "url":"https://t.me/s/frilans", "enabled":true},
+    {"id":"tg_taverna", "name":"Telegram: freelancetaverna", "kind":"telegram", "url":"https://t.me/s/freelancetaverna", "enabled":true},
+    {"id":"tg_jobs", "name":"Telegram: tgram_jobs", "kind":"telegram", "url":"https://t.me/s/tgram_jobs", "enabled":false, "note":"Последняя публикация при проверке — март 2026; исключён как неактивный"},
+    {"id":"hh", "name":"hh.ru: проектная работа", "kind":"hh", "url":"https://api.hh.ru/vacancies", "enabled":false, "note":"Адаптер готов; это вакансии, зарплата не считается бюджетом заказа. Требуется HH_USER_AGENT."},
+    {"id":"kwork", "name":"Kwork", "kind":"pending", "url":"https://kwork.ru/projects", "enabled":false, "note":"Лента требует входа. Подключение не реализовано."},
+    {"id":"avito", "name":"Авито", "kind":"pending", "url":"https://www.avito.ru/developers/api-catalog", "enabled":false, "note":"Общий поиск чужих объявлений через API не подтверждён. Подключение не реализовано."}
+  ]
+}
