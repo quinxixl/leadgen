@@ -252,6 +252,9 @@ def run_bot(db,config):
                     next_scan=time.monotonic()+config['poll_seconds']
                 if (ui.manual or (ui.get('active',False) and time.monotonic()>=next_scan)) and future is None:
                     future=pool.submit(collect_batch,ui.config())
+                if product_mode:
+                    from .reminders import deliver_due
+                    deliver_due(db,telegram)
                 if ui.get('active',False) or ui.drain:
                     if product_mode:
                         from .product import deliver_registered

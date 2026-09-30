@@ -27,6 +27,8 @@ class WebPostgres(unittest.TestCase):
             cls.db.connection.execute((Path('supabase/migrations')/filename).read_text(),prepare=False)
         if not cls.db.execute("SELECT to_regclass('leadgen.projects') AS name").fetchone()['name']:
             cls.db.connection.execute(Path('supabase/migrations/20260930143416_web_projects_crm.sql').read_text(),prepare=False)
+        if not cls.db.execute("SELECT to_regclass('leadgen.lead_reminders') AS name").fetchone()['name']:
+            cls.db.connection.execute(Path('supabase/migrations/20260930193638_lead_reminders.sql').read_text(),prepare=False)
         cls.db.commit()
         cls.app=create_app({'TESTING':True,'SECRET_KEY':'test-'*10,'BOT_USERNAME':'test_bot',
             'SESSION_COOKIE_SECURE':False,'DB_FACTORY':lambda:db_open(DSN)})
@@ -139,3 +141,32 @@ class WebPostgres(unittest.TestCase):
         self.assertEqual(self.client.get('/app/leads?from=2026-09-30&to=2026-09-01').status_code,400)
         self.assertEqual(self.client.get('/app/leads?source=missing').status_code,200)
         self.assertEqual(self.client.get('/app/leads/export?from=2099-01-01').text.count('Нужен сайт'),0)
+
+    def test_reminder_delivery_retry_and_ownership(self):
+        from datetime import timedelta
+        from leadgen.reminders import schedule,cancel,deliver_due
+        future=datetime.now(timezone.utc)+timedelta(hours=1)
+        lid=self.ids[0]
+        with self.assertRaises(ValueError):schedule(self.db,self.u,self.ids[1],future)
+        with self.assertRaises(ValueError):schedule(self.db,self.u,lid,future-timedelta(days=1))
+        schedule(self.db,self.u,lid,future,'Уточнить задачу')
+        calls=[]
+        self.assertEqual(deliver_due(self.db,lambda *args:calls.append(args)),0)
+        self.assertEqual(self.client.post(f'/app/leads/{self.ids[1]}/reminder',data={'csrf':'test-csrf','action':'cancel'}).status_code,404)
+        with self.db:self.db.execute("UPDATE lead_reminders SET due_at=now()-interval '1 second' WHERE user_id=?",(self.u,))
+        self.assertEqual(deliver_due(self.db,lambda *args:calls.append(args)),1)
+        self.assertEqual(deliver_due(self.db,lambda *args:calls.append(args)),0)
+        self.assertEqual(len(calls),1)
+        self.assertEqual(str(calls[0][1]['chat_id']),'1')
+        self.assertIn('Уточнить задачу',calls[0][1]['text'])
+        schedule(self.db,self.u,lid,future)
+        with self.db:self.db.execute("UPDATE lead_reminders SET due_at=now()-interval '1 second' WHERE user_id=?",(self.u,))
+        def fail(*args):raise RuntimeError('network')
+        self.assertEqual(deliver_due(self.db,fail),0)
+        self.assertEqual(self.db.execute('SELECT status FROM lead_reminders WHERE user_id=?',(self.u,)).fetchone()['status'],'uncertain')
+        self.assertEqual(deliver_due(self.db,lambda *args:calls.append(args)),0)
+        self.assertIn('доставка не подтверждена',self.client.get(f'/app/leads/{lid}').text)
+        self.assertTrue(cancel(self.db,self.u,lid))
+        self.assertFalse(cancel(self.db,self.other,lid))
+        response=self.client.post(f'/app/leads/{lid}/reminder',data={'csrf':'test-csrf','due':future.strftime('%Y-%m-%dT%H:%M')})
+        self.assertEqual(response.status_code,302)

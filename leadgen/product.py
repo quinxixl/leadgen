@@ -30,7 +30,8 @@ def lead_buttons(lead_id,url):
          {'text':'📢 Реклама','callback_data':f'feedback:ad:{lead_id}'}],
         [{'text':'💼 Ищет работу','callback_data':f'feedback:job:{lead_id}'},
          {'text':'🚫 Не моя услуга','callback_data':f'feedback:not_service:{lead_id}'}],
-        [{'text':'Изменить статус','callback_data':f'pipeline:menu:{lead_id}'}]]}
+        [{'text':'Изменить статус','callback_data':f'pipeline:menu:{lead_id}'},
+         {'text':'Напомнить через час','callback_data':f'remind:{lead_id}'}]]}
 
 
 def user_config(base,row):
@@ -268,6 +269,13 @@ class ProductController:
                         (user['id'],int(parts[2]),PIPELINE[parts[1]]))
                 if parts[1]=='won':self._update_pref(user['id'],'state',json.dumps({'await':'deal_amount','lead_id':int(parts[2])}));self.say('Заказ отмечен полученным. Напишите сумму сделки в рублях или 0, если не хотите указывать.')
                 else:self.say('Статус сохранён: '+PIPELINE[parts[1]])
+            elif action=='remind' and len(parts)==2 and parts[1].isdigit():
+                from .reminders import schedule
+                from datetime import datetime,timedelta,timezone
+                try:
+                    schedule(self.db,user['id'],int(parts[1]),datetime.now(timezone.utc)+timedelta(hours=1))
+                    self.say('Напомню об этом лиде через час.')
+                except ValueError as exc:self.say(str(exc))
             elif action=='reply' and len(parts)==2 and parts[1].isdigit():
                 _,lead=self._lead(int(parts[1]));self.say('Черновик отклика:\n\n'+self._draft(user,lead) if lead else 'Лид не найден.')
             elif action=='subscribe':

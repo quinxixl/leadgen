@@ -227,7 +227,8 @@ def create_app(test_config=None):
                 else:db().execute('DELETE FROM lead_feedback WHERE user_id=? AND lead_id=?',(g.user['id'],lid))
             flash('Изменения сохранены. Статус доступен и в Telegram.');return redirect(url_for('detail',lid=lid))
         activity=db().execute('SELECT kind,detail,created_at FROM lead_activity WHERE user_id=? AND lead_id=? ORDER BY id DESC LIMIT 100',(g.user['id'],lid)).fetchall()
-        return render_template('detail.html',row=row,lead=enrich(Lead(**json.loads(row['payload']))),activity=activity)
+        reminder=db().execute('SELECT * FROM lead_reminders WHERE user_id=? AND lead_id=?',(g.user['id'],lid)).fetchone()
+        return render_template('detail.html',row=row,lead=enrich(Lead(**json.loads(row['payload']))),activity=activity,reminder=reminder)
 
     @app.route('/app/settings',methods=['GET','POST'])
     def settings():
@@ -273,4 +274,6 @@ def create_app(test_config=None):
 
     from .web_projects import register_projects
     register_projects(app,db)
+    from .reminders import register_routes
+    register_routes(app,db)
     return app
