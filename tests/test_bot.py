@@ -3,10 +3,11 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 from leadgen.app import db_open, ingest, send_lead
 from leadgen.bot import Controller
-from leadgen.telegram_monitor import message_link
+from leadgen.telegram_monitor import message_link, realtime_group_username
 from test_leadgen import lead
 
 CONFIG={'min_budget':5000,'max_age_hours':72,'poll_seconds':300,'sources':[
@@ -87,3 +88,11 @@ class Forwarding(unittest.TestCase):
 
     def test_public_message_link(self):
         self.assertEqual(message_link('business_chat',42),'https://t.me/business_chat/42')
+
+    def test_realtime_reader_accepts_only_public_groups(self):
+        group=SimpleNamespace(username='Business_Chat',broadcast=False)
+        event=SimpleNamespace(is_group=True,is_private=False)
+        self.assertEqual(realtime_group_username(event,group),'business_chat')
+        self.assertIsNone(realtime_group_username(SimpleNamespace(is_group=False,is_private=True),group))
+        self.assertIsNone(realtime_group_username(event,SimpleNamespace(username='news',broadcast=True)))
+        self.assertIsNone(realtime_group_username(event,SimpleNamespace(username=None,broadcast=False)))

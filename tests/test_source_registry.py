@@ -5,7 +5,7 @@ import unittest
 from unittest.mock import patch
 
 from leadgen.app import db_open
-from leadgen.source_registry import import_selection, inspect_public_page, monitor_allowed
+from leadgen.source_registry import apply_monitor_policy, import_selection, inspect_public_page, monitor_allowed
 
 
 class Registry(unittest.TestCase):
@@ -41,5 +41,17 @@ class Registry(unittest.TestCase):
     def test_monitor_policy_allows_read_only_chat_but_not_consumer_audience(self):
         self.assertTrue(monitor_allowed('Требуют проверки',json.dumps({'risks':'По источнику писать нельзя'})))
         self.assertFalse(monitor_allowed('Требуют проверки',json.dumps({'risks':'Возможна потребительская аудитория вместо специалистов'})))
+
+    def test_monitor_policy_enables_only_live_groups(self):
+        rows=[('live','https://t.me/live','Live','Потенциальные клиенты',100,5),
+              ('channel','https://t.me/channel','Channel','Потенциальные клиенты',1000,None)]
+        with self.db:
+            for username,url,title,group,members,online in rows:
+                self.db.execute('''INSERT INTO telegram_sources
+                    (username,url,title,selection_group,members,online,status,metadata)
+                    VALUES(?,?,?,?,?,?,'active','{}')''',(username,url,title,group,members,online))
+        self.assertEqual(apply_monitor_policy(self.db),1)
+        enabled={row['username']:row['enabled'] for row in self.db.execute('SELECT username,enabled FROM telegram_sources')}
+        self.assertEqual(enabled,{'live':1,'channel':0})
 
 if __name__=='__main__': unittest.main()

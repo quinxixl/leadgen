@@ -3,7 +3,6 @@
   "max_age_hours": 72,
   "poll_seconds": 300,
   "notify_without_budget": true,
-  "telegram_source_delay_seconds": 2.0,
   "sources": [
     {"id":"fl", "name":"FL.ru", "kind":"fl", "url":"https://www.fl.ru/projects/", "enabled":true},
     {"id":"freelance", "name":"Freelance.ru", "kind":"freelance", "url":"https://freelance.ru/task", "enabled":true},

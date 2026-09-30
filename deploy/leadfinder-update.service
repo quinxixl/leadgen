@@ -1,0 +1,9 @@
+[Unit]
+Description=Update and restart IT Lead Finder from GitHub
+Wants=network-online.target docker.service
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/leadfinder
+ExecStart=/opt/leadfinder/deploy/leadfinder-update.sh

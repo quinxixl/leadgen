@@ -59,11 +59,12 @@ def monitor_allowed(selection_group,metadata):
 
 
 def apply_monitor_policy(db):
-    rows=db.execute("SELECT username,selection_group,metadata,status FROM telegram_sources").fetchall(); enabled=0
+    rows=db.execute("SELECT username,selection_group,metadata,status,members,online FROM telegram_sources").fetchall(); enabled=0
     with db:
         for row in rows:
             username,group,metadata,status=(row['username'],row['selection_group'],row['metadata'],row['status'])
-            allow=status=='active' and monitor_allowed(group,metadata)
+            live_group=(status=='active' and (row['members'] or 0)>=50 and (row['online'] or 0)>0)
+            allow=live_group and monitor_allowed(group,metadata)
             db.execute('UPDATE telegram_sources SET enabled=? WHERE username=?',(int(allow),username));enabled+=int(allow)
     return enabled
 
@@ -129,10 +130,11 @@ def verify_pending(db, workers=14, limit=None):
         for i,(username,selection_group,result) in enumerate(pool.map(check,rows),1):
             status=result['status']; now=datetime.now(UTC).isoformat()
             with db:
+                live_group=(status=='active' and (result.get('members') or 0)>=50 and (result.get('online') or 0)>0)
                 db.execute('''UPDATE telegram_sources SET title=COALESCE(?,title),members=?,online=?,
                     status=?,enabled=?,checked_at=?,last_message_at=?,check_reason=? WHERE username=?''',
                     (result.get('title'),result.get('members'),result.get('online'),status,
-                     int(status=='active' and selection_group in ('Потенциальные клиенты','Партнеры и заказы')),
+                     int(live_group and selection_group in ('Потенциальные клиенты','Партнеры и заказы')),
                      now,result.get('last_message_at'),result['reason'],username))
             counts[status]=counts.get(status,0)+1
             if i%250==0:

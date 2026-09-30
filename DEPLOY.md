@@ -72,7 +72,18 @@ sudo docker compose version
 
 Последние две команды должны завершиться без ошибки.
 
-## 5. Проверить локальные секреты
+## 5. Скачать проект из GitHub
+
+На сервере:
+
+```sh
+sudo apt install -y git
+cd /opt
+sudo git clone https://github.com/quinxixl/leadgen.git leadfinder
+sudo mkdir -p /opt/leadfinder/leadgen/data
+```
+
+## 6. Проверить локальные секреты
 
 На Mac, в каталоге проекта:
 
@@ -91,49 +102,27 @@ test -s leadgen/data/telegram_reader.session && echo "Telegram-сессия на
 
 Перед копированием остановить локального бота сочетанием `Ctrl+C`. Это нужно, чтобы файл Telegram-сессии был закрыт корректно и чтобы два процесса не начали одновременно получать обновления одного бота.
 
-## 6. Упаковать проект на Mac
-
-Из каталога проекта:
-
-```sh
-tar \
-  --exclude='.env' \
-  --exclude='.venv' \
-  --exclude='.git' \
-  --exclude='outputs' \
-  --exclude='leadgen/data' \
-  --exclude='__pycache__' \
-  --exclude='*.sqlite*' \
-  -czf /tmp/leadfinder.tar.gz .
-```
-
-Архив содержит код и Docker-конфигурацию. Секреты копируются отдельно.
-
 ## 7. Передать файлы на сервер
 
 На Mac заменить `SERVER_IP`:
 
 ```sh
-ssh root@SERVER_IP 'mkdir -p /opt/leadfinder/leadgen/data'
-scp /tmp/leadfinder.tar.gz root@SERVER_IP:/tmp/leadfinder.tar.gz
 scp .env root@SERVER_IP:/opt/leadfinder/.env
 scp leadgen/data/telegram_reader.session root@SERVER_IP:/opt/leadfinder/leadgen/data/telegram_reader.session
 ```
 
 Если используется пользователь `ubuntu`, заменить `root` на `ubuntu`, а каталог `/opt/leadfinder` создать через `sudo`.
 
-## 8. Распаковать и защитить секреты
+## 8. Защитить секреты
 
 На сервере:
 
 ```sh
 cd /opt/leadfinder
-sudo tar -xzf /tmp/leadfinder.tar.gz -C /opt/leadfinder
 sudo chmod 600 .env
 sudo chown -R 10001:10001 leadgen/data
 sudo chmod 700 leadgen/data
 sudo chmod 600 leadgen/data/telegram_reader.session
-sudo rm /tmp/leadfinder.tar.gz
 ```
 
 Проверить наличие файлов без вывода секретов:
@@ -180,7 +169,7 @@ sudo docker compose logs --tail 100 -f
 
 ```text
 Бот работает. Откройте Telegram и отправьте /start. Ctrl+C — выход.
-Мониторинг Telegram запущен.
+Мониторинг Telegram запущен в реальном времени без чтения истории.
 ```
 
 Выйти из просмотра журнала можно через `Ctrl+C`: контейнер продолжит работать в фоне. Через одну-две минуты `sudo docker compose ps` должен показывать состояние `healthy`.
@@ -205,19 +194,30 @@ sudo docker compose exec leadfinder python -m leadgen.app status
 
 Контейнер использует `restart: unless-stopped`, а Docker включён в автозапуск. После перезагрузки сервера бот должен подняться автоматически.
 
-## 14. Обновлять код
+## 14. Автоматически обновлять код из GitHub
 
-Сначала подготовить новый архив на Mac по шагу 6, затем передать его на сервер. `.env` и `telegram_reader.session` повторно копировать не нужно.
-
-На сервере:
+После первого запуска установить `systemd`-таймер:
 
 ```sh
 cd /opt/leadfinder
-sudo tar -xzf /tmp/leadfinder.tar.gz -C /opt/leadfinder
-sudo rm /tmp/leadfinder.tar.gz
-sudo docker compose build --pull
-sudo docker compose up -d
-sudo docker compose logs --tail 100
+sudo chmod +x deploy/*.sh
+sudo deploy/install-auto-update.sh
+```
+
+Таймер каждые пять минут сравнивает локальный коммит с `origin/main`. Если в GitHub появился новый коммит, сервер выполняет fast-forward, собирает образ и перезапускает контейнер. `.env` и `leadgen/data/telegram_reader.session` не затрагиваются.
+
+Проверка таймера и журнала обновлений:
+
+```sh
+sudo systemctl status leadfinder-update.timer --no-pager
+sudo systemctl list-timers leadfinder-update.timer --no-pager
+sudo journalctl -u leadfinder-update.service -n 100 --no-pager
+```
+
+Запустить проверку обновлений немедленно:
+
+```sh
+sudo systemctl start leadfinder-update.service
 ```
 
 ## 15. Остановка и восстановление
