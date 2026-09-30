@@ -108,8 +108,8 @@ def scan(db, config, fixtures=False):
             print(f"{source['name']}: ошибка {type(exc).__name__}; см. status",flush=True)
 
 def apply_preferences(lead, config, status, reason):
-    from .core import topics
-    if 'topics' in config and not set(topics(lead.title+' '+lead.text)).intersection(config['topics']):
+    from .core import topics, possible_need_topics
+    if 'topics' in config and not set(topics(lead.title+' '+lead.text)+possible_need_topics(lead.title+' '+lead.text)).intersection(config['topics']):
         return 'rejected', 'направление выключено'
     known = {s['name'] for s in config.get('sources',[])}
     enabled = {s['name'] for s in config.get('sources',[]) if s['enabled']}

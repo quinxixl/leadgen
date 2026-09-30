@@ -25,6 +25,8 @@ class WebPostgres(unittest.TestCase):
                 cls.db.execute('CREATE ROLE '+role)
         for filename in ('20260929134042_create_leadgen_schema.sql','20260930092451_add_multiuser_product.sql'):
             cls.db.connection.execute((Path('supabase/migrations')/filename).read_text(),prepare=False)
+        if not cls.db.execute("SELECT to_regclass('leadgen.projects') AS name").fetchone()['name']:
+            cls.db.connection.execute(Path('supabase/migrations/20260930143416_web_projects_crm.sql').read_text(),prepare=False)
         cls.db.commit()
         cls.app=create_app({'TESTING':True,'SECRET_KEY':'test-'*10,'BOT_USERNAME':'test_bot',
             'SESSION_COOKIE_SECURE':False,'DB_FACTORY':lambda:db_open(DSN)})
@@ -87,3 +89,30 @@ class WebPostgres(unittest.TestCase):
     def test_export_is_scoped(self):
         r=self.client.get('/app/leads/export')
         self.assertEqual(r.status_code,200);self.assertNotIn('Нужен сайт 1',r.text)
+
+    def test_projects_are_owner_scoped_and_notes_persist(self):
+        r=self.client.post('/app/projects',data={'csrf':'test-csrf','name':'Разработка'})
+        self.assertEqual(r.status_code,302)
+        path=r.headers['Location']
+        self.assertEqual(self.client.get(path).status_code,200)
+        self.assertEqual(self.client.post(path,data={'csrf':'test-csrf','name':'Сайты','min_budget':'5000','min_score':'20','topics':['Сайты'],'keywords':'сайт\nлендинг','enabled':'on'}).status_code,302)
+        self.assertEqual(self.client.post(f'/app/leads/{self.ids[0]}/notes',data={'csrf':'test-csrf','note':'Созвон в четверг'}).status_code,302)
+        self.assertIn('Созвон в четверг',self.client.get(f'/app/leads/{self.ids[0]}').text)
+        with self.client.session_transaction() as s:s['user_id']=self.other
+        self.assertEqual(self.client.get(path).status_code,404)
+        self.assertEqual(self.client.post(f'/app/leads/{self.ids[0]}/notes',data={'csrf':'test-csrf','note':'Чужое'}).status_code,404)
+
+    def test_two_projects_deliver_one_notification(self):
+        from leadgen.product import deliver_registered
+        with self.db:
+            self.db.execute('DELETE FROM user_leads WHERE user_id=?',(self.u,))
+            self.db.execute('UPDATE user_preferences SET monitoring_active=true WHERE user_id=?',(self.u,))
+            self.db.execute("UPDATE leads SET first_seen=(now()+interval '1 second')::text")
+            for name in ('Первый проект','Второй проект'):
+                self.db.execute('''INSERT INTO projects(user_id,name,topics,show_without_budget)
+                    VALUES(?,?,?::jsonb,true)''',(self.u,name,json.dumps(['Сайты'])))
+        calls=[]
+        delivered=deliver_registered(self.db,{'sources':[],'max_age_hours':72,'min_budget':5000},lambda *args:calls.append(args))
+        self.assertEqual(delivered,1);self.assertEqual(len(calls),1)
+        count=self.db.execute('SELECT count(*) AS n FROM project_leads WHERE user_id=?',(self.u,)).fetchone()['n']
+        self.assertEqual(count,2)

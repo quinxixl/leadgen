@@ -17,7 +17,8 @@ MENU={'keyboard':[
 
 REGISTER={'inline_keyboard':[[{'text':'Зарегистрироваться','callback_data':'register:confirm'}]]}
 PUBLIC_CHAT=re.compile(r'^(?:https?://t\.me/|@)?([A-Za-z][A-Za-z0-9_]{3,})/?$')
-PIPELINE={'saved':'Сохранён','contacted':'Написал','discussing':'Обсуждаем','won':'Получил заказ',
+PIPELINE={'saved':'Новый / сохранён','viewed':'Просмотрен','working':'В работе','contacted':'Написали',
+          'discussing':'Получен ответ','meeting':'Назначена встреча','proposal':'Отправлено предложение','won':'Получил заказ',
           'lost':'Не подошёл','not_fit':'Не подходит'}
 FEEDBACK={'fit':'Подходит','ad':'Реклама','job':'Ищет работу','not_service':'Не моя услуга'}
 
@@ -63,6 +64,7 @@ def deliver_registered(db,base,sender,limit_per_user=1):
     delivered=0
     for prefs in users:
         config=user_config(base,prefs);processed=0
+        projects=db.execute('SELECT * FROM projects WHERE user_id=? ORDER BY id',(prefs['id'],)).fetchall()
         rows=db.execute('''SELECT l.id,l.payload FROM leads l
             WHERE NOT EXISTS (SELECT 1 FROM user_leads ul WHERE ul.user_id=? AND ul.lead_id=l.id)
               AND l.first_seen::timestamptz >= ?
@@ -70,10 +72,23 @@ def deliver_registered(db,base,sender,limit_per_user=1):
         for row in rows:
             lead=Lead(**json.loads(row['payload']))
             allowed,reason=eligible_for_user(lead,config,prefs)
+            matches=[]
+            if projects:
+                from .projects import project_eligibility
+                for project in projects:
+                    match,why=project_eligibility(lead,config,project)
+                    if match:matches.append(project['id']);reason=why
+                allowed=bool(matches)
+                if not allowed:reason='не соответствует фильтрам проектов'
             if not allowed:
                 with db:db.execute('''INSERT INTO user_leads(user_id,lead_id,delivery_status,filter_reason)
                     VALUES(?,?,'filtered',?) ON CONFLICT(user_id,lead_id) DO NOTHING''',(prefs['id'],row['id'],reason))
                 continue
+            if matches:
+                with db:
+                    for project_id in matches:
+                        db.execute('''INSERT INTO project_leads(project_id,user_id,lead_id) VALUES(?,?,?)
+                            ON CONFLICT(project_id,lead_id) DO NOTHING''',(project_id,prefs['id'],row['id']))
             try:
                 sender('sendMessage',{'chat_id':str(prefs['telegram_chat_id']),'text':message(lead,reason),
                     'link_preview_options':{'is_disabled':True},'reply_markup':lead_buttons(row['id'],lead.url)})
@@ -155,7 +170,9 @@ class ProductController:
         self.say('Какие услуги вы оказываете?',keys)
 
     def _lead(self,lead_id):
-        row=self.db.execute('SELECT id,payload,reason FROM leads WHERE id=?',(lead_id,)).fetchone()
+        row=self.db.execute('''SELECT l.id,l.payload,l.reason FROM leads l JOIN user_leads ul ON ul.lead_id=l.id
+            JOIN app_users u ON u.id=ul.user_id WHERE l.id=? AND u.telegram_chat_id=?
+            AND ul.delivery_status<>'filtered' ''',(lead_id,int(self.last_chat))).fetchone()
         return (row,Lead(**json.loads(row['payload']))) if row else (None,None)
 
     def _draft(self,user,lead):
@@ -230,6 +247,8 @@ class ProductController:
             elif action=='toggle' and parts[1]=='possible':self._update_pref(user['id'],'show_possible_needs',not user['show_possible_needs']);self._filters(self._user(actor['id']))
             elif action=='budget':self._update_pref(user['id'],'state',json.dumps({'await':'budget'}));self.say('Введите минимальный бюджет числом в рублях. /cancel — отменить.')
             elif action=='feedback' and len(parts)==3 and parts[1] in FEEDBACK and parts[2].isdigit():
+                row,_=self._lead(int(parts[2]))
+                if not row:self.say('Лид не найден.');return
                 with self.db:self.db.execute('''INSERT INTO lead_feedback(user_id,lead_id,label) VALUES(?,?,?)
                     ON CONFLICT(user_id,lead_id) DO UPDATE SET label=excluded.label,updated_at=now()''',(user['id'],int(parts[2]),parts[1]))
                 self.say('Оценка сохранена. Она попадёт в статистику качества и поможет улучшать правила отбора.')
@@ -237,8 +256,13 @@ class ProductController:
                 lid=parts[2];keys={'inline_keyboard':[[{'text':label,'callback_data':f'status:{key}:{lid}'}] for key,label in PIPELINE.items()]}
                 self.say('Выберите результат работы с лидом:',keys)
             elif action=='status' and len(parts)==3 and parts[1] in PIPELINE and parts[2].isdigit():
-                with self.db:self.db.execute('''UPDATE user_leads SET pipeline_status=?,updated_at=now()
-                    WHERE user_id=? AND lead_id=?''',(parts[1],user['id'],int(parts[2])))
+                row,_=self._lead(int(parts[2]))
+                if not row:self.say('Лид не найден.');return
+                with self.db:
+                    self.db.execute('''UPDATE user_leads SET pipeline_status=?,updated_at=now()
+                        WHERE user_id=? AND lead_id=?''',(parts[1],user['id'],int(parts[2])))
+                    self.db.execute("INSERT INTO lead_activity(user_id,lead_id,kind,detail) VALUES(?,?,'status',?)",
+                        (user['id'],int(parts[2]),PIPELINE[parts[1]]))
                 if parts[1]=='won':self._update_pref(user['id'],'state',json.dumps({'await':'deal_amount','lead_id':int(parts[2])}));self.say('Заказ отмечен полученным. Напишите сумму сделки в рублях или 0, если не хотите указывать.')
                 else:self.say('Статус сохранён: '+PIPELINE[parts[1]])
             elif action=='reply' and len(parts)==2 and parts[1].isdigit():

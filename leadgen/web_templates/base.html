@@ -5,7 +5,7 @@
 <link rel="stylesheet" href="{{ url_for('static',filename='app.css') }}"></head>
 <body><a class="skip" href="#content">Перейти к содержимому</a>
 <header><a class="brand" href="/">Лидоловец<span>Поиск клиентов</span></a><nav aria-label="Основная навигация">
-{% if user %}<a href="/app">Аналитика</a><a href="/app/leads">Лиды</a><a href="/app/sources">Источники</a><a href="/app/settings">Настройки</a>
+{% if user %}<a href="/app">Аналитика</a><a href="/app/leads">Лиды</a><a href="/app/projects">Проекты</a><a href="/app/sources">Источники</a><a href="/app/settings">Настройки</a>
 <form action="/logout" method="post"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="quiet">Выйти</button></form>
 {% else %}<a href="/#how">Как работает</a><a href="/#access">Доступ</a><a class="button" href="/login">Войти в кабинет</a>{% endif %}
 </nav></header><main id="content">{% for message in get_flashed_messages() %}<p class="notice" role="status">{{ message }}</p>{% endfor %}

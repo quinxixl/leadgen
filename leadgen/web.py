@@ -132,7 +132,12 @@ def create_app(test_config=None):
         try:page=max(1,min(10000,int(request.args.get('page','1'))))
         except ValueError:abort(400)
         search=request.args.get('q','')[:200];status=request.args.get('status','')
+        project=request.args.get('project','')
         args=[g.user['id']];where="ul.user_id=? AND ul.delivery_status<>'filtered'"
+        if project:
+            if not project.isdigit():abort(400)
+            where+=' AND EXISTS (SELECT 1 FROM project_leads pl WHERE pl.user_id=ul.user_id AND pl.lead_id=l.id AND pl.project_id=?)'
+            args.append(int(project))
         if search:where+=' AND l.payload ILIKE ?';args.append('%'+search+'%')
         if status:
             if status not in PIPELINE:abort(400)
@@ -171,12 +176,18 @@ def create_app(test_config=None):
             if amount and (not amount.isdigit() or int(amount)>1000000000):
                 abort(400,description='Укажите целую сумму от 0 до 1 000 000 000 ₽.')
             with db():
+                for kind,value,old in [('status',status,row['pipeline_status']),('amount',amount,str(row['deal_amount']) if row['deal_amount'] is not None else ''),('feedback',label,row['feedback'] or '')]:
+                    if value!=old:
+                        detail=PIPELINE.get(value,value) if kind=='status' else FEEDBACK.get(value,value) if kind=='feedback' else value or 'Сумма не указана'
+                        db().execute('INSERT INTO lead_activity(user_id,lead_id,kind,detail) VALUES(?,?,?,?)',(g.user['id'],lid,kind,detail or 'Без оценки'))
                 db().execute('UPDATE user_leads SET pipeline_status=?,deal_amount=?,updated_at=now() WHERE user_id=? AND lead_id=?',
                     (status,int(amount) if amount else None,g.user['id'],lid))
                 if label:db().execute('''INSERT INTO lead_feedback(user_id,lead_id,label) VALUES(?,?,?)
                     ON CONFLICT(user_id,lead_id) DO UPDATE SET label=excluded.label,updated_at=now()''',(g.user['id'],lid,label))
+                else:db().execute('DELETE FROM lead_feedback WHERE user_id=? AND lead_id=?',(g.user['id'],lid))
             flash('Изменения сохранены. Статус доступен и в Telegram.');return redirect(url_for('detail',lid=lid))
-        return render_template('detail.html',row=row,lead=enrich(Lead(**json.loads(row['payload']))))
+        activity=db().execute('SELECT kind,detail,created_at FROM lead_activity WHERE user_id=? AND lead_id=? ORDER BY id DESC LIMIT 100',(g.user['id'],lid)).fetchall()
+        return render_template('detail.html',row=row,lead=enrich(Lead(**json.loads(row['payload']))),activity=activity)
 
     @app.route('/app/settings',methods=['GET','POST'])
     def settings():
@@ -220,4 +231,6 @@ def create_app(test_config=None):
             404:'Страница или лид не найдены.',413:'Слишком большой запрос.',500:'Не удалось обработать запрос. Попробуйте позже.'}
         return render_template('error.html',message=messages.get(exc.code,'Ошибка запроса.')),exc.code
 
+    from .web_projects import register_projects
+    register_projects(app,db)
     return app

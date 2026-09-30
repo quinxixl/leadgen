@@ -121,10 +121,6 @@ def classify(lead, minimum=5000, max_age_hours=72, now=None):
         return 'rejected', 'самореклама или обучение', tags
     if re.search(JOBS, text):
         return 'rejected', 'вакансия', tags
-    if not lead.trusted_order and not re.search(DEMAND, text) and need_tags:
-        return 'review', 'возможная потребность: '+', '.join(need_tags), tags
-    if not lead.trusted_order and not re.search(DEMAND, text):
-        return 'review', 'неясно, ищут ли исполнителя', tags
     try:
         date = datetime.fromisoformat(lead.published)
         if date.tzinfo is None:
@@ -134,6 +130,12 @@ def classify(lead, minimum=5000, max_age_hours=72, now=None):
         return 'review', 'дата не подтверждена', tags
     if age < -1 or age > max_age_hours:
         return 'rejected', 'вне окна свежести', tags
+    if not lead.trusted_order and not re.search(DEMAND, text) and need_tags:
+        price,_=budget(lead.budget_text)
+        if price is not None and price<minimum:return 'rejected','бюджет ниже порога',tags
+        return 'review', 'возможная потребность: '+', '.join(need_tags), tags
+    if not lead.trusted_order and not re.search(DEMAND, text):
+        return 'review', 'неясно, ищут ли исполнителя', tags
     price, reason = budget(lead.budget_text)
     if price is None:
         return 'review', reason, tags
@@ -174,7 +176,7 @@ def lead_profile(lead, minimum=5000):
     if len(text) >= 220:
         points += 5; reasons.append('есть детали задачи')
     points = max(0, min(100, points))
-    temperature = 'горячий' if points >= 70 else 'тёплый' if points >= 45 else 'холодный'
+    temperature = 'горячий' if points >= 80 else 'тёплый' if points >= 50 else 'холодный'
 
     sentences = [s.strip(' •—-') for s in re.split(r'(?<=[.!?])\s+|\n+', raw) if len(s.strip()) >= 12]
     important = []
