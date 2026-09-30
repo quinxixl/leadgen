@@ -8,3 +8,5 @@ __pycache__/
 leadgen/research/*.html
 leadgen/data/
 outputs/
+supabase/.temp/
+.leadfinder-deployed-sha
