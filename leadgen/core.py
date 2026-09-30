@@ -35,8 +35,11 @@ TOPICS = {
     'Автоматизации': r'автоматизац|\bn8n\b|make\.com|zapier|парсер|парсинг|webhook|вебхук|интеграц.{0,20}(?:api|сервис|систем)|связать.{0,25}(?:сервис|систем)',
     'CRM': r'\bcrm\b|amocrm|битрикс\s?24|bitrix\s?24|амо(?:срм|crm)|retailcrm|мегаплан|мои?\s?склад',
 }
-DEMAND = r'нуж(?:ен|на|но|ны)|ищ(?:у|ем|ут)|требуется|необходимо|заказ|сделать|создать|разработать|настроить|доработать|внедрить|кто может|посоветуйте.{0,20}(?:разработ|специалист|подрядчик)|есть задача|нужна помощь'
-SELLER = r'предлагаю услуги|оказываю услуги|ищу заказы|ищу клиентов|возьму.{0,12}(?:заказ|проект)|сделаю.{0,30}(?:сайт|бот)|разрабатываю.{0,30}(?:сайт|бот|прилож)|мои услуги|мое портфолио|что я делаю|ищу партнера по поиску'
+DEMAND = r'нуж(?:ен|на|но|ны)|ищ(?:у|ем|ут)|требуется|необходимо|заказ|сделать|создать|разработать|настроить|доработать|внедрить|кто может|помогите|посоветуйте.{0,20}(?:разработ|специалист|подрядчик)|есть задача|нужна помощь'
+SELLER = r'предлага(?:ю|ем) услуги|оказыва(?:ю|ем) услуги|ищу заказы|ищу клиентов|возьму.{0,12}(?:заказ|проект)|сделаю.{0,30}(?:сайт|бот)|разрабатываю.{0,30}(?:сайт|бот|прилож)|мои услуги|наши услуги|мое портфолио|наше портфолио|что я делаю|ищу партнера по поиску'
+SELLER_ACTION = r'(?<!кто\s)(?<!если\s)\b(?:помогу|поможем|сделаю|сделаем|создадим|разработаем|настроим|внедрим|подключим|интегрируем|автоматизируем|продвинем|выведем.{0,18}в топ|упакуем|запустим)\b'
+SELLER_IDENTITY = r'\b(?:мы|наша команда|команда специалистов)\b.{0,80}\b(?:делаем|создаем|разрабатыва(?:ем|ет)|настраива(?:ем|ет)|внедря(?:ем|ет)|продвига(?:ем|ет)|оказыва(?:ем|ет))\b'
+SELLER_CTA = r'пишите.{0,20}(?:лс|личк|директ|обсуд)|обращайтесь|закажите|оставьте заявку|бесплатн.{0,20}(?:разбор|консультац|аудит)|готов(?:ы|а)? помочь|работаем под ключ'
 JOBS = r'ваканси|#job\b|#hiring\b|full[ -]?time|фулл[ -]?тайм|полный рабочий день|\b5/2\b|в штат|з/п|зарплат|оклад'
 ADS = r'заработал|заработай|пошагов.{0,15}инструкц|бесплатн.{0,15}(?:курс|вебинар)|обучим|курс по|розыгрыш'
 URGENCY = r'срочн|как можно скорее|в ближайш|до (?:завтра|конца недели)|горит|asap'
@@ -57,6 +60,19 @@ def topics(text):
 def possible_need_topics(text):
     t = normalize(text)
     return [name for name,regex in POSSIBLE_NEEDS.items() if re.search(regex,t)]
+
+def seller_offer(text):
+    """High-confidence service offer, not a buyer describing their own problem."""
+    t = normalize(text)
+    if re.search(SELLER, t) or re.search(SELLER_IDENTITY, t):
+        return True
+    action = bool(re.search(SELLER_ACTION, t))
+    cta = bool(re.search(SELLER_CTA, t))
+    hashtags = re.findall(r'(?<!\w)#[\w-]+', t)
+    promotional_list = len(hashtags) >= 3 or len(re.findall(r'[🔹✅✔️►•]', text)) >= 3
+    # First-person promises are offers by themselves; CTA/list signals cover
+    # short ads such as "SEO под ключ — пишите в ЛС".
+    return action or (cta and promotional_list and bool(topics(t)))
 
 def budget(text):
     """Return conservative lower bound, status. Never treat hourly/monthly as a project."""
@@ -99,7 +115,9 @@ def classify(lead, minimum=5000, max_age_hours=72, now=None):
         return 'rejected', 'другая услуга', tags
     if lead.kind != 'order':
         return 'review', 'проектная вакансия: оплата не является бюджетом заказа', tags
-    if re.search(SELLER, text) or re.search(ADS, text):
+    if seller_offer(lead.title + '\n' + lead.text):
+        return 'rejected', 'предложение услуг другого подрядчика', tags
+    if re.search(ADS, text):
         return 'rejected', 'самореклама или обучение', tags
     if re.search(JOBS, text):
         return 'rejected', 'вакансия', tags
@@ -137,7 +155,7 @@ def lead_profile(lead, minimum=5000):
         points += 25; reasons.append('явный запрос исполнителя')
     elif need_tags:
         points += 18; reasons.append('описана проблема, которую можно решить услугой')
-    if re.search(SELLER, text) or re.search(ADS, text):
+    if seller_offer(raw) or re.search(ADS, text):
         points -= 45; reasons.append('похоже на рекламу исполнителя')
     if re.search(JOBS, text):
         points -= 35; reasons.append('признаки вакансии')

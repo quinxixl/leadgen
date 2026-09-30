@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta
 from unittest.mock import patch
-from leadgen.core import Lead, UTC, budget, classify, message, lead_profile
+from leadgen.core import Lead, UTC, budget, classify, message, lead_profile, seller_offer
 from leadgen.adapters import parse
 from leadgen.app import db_open, ingest, deliver, telegram, notification_chat_ids
 from leadgen.product import eligible_for_user, lead_buttons
@@ -42,6 +42,36 @@ class Filters(unittest.TestCase):
                      'Заработай 17000 рублей, создав бота по пошаговой инструкции']:
             with self.subTest(text=text):
                 self.assertEqual(classify(lead(text=text))[0],'rejected')
+
+    def test_reject_contractor_ads_before_possible_need(self):
+        ads = [
+            ('#помогу #seo #сеопродвижение #разработка #digital #созданиесайтов',
+             'Привет! Если сайт не приносит заявки или вообще нет сайта — разберёмся. '
+             '🔹 Создадим сайт, заточенный под SEO 🔹 Выведем в топ Яндекса '
+             '🔹 Настроим присутствие в AI-поиске 🔹 Выстроим продвижение под ваши цели'),
+            ('Сайты под ключ','Создадим лендинг и настроим CRM. Пишите в ЛС, обсудим проект.'),
+            ('Команда разработки','Наша команда разрабатывает сайты и Telegram-ботов для бизнеса.'),
+        ]
+        for title,text in ads:
+            with self.subTest(title=title):
+                item=lead(title=title,text=text,budget_text='')
+                state,reason,_=classify(item)
+                self.assertEqual(state,'rejected')
+                self.assertEqual(reason,'предложение услуг другого подрядчика')
+                self.assertTrue(seller_offer(title+' '+text))
+
+    def test_buyer_requests_are_not_mistaken_for_contractor_ads(self):
+        requests = [
+            ('Нужен подрядчик','Мы теряем заявки с сайта. Нужен специалист, который настроит CRM.'),
+            ('Помогите с CRM','Помогите настроить CRM и автоматический перенос заявок с сайта.'),
+            ('Ищу разработчика','Ищу человека, который поможет создать Telegram-бота для клиентов.'),
+        ]
+        for title,text in requests:
+            with self.subTest(title=title):
+                item=lead(title=title,text=text,budget_text='10 000 ₽')
+                state,reason,_=classify(item)
+                self.assertFalse(seller_offer(title+' '+text))
+                self.assertEqual(state,'ready',reason)
 
     def test_old_or_unknown_date(self):
         self.assertEqual(classify(lead(published=(NOW-timedelta(days=4)).isoformat()))[0],'rejected')
