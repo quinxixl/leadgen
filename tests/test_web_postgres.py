@@ -183,3 +183,17 @@ class WebPostgres(unittest.TestCase):
         self.assertNotIn('77 001',self.client.get('/app?days=7').text)
         self.assertIn('77 001',self.client.get('/app?days=30').text)
         self.assertEqual(self.client.get('/app?days=1000').status_code,400)
+
+    def test_duplicate_does_not_send_again_to_user(self):
+        from leadgen.product import deliver_registered
+        from test_leadgen import CONFIG
+        payload=json.loads(self.db.execute('SELECT payload FROM leads WHERE id=?',(self.ids[0],)).fetchone()['payload'])
+        payload.update(url='https://t.me/another/1',title='Нужен бот',text='Нужен бот, бюджет 20000 рублей',budget_text='20000 руб.')
+        with self.db:
+            self.db.execute("UPDATE user_preferences SET monitoring_active=true,show_without_budget=true WHERE user_id=?",(self.u,))
+            self.db.execute('INSERT INTO leads(url,fingerprint,payload,status,reason,first_seen) VALUES(?,?,?,?,?,?)',
+                (payload['url'],'0',json.dumps(payload),'ready','test',datetime.now(timezone.utc).isoformat()))
+        with self.db:self.db.execute("UPDATE leads SET status='duplicate' WHERE id=?",(self.ids[1],))
+        sent=[]
+        self.assertEqual(deliver_registered(self.db,CONFIG|{'sources':[]},lambda *a:sent.append(a)),0)
+        self.assertEqual(sent,[])

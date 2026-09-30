@@ -26,3 +26,10 @@ class Projects(unittest.TestCase):
         item=lead(title='Проблема',text='Вручную переносим заявки, теряем клиентов',budget_text='')
         self.assertFalse(project_eligibility(item,CONFIG,P|{'show_without_budget':False})[0])
         self.assertFalse(project_eligibility(item,CONFIG,P|{'show_possible_needs':False})[0])
+
+    def test_budget_threshold_does_not_change_shared_score(self):
+        from leadgen.app import classify_for_config
+        item=lead()
+        classify_for_config(item,CONFIG|{'min_budget':5000});score=item.score
+        classify_for_config(item,CONFIG|{'min_budget':1000000})
+        self.assertEqual(item.score,score)

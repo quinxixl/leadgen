@@ -73,7 +73,8 @@ def ingest(db, lead, config):
                (lead.url,fp,json.dumps(lead.data(),ensure_ascii=False),status,reason,datetime.now(UTC).isoformat()))
 
 def classify_for_config(lead,config):
-    enrich(lead,config['min_budget'])
+    # The score is shared across projects; their budget floors only gate delivery.
+    enrich(lead)
     status, reason, _ = classify(lead,config['min_budget'],config['max_age_hours'])
     if (config.get('notify_without_budget') and status == 'review' and
             reason in ('бюджет не указан','указан только потолок бюджета') and lead.score >= 45):

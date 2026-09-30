@@ -70,9 +70,12 @@ def deliver_registered(db,base,sender,limit_per_user=1):
         config=user_config(base,prefs);processed=0
         projects=db.execute('SELECT * FROM projects WHERE user_id=? ORDER BY id',(prefs['id'],)).fetchall()
         rows=db.execute('''SELECT l.id,l.payload FROM leads l
-            WHERE NOT EXISTS (SELECT 1 FROM user_leads ul WHERE ul.user_id=? AND ul.lead_id=l.id)
+            WHERE l.status<>'duplicate'
+              AND NOT EXISTS (SELECT 1 FROM user_leads ul WHERE ul.user_id=? AND ul.lead_id=l.id)
+              AND NOT EXISTS (SELECT 1 FROM user_leads seen JOIN leads original ON original.id=seen.lead_id
+                  WHERE seen.user_id=? AND seen.delivery_status<>'filtered' AND original.fingerprint=l.fingerprint)
               AND l.first_seen::timestamptz >= ?
-            ORDER BY l.id DESC LIMIT 100''',(prefs['id'],prefs['registered_at'])).fetchall()
+            ORDER BY l.id DESC LIMIT 100''',(prefs['id'],prefs['id'],prefs['registered_at'])).fetchall()
         for row in rows:
             lead=Lead(**json.loads(row['payload']))
             allowed,reason=eligible_for_user(lead,config,prefs)
