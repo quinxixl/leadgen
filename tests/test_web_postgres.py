@@ -170,3 +170,16 @@ class WebPostgres(unittest.TestCase):
         self.assertFalse(cancel(self.db,self.other,lid))
         response=self.client.post(f'/app/leads/{lid}/reminder',data={'csrf':'test-csrf','due':future.strftime('%Y-%m-%dT%H:%M')})
         self.assertEqual(response.status_code,302)
+
+    def test_analytics_periods_and_revenue_are_scoped(self):
+        with self.db:
+            self.db.execute("UPDATE user_leads SET pipeline_status='won',deal_amount=77001 WHERE user_id=?",(self.u,))
+            self.db.execute("UPDATE user_leads SET pipeline_status='won',deal_amount=998877 WHERE user_id=?",(self.other,))
+        page=self.client.get('/app?days=7')
+        self.assertEqual(page.status_code,200)
+        self.assertIn('77 001',page.text)
+        self.assertNotIn('998 877',page.text)
+        with self.db:self.db.execute("UPDATE leads SET first_seen=(now()-interval '20 days')::text WHERE id=?",(self.ids[0],))
+        self.assertNotIn('77 001',self.client.get('/app?days=7').text)
+        self.assertIn('77 001',self.client.get('/app?days=30').text)
+        self.assertEqual(self.client.get('/app?days=1000').status_code,400)

@@ -111,22 +111,41 @@ def create_app(test_config=None):
 
     @app.get('/app')
     def dashboard():
-        stats=db().execute('''SELECT count(*) AS total,
+        try:days=int(request.args.get('days','30'))
+        except ValueError:abort(400)
+        if days not in (7,30,90):abort(400)
+        owner=(g.user['id'],days)
+        base="ul.user_id=? AND ul.delivery_status<>'filtered' AND ul.updated_at IS NOT NULL AND l.first_seen::timestamptz >= now()-(? * interval '1 day')"
+        stats=db().execute("""SELECT count(*) AS total,
             count(*) FILTER (WHERE ul.pipeline_status='won') AS won,
             count(*) FILTER (WHERE f.label='fit') AS fit,
             sum(ul.deal_amount) FILTER (WHERE ul.pipeline_status='won') AS revenue
-            FROM user_leads ul LEFT JOIN lead_feedback f ON f.user_id=ul.user_id AND f.lead_id=ul.lead_id
-            WHERE ul.user_id=? AND ul.delivery_status<>'filtered' ''',(g.user['id'],)).fetchone()
-        stages=db().execute('''SELECT pipeline_status,count(*) AS count FROM user_leads
-            WHERE user_id=? AND delivery_status<>'filtered' GROUP BY pipeline_status''',(g.user['id'],)).fetchall()
-        sources=db().execute('''SELECT l.payload::jsonb->>'source' AS name,count(*) AS count,
-            count(*) FILTER (WHERE f.label='fit') AS fit,
+            FROM user_leads ul JOIN leads l ON l.id=ul.lead_id
+            LEFT JOIN lead_feedback f ON f.user_id=ul.user_id AND f.lead_id=ul.lead_id
+            WHERE """+base,owner).fetchone()
+        stages=db().execute("SELECT ul.pipeline_status,count(*) AS count FROM user_leads ul JOIN leads l ON l.id=ul.lead_id WHERE "+base+" GROUP BY ul.pipeline_status",owner).fetchall()
+        sources=db().execute("""SELECT l.payload::jsonb->>'source' AS name,count(*) AS count,
+            count(f.label) AS reviewed,count(*) FILTER (WHERE f.label='fit') AS fit,
+            count(*) FILTER (WHERE f.label='ad') AS ads,
             count(*) FILTER (WHERE ul.pipeline_status='won') AS won
             FROM user_leads ul JOIN leads l ON l.id=ul.lead_id
             LEFT JOIN lead_feedback f ON f.user_id=ul.user_id AND f.lead_id=ul.lead_id
-            WHERE ul.user_id=? AND ul.delivery_status<>'filtered'
-            GROUP BY name ORDER BY count DESC LIMIT 20''',(g.user['id'],)).fetchall()
-        return render_template('dashboard.html',stats=stats,stages=stages,sources=sources)
+            WHERE """+base+" GROUP BY name ORDER BY won DESC,fit DESC,count DESC LIMIT 20",owner).fetchall()
+        daily=db().execute("SELECT (l.first_seen::timestamptz AT TIME ZONE 'UTC')::date AS day,count(*) AS count FROM user_leads ul JOIN leads l ON l.id=ul.lead_id WHERE "+base+" GROUP BY day ORDER BY day",owner).fetchall()
+        quality=db().execute("""SELECT f.label,count(*) AS count FROM user_leads ul JOIN leads l ON l.id=ul.lead_id
+            JOIN lead_feedback f ON f.user_id=ul.user_id AND f.lead_id=ul.lead_id
+            WHERE """+base+" GROUP BY f.label ORDER BY count DESC",owner).fetchall()
+        response=db().execute("""SELECT avg(extract(epoch FROM (a.first_response-ul.sent_at)))/60 AS minutes,count(a.first_response) AS samples
+            FROM user_leads ul JOIN leads l ON l.id=ul.lead_id
+            JOIN LATERAL (SELECT min(created_at) AS first_response FROM lead_activity
+                WHERE user_id=ul.user_id AND lead_id=ul.lead_id AND kind='status' AND detail='Написали') a ON true
+            WHERE """+base+" AND ul.sent_at IS NOT NULL AND a.first_response>=ul.sent_at",owner).fetchone()
+        projects=db().execute("""SELECT p.name,count(*) AS count,count(*) FILTER (WHERE ul.pipeline_status='won') AS won
+            FROM project_leads pl JOIN projects p ON p.id=pl.project_id AND p.user_id=pl.user_id
+            JOIN user_leads ul ON ul.user_id=pl.user_id AND ul.lead_id=pl.lead_id JOIN leads l ON l.id=ul.lead_id
+            WHERE """+base+" GROUP BY p.id ORDER BY count DESC",owner).fetchall()
+        return render_template('dashboard.html',stats=stats,stages=stages,sources=sources,days=days,daily=daily,
+            peak=max((r['count'] for r in daily),default=1),quality=quality,response=response,projects=projects)
 
     def filtered_leads(export=False):
         try:page=max(1,min(10000,int(request.args.get('page','1'))))
