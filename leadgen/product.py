@@ -4,7 +4,7 @@ import json
 import re
 
 from .app import classify_for_config
-from .core import TOPICS, Lead, message, topics
+from .core import TOPICS, Lead, message, topics, budget
 
 MENU={'keyboard':[
     [{'text':'▶️ Начать'},{'text':'⏸ Пауза'}],
@@ -51,6 +51,9 @@ def eligible_for_user(lead,config,prefs):
     if reason in ('бюджет не указан','указан только потолок бюджета') and prefs['show_without_budget']:
         return True,'запрос без подтверждённого бюджета'
     if reason.startswith('возможная потребность:') and prefs['show_possible_needs']:
+        amount,_=budget(lead.budget_text)
+        if amount is None and not prefs['show_without_budget']:
+            return False,'возможная потребность без бюджета: показ отключён'
         return True,reason
     return False,reason
 

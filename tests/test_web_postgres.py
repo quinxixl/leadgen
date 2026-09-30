@@ -116,3 +116,26 @@ class WebPostgres(unittest.TestCase):
         self.assertEqual(delivered,1);self.assertEqual(len(calls),1)
         count=self.db.execute('SELECT count(*) AS n FROM project_leads WHERE user_id=?',(self.u,)).fetchone()['n']
         self.assertEqual(count,2)
+
+    def test_export_excel_and_filters_are_owner_scoped(self):
+        import io
+        from openpyxl import load_workbook
+        lid=self.ids[0]
+        with self.db:
+            self.db.execute("INSERT INTO lead_feedback(user_id,lead_id,label) VALUES(?,?,'fit')",(self.u,lid))
+            payload=json.loads(self.db.execute('SELECT payload FROM leads WHERE id=?',(lid,)).fetchone()['payload'])
+            payload['title']='=HYPERLINK("https://example.com")'
+            self.db.execute('UPDATE leads SET payload=? WHERE id=?',(json.dumps(payload),lid))
+        r=self.client.get('/app/leads/export?format=xlsx&feedback=fit&source=Telegram:+test')
+        self.assertEqual(r.status_code,200)
+        sheet=load_workbook(io.BytesIO(r.data)).active
+        self.assertEqual(sheet.max_row,2)
+        self.assertNotEqual(sheet['A2'].data_type,'f')
+        self.assertTrue(sheet['A2'].value.startswith("'="))
+        self.assertEqual(sheet.freeze_panes,'A2')
+        r=self.client.get('/app/leads/export?format=xlsx&feedback=ad')
+        self.assertEqual(load_workbook(io.BytesIO(r.data)).active.max_row,1)
+        self.assertEqual(self.client.get('/app/leads?from=bad').status_code,400)
+        self.assertEqual(self.client.get('/app/leads?from=2026-09-30&to=2026-09-01').status_code,400)
+        self.assertEqual(self.client.get('/app/leads?source=missing').status_code,200)
+        self.assertEqual(self.client.get('/app/leads/export?from=2099-01-01').text.count('Нужен сайт'),0)

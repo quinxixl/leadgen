@@ -21,3 +21,8 @@ class Projects(unittest.TestCase):
     def test_implicit_topic_preferences(self):
         item=lead(title='Проблема',text='Вручную переносим заявки, теряем клиентов',budget_text='')
         self.assertTrue(project_eligibility(item,CONFIG,P)[0])
+
+    def test_possible_need_respects_unknown_budget_switch(self):
+        item=lead(title='Проблема',text='Вручную переносим заявки, теряем клиентов',budget_text='')
+        self.assertFalse(project_eligibility(item,CONFIG,P|{'show_without_budget':False})[0])
+        self.assertFalse(project_eligibility(item,CONFIG,P|{'show_possible_needs':False})[0])

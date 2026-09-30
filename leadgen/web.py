@@ -5,7 +5,7 @@ import json
 import os
 import secrets
 import hmac
-from datetime import timedelta
+from datetime import date, timedelta
 from urllib.parse import urlsplit
 
 from flask import Flask, abort, flash, g, redirect, render_template, request, session, url_for, Response
@@ -41,7 +41,7 @@ def create_app(test_config=None):
     @app.before_request
     def protect():
         session.setdefault('csrf',secrets.token_urlsafe(32))
-        if request.method=='POST' and not hmac.compare_digest(session['csrf'],request.form.get('csrf','')):
+        if request.method=='POST' and not hmac.compare_digest(session['csrf'].encode(),request.form.get('csrf','').encode()):
             abort(400,description='Сессия формы истекла. Обновите страницу.')
         g.user=None
         if session.get('user_id'):
@@ -138,6 +138,26 @@ def create_app(test_config=None):
             if not project.isdigit():abort(400)
             where+=' AND EXISTS (SELECT 1 FROM project_leads pl WHERE pl.user_id=ul.user_id AND pl.lead_id=l.id AND pl.project_id=?)'
             args.append(int(project))
+        source=request.args.get('source','')[:300]
+        label=request.args.get('feedback','')
+        if source:
+            where+=" AND l.payload::jsonb->>'source'=?";args.append(source)
+        if label:
+            if label not in FEEDBACK:abort(400)
+            where+=' AND EXISTS (SELECT 1 FROM lead_feedback f WHERE f.user_id=ul.user_id AND f.lead_id=l.id AND f.label=?)';args.append(label)
+        dates={}
+        for key,operator in [('from','>='),('to','<')]:
+            value=request.args.get(key,'')
+            if value:
+                try:day=date.fromisoformat(value)
+                except ValueError:abort(400)
+                dates[key]=day
+                if key=='to':
+                    if day==date.max:abort(400)
+                    day+=timedelta(days=1)
+                where+=' AND l.first_seen::timestamptz '+operator+' ?::timestamptz'
+                args.append(day.isoformat()+'T00:00:00+00:00')
+        if len(dates)==2 and dates['from']>dates['to']:abort(400)
         if search:where+=' AND l.payload ILIKE ?';args.append('%'+search+'%')
         if status:
             if status not in PIPELINE:abort(400)
@@ -152,18 +172,38 @@ def create_app(test_config=None):
     @app.get('/app/leads')
     def leads():
         rows,count,page=filtered_leads()
-        return render_template('leads.html',rows=rows,count=count,page=page)
+        projects=db().execute('SELECT id,name FROM projects WHERE user_id=? ORDER BY name',(g.user['id'],)).fetchall()
+        sources=db().execute("SELECT DISTINCT l.payload::jsonb->>'source' AS name FROM user_leads ul JOIN leads l ON l.id=ul.lead_id WHERE ul.user_id=? AND ul.delivery_status<>'filtered' ORDER BY name",(g.user['id'],)).fetchall()
+        filters={k:request.args.get(k,'') for k in ('q','status','project','source','feedback','from','to')}
+        return render_template('leads.html',rows=rows,count=count,page=page,projects=projects,sources=sources,filters=filters)
 
     @app.get('/app/leads/export')
     def export():
         rows,_,_=filtered_leads(True)
-        stream=io.StringIO();writer=csv.writer(stream,delimiter=';')
-        writer.writerow(['Название','Источник','Ссылка','Дата','Оценка','Статус','Сумма сделки'])
+        headings=['Название','Источник','Ссылка','Дата','Оценка','Статус','Сумма сделки']
+        values=[]
         def safe(v):
             v=str(v or '')
             return "'"+v if v.lstrip().startswith(('=','+','-','@')) else v
         for r in rows:
-            l=r['lead'];writer.writerow([safe(x) for x in [l.title,l.source,l.url,l.published,l.score,PIPELINE[r['pipeline_status']],r['deal_amount']]])
+            l=r['lead'];values.append([safe(x) for x in [l.title,l.source,l.url,l.published,l.score,PIPELINE[r['pipeline_status']],r['deal_amount']]])
+        if request.args.get('format')=='xlsx':
+            from openpyxl import Workbook
+            from openpyxl.styles import Font, PatternFill, Alignment
+            from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
+            from openpyxl.utils import get_column_letter
+            book=Workbook();sheet=book.active;sheet.title='Лиды';sheet.append(headings)
+            for values_row in values:
+                sheet.append([ILLEGAL_CHARACTERS_RE.sub('',v)[:32767] for v in values_row])
+            for cell in sheet[1]:
+                cell.font=Font(color='FFFFFF',bold=True);cell.fill=PatternFill('solid',fgColor='08182F')
+            sheet.freeze_panes='A2';sheet.auto_filter.ref=sheet.dimensions
+            for i,width in enumerate((55,32,45,28,12,24,20),1):sheet.column_dimensions[get_column_letter(i)].width=width
+            for cells in sheet.iter_rows(min_row=2):
+                for cell in cells:cell.alignment=Alignment(vertical='top',wrap_text=True)
+            buffer=io.BytesIO();book.save(buffer)
+            return Response(buffer.getvalue(),mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',headers={'Content-Disposition':'attachment; filename=leads.xlsx'})
+        stream=io.StringIO();writer=csv.writer(stream,delimiter=';');writer.writerow(headings);writer.writerows(values)
         return Response('\ufeff'+stream.getvalue(),mimetype='text/csv',headers={'Content-Disposition':'attachment; filename=leads.csv'})
 
     @app.route('/app/leads/<int:lid>',methods=['GET','POST'])
