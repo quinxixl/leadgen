@@ -191,10 +191,28 @@ class ProductController:
         chat_id=str(chat['id']);self.last_chat=chat_id
         user=self._user(actor['id'])
         text=(msg or {}).get('text','').strip()
+        if text.startswith('/start web_') or (callback and callback.get('data','').startswith('webok:')):
+            from .web_auth import login_record, approve_login
+            token=callback['data'][6:] if callback else text[len('/start web_'):]
+            try:
+                if user and user['status']=='blocked':
+                    self.say('Доступ заблокирован.');return
+                record=login_record(self.db,token)
+                if callback:
+                    self.sender('answerCallbackQuery',{'callback_query_id':callback['id']})
+                    if not user:user=self._register(actor,chat['id'])
+                    approve_login(self.db,token,user['id'])
+                    self.say('Вход подтверждён. Вернитесь на сайт и нажмите «Завершить вход».')
+                else:
+                    self.say('Вход в веб-кабинет. Код на сайте: '+record['code']+
+                        '\nПодтверждайте только собственный запрос с таким же кодом. Доступ к чтению вашего Telegram не предоставляется.',
+                        {'inline_keyboard':[[{'text':'Подтвердить мой вход','callback_data':'webok:'+token}]]})
+            except ValueError as exc:self.say(str(exc))
+            return
         if not user:
             if callback and callback.get('data')=='register:confirm':
                 self.sender('answerCallbackQuery',{'callback_query_id':callback['id']});user=self._register(actor,chat['id'])
-                self.say('Регистрация завершена. Тестовый доступ активирован; оплата пока работает как заглушка.',chat_id=chat_id)
+                self.say('Регистрация завершена. Бесплатный доступ активирован. Списаний нет.',chat_id=chat_id)
             else:self.say('IT Lead Finder находит прямые заказы и возможные потребности. Для начала зарегистрируйтесь.',REGISTER,chat_id)
             return
         with self.db:self.db.execute('UPDATE app_users SET last_seen_at=now() WHERE id=?',(user['id'],))
@@ -255,7 +273,6 @@ class ProductController:
         elif text=='➕ Добавить чат':self._update_pref(user['id'],'state',json.dumps({'await':'chat'}));self.say('Отправьте публичную ссылку на группу или её @username.')
         elif text=='🔌 Аккаунт':self.say('Аккаунт приложения подключён через Telegram. Realtime-монитор пока использует общий серверный аккаунт. Не отправляйте боту пароль, код входа или облачный пароль Telegram. Свои публичные группы добавляйте через «Добавить чат».')
         elif text=='🧰 Портфолио':self._update_pref(user['id'],'state',json.dumps({'await':'portfolio'}));self.say('Отправьте краткое описание услуг и 1–3 примера работ. Они будут использованы в черновике отклика.')
-        elif text=='💳 Подписка':self.say('Тариф: тестовый. Статус: активен. Платёжный провайдер пока не подключён.',
-            {'inline_keyboard':[[{'text':'Купить подписку (заглушка)','callback_data':'subscribe:stub'}]]})
+        elif text=='💳 Подписка':self.say('Бесплатный доступ. Приём платежей отключён, списаний нет.')
         elif text=='📥 Лиды':self.say('Новые подходящие лиды приходят автоматически. Используйте кнопки под карточками для оценки и изменения статуса.')
         else:self.say('Выберите действие в меню.')
