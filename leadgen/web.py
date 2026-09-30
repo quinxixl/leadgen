@@ -1,0 +1,223 @@
+"""Server-rendered customer portal. All customer queries are owner scoped."""
+import csv
+import io
+import json
+import os
+import secrets
+import hmac
+from datetime import timedelta
+from urllib.parse import urlsplit
+
+from flask import Flask, abort, flash, g, redirect, render_template, request, session, url_for, Response
+from .app import env_load
+from .database import db_open
+from .core import TOPICS, Lead, enrich
+from .product import PIPELINE, FEEDBACK, ProductController
+from .web_auth import begin_login, consume_login
+
+
+def create_app(test_config=None):
+    env_load()
+    app = Flask(__name__, template_folder='web_templates', static_folder='web_static')
+    app.config.update(SECRET_KEY=os.environ.get('WEB_SECRET_KEY'),
+        SESSION_COOKIE_NAME='leadfinder_web', SESSION_COOKIE_HTTPONLY=True,
+        SESSION_COOKIE_SECURE=True, SESSION_COOKIE_SAMESITE='Lax',
+        PERMANENT_SESSION_LIFETIME=timedelta(hours=12), MAX_CONTENT_LENGTH=65536,
+        BOT_USERNAME=os.environ.get('TELEGRAM_BOT_USERNAME',''),
+        DB_FACTORY=db_open, TRUSTED_HOSTS=os.environ.get('WEB_ALLOWED_HOSTS','localhost,127.0.0.1').split(','))
+    if test_config:app.config.update(test_config)
+    if not app.config['SECRET_KEY'] or len(app.config['SECRET_KEY']) < 32:
+        raise ValueError('WEB_SECRET_KEY должен содержать минимум 32 символа')
+
+    def db():
+        if 'db' not in g:g.db=app.config['DB_FACTORY']()
+        return g.db
+
+    @app.teardown_appcontext
+    def close(error=None):
+        connection=g.pop('db',None)
+        if connection:connection.close()
+
+    @app.before_request
+    def protect():
+        session.setdefault('csrf',secrets.token_urlsafe(32))
+        if request.method=='POST' and not hmac.compare_digest(session['csrf'],request.form.get('csrf','')):
+            abort(400,description='Сессия формы истекла. Обновите страницу.')
+        g.user=None
+        if session.get('user_id'):
+            g.user=db().execute('SELECT * FROM app_users WHERE id=? AND status=\'active\'',(session['user_id'],)).fetchone()
+            if not g.user:session.clear()
+        if request.path.startswith(('/app','/admin')) and not g.user:
+            return redirect(url_for('login'))
+
+    @app.after_request
+    def headers(response):
+        response.headers['X-Content-Type-Options']='nosniff'
+        response.headers['X-Frame-Options']='DENY'
+        response.headers['Referrer-Policy']='same-origin'
+        response.headers['Content-Security-Policy']="default-src 'self'; style-src 'self'; img-src 'self' data:; script-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+        if not request.path.startswith('/web_static/'):
+            response.headers['Cache-Control']='no-store'
+        return response
+
+    @app.context_processor
+    def context():
+        return dict(csrf=session.get('csrf',''),user=g.get('user'),pipeline=PIPELINE,feedback=FEEDBACK)
+
+    @app.template_filter('original_url')
+    def original_url(value):
+        parts=urlsplit(value or '')
+        return value if parts.scheme=='https' and parts.hostname else '#'
+
+    @app.template_filter('money')
+    def money(value):return f'{value:,}'.replace(',',' ') if value is not None else 'Не указана'
+
+    @app.get('/')
+    def landing():return render_template('landing.html')
+
+    @app.get('/healthz')
+    def health():return {'status':'ok'}
+
+    @app.route('/login',methods=['GET','POST'])
+    def login():
+        if g.user:return redirect(url_for('dashboard'))
+        if not app.config['BOT_USERNAME']:
+            return render_template('error.html',message='Вход ещё не настроен администратором.'),503
+        if request.method=='POST':
+            if request.form.get('action')=='finish':
+                try:
+                    uid=consume_login(db(),session.get('login_token',''),session.get('login_browser',''))
+                    if uid:
+                        session.clear();session['user_id']=uid;session.permanent=True
+                        return redirect(url_for('dashboard'))
+                    flash('Сначала подтвердите вход в Telegram.')
+                except ValueError as exc:
+                    flash(str(exc));session.pop('login_token',None)
+            else:
+                token,browser,code=begin_login(db())
+                session.update(login_token=token,login_browser=browser,login_code=code)
+        return render_template('login.html',bot=app.config['BOT_USERNAME'])
+
+    @app.post('/logout')
+    def logout():session.clear();return redirect(url_for('landing'))
+
+    def user_lead(lid):
+        row=db().execute('''SELECT l.*,ul.pipeline_status,ul.deal_amount,ul.filter_reason,
+            f.label AS feedback FROM user_leads ul JOIN leads l ON l.id=ul.lead_id
+            LEFT JOIN lead_feedback f ON f.user_id=ul.user_id AND f.lead_id=ul.lead_id
+            WHERE ul.user_id=? AND l.id=? AND ul.delivery_status<>'filtered' ''',(g.user['id'],lid)).fetchone()
+        if not row:abort(404)
+        return row
+
+    @app.get('/app')
+    def dashboard():
+        stats=db().execute('''SELECT count(*) AS total,
+            count(*) FILTER (WHERE ul.pipeline_status='won') AS won,
+            count(*) FILTER (WHERE f.label='fit') AS fit,
+            sum(ul.deal_amount) FILTER (WHERE ul.pipeline_status='won') AS revenue
+            FROM user_leads ul LEFT JOIN lead_feedback f ON f.user_id=ul.user_id AND f.lead_id=ul.lead_id
+            WHERE ul.user_id=? AND ul.delivery_status<>'filtered' ''',(g.user['id'],)).fetchone()
+        stages=db().execute('''SELECT pipeline_status,count(*) AS count FROM user_leads
+            WHERE user_id=? AND delivery_status<>'filtered' GROUP BY pipeline_status''',(g.user['id'],)).fetchall()
+        sources=db().execute('''SELECT l.payload::jsonb->>'source' AS name,count(*) AS count,
+            count(*) FILTER (WHERE f.label='fit') AS fit,
+            count(*) FILTER (WHERE ul.pipeline_status='won') AS won
+            FROM user_leads ul JOIN leads l ON l.id=ul.lead_id
+            LEFT JOIN lead_feedback f ON f.user_id=ul.user_id AND f.lead_id=ul.lead_id
+            WHERE ul.user_id=? AND ul.delivery_status<>'filtered'
+            GROUP BY name ORDER BY count DESC LIMIT 20''',(g.user['id'],)).fetchall()
+        return render_template('dashboard.html',stats=stats,stages=stages,sources=sources)
+
+    def filtered_leads(export=False):
+        try:page=max(1,min(10000,int(request.args.get('page','1'))))
+        except ValueError:abort(400)
+        search=request.args.get('q','')[:200];status=request.args.get('status','')
+        args=[g.user['id']];where="ul.user_id=? AND ul.delivery_status<>'filtered'"
+        if search:where+=' AND l.payload ILIKE ?';args.append('%'+search+'%')
+        if status:
+            if status not in PIPELINE:abort(400)
+            where+=' AND ul.pipeline_status=?';args.append(status)
+        count=db().execute('SELECT count(*) AS n FROM user_leads ul JOIN leads l ON l.id=ul.lead_id WHERE '+where,args).fetchone()['n']
+        if export and count>10000:abort(400,description='Сузьте выборку до 10 000 лидов для экспорта.')
+        rows=db().execute('''SELECT l.id,l.payload,ul.pipeline_status,ul.deal_amount
+            FROM user_leads ul JOIN leads l ON l.id=ul.lead_id WHERE '''+where+
+            ' ORDER BY l.id DESC LIMIT ? OFFSET ?',args+([10000,0] if export else [30,(page-1)*30])).fetchall()
+        return [dict(row)|{'lead':enrich(Lead(**json.loads(row['payload'])))} for row in rows],count,page
+
+    @app.get('/app/leads')
+    def leads():
+        rows,count,page=filtered_leads()
+        return render_template('leads.html',rows=rows,count=count,page=page)
+
+    @app.get('/app/leads/export')
+    def export():
+        rows,_,_=filtered_leads(True)
+        stream=io.StringIO();writer=csv.writer(stream,delimiter=';')
+        writer.writerow(['Название','Источник','Ссылка','Дата','Оценка','Статус','Сумма сделки'])
+        def safe(v):
+            v=str(v or '')
+            return "'"+v if v.lstrip().startswith(('=','+','-','@')) else v
+        for r in rows:
+            l=r['lead'];writer.writerow([safe(x) for x in [l.title,l.source,l.url,l.published,l.score,PIPELINE[r['pipeline_status']],r['deal_amount']]])
+        return Response('\ufeff'+stream.getvalue(),mimetype='text/csv',headers={'Content-Disposition':'attachment; filename=leads.csv'})
+
+    @app.route('/app/leads/<int:lid>',methods=['GET','POST'])
+    def detail(lid):
+        row=user_lead(lid)
+        if request.method=='POST':
+            status=request.form.get('status');label=request.form.get('feedback','')
+            if status not in PIPELINE or label and label not in FEEDBACK:abort(400)
+            amount=request.form.get('amount','').strip()
+            if amount and (not amount.isdigit() or int(amount)>1000000000):
+                abort(400,description='Укажите целую сумму от 0 до 1 000 000 000 ₽.')
+            with db():
+                db().execute('UPDATE user_leads SET pipeline_status=?,deal_amount=?,updated_at=now() WHERE user_id=? AND lead_id=?',
+                    (status,int(amount) if amount else None,g.user['id'],lid))
+                if label:db().execute('''INSERT INTO lead_feedback(user_id,lead_id,label) VALUES(?,?,?)
+                    ON CONFLICT(user_id,lead_id) DO UPDATE SET label=excluded.label,updated_at=now()''',(g.user['id'],lid,label))
+            flash('Изменения сохранены. Статус доступен и в Telegram.');return redirect(url_for('detail',lid=lid))
+        return render_template('detail.html',row=row,lead=enrich(Lead(**json.loads(row['payload']))))
+
+    @app.route('/app/settings',methods=['GET','POST'])
+    def settings():
+        if request.method=='POST':
+            budget=request.form.get('min_budget','');selected=request.form.getlist('topics')
+            if not budget.isdigit() or int(budget)>100000000 or not set(selected)<=set(TOPICS):abort(400)
+            with db():
+                db().execute('''UPDATE user_preferences SET min_budget=?,topics=?::jsonb,
+                    show_without_budget=?,show_possible_needs=?,monitoring_active=?,portfolio=?,updated_at=now()
+                    WHERE user_id=?''',(int(budget),json.dumps(selected),bool(request.form.get('no_budget')),
+                    bool(request.form.get('possible')),bool(request.form.get('active')),request.form.get('portfolio','')[:3000],g.user['id']))
+                db().execute("DELETE FROM user_leads WHERE user_id=? AND delivery_status='filtered'",(g.user['id'],))
+            flash('Настройки применены к уведомлениям.');return redirect(url_for('settings'))
+        prefs=db().execute('SELECT * FROM user_preferences WHERE user_id=?',(g.user['id'],)).fetchone()
+        return render_template('settings.html',prefs=prefs,topics=TOPICS)
+
+    @app.get('/app/sources')
+    def sources():
+        q=request.args.get('q','')[:100]
+        rows=db().execute('''SELECT username,title,members,online,checked_at,last_message_at,check_reason
+            FROM telegram_sources WHERE enabled=1 AND status='active' AND title ILIKE ?
+            ORDER BY priority,online DESC LIMIT 100''',('%'+q+'%',)).fetchall()
+        return render_template('sources.html',rows=rows)
+
+    @app.get('/admin')
+    def admin():
+        if str(g.user['telegram_user_id']) not in os.environ.get('WEB_ADMIN_TELEGRAM_IDS','').split(','):abort(403)
+        health=db().execute('SELECT * FROM health ORDER BY source').fetchall()
+        users=db().execute('SELECT display_name,status,registered_at,last_seen_at FROM app_users ORDER BY id DESC LIMIT 100').fetchall()
+        return render_template('admin.html',health=health,users=users)
+
+    @app.errorhandler(400)
+    @app.errorhandler(403)
+    @app.errorhandler(404)
+    @app.errorhandler(413)
+    @app.errorhandler(500)
+    def error(exc):
+        from werkzeug.exceptions import SecurityError
+        if isinstance(exc,SecurityError):return 'Недопустимый адрес сайта.',400
+        messages={400:'Проверьте введённые данные.',403:'У вас нет доступа к этой странице.',
+            404:'Страница или лид не найдены.',413:'Слишком большой запрос.',500:'Не удалось обработать запрос. Попробуйте позже.'}
+        return render_template('error.html',message=messages.get(exc.code,'Ошибка запроса.')),exc.code
+
+    return app

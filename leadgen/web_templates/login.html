@@ -1,0 +1,6 @@
+{% extends 'base.html' %}{% block content %}<section class="narrow panel"><p class="eyebrow">Единый аккаунт с ботом</p><h1>Вход в кабинет</h1>
+{% if session.get('login_token') %}<p>Откройте бота и сравните код. Подтвердите вход, только если код совпадает.</p><p class="code">{{ session.login_code }}</p>
+<a class="button" href="https://t.me/{{ bot }}?start=web_{{ session.login_token }}" target="_blank" rel="noopener noreferrer">Подтвердить в Telegram</a>
+<form method="post"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="action" value="finish"><button>Завершить вход</button></form>
+{% else %}<p>Подтвердите вход в Telegram. Пароль и доступ к переписке не нужны.</p>{% endif %}
+<form method="post"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="action" value="begin"><button class="{{ 'quiet' if session.get('login_token') else '' }}">{{ 'Получить новый код' if session.get('login_token') else 'Получить код входа' }}</button></form></section>{% endblock %}

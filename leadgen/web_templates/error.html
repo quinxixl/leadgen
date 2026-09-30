@@ -1,0 +1,1 @@
+{% extends 'base.html' %}{% block content %}<section class="panel narrow"><h1>{{ message }}</h1><a class="button" href="{{ '/app' if user else '/' }}">{{ 'Вернуться в кабинет' if user else 'На главную' }}</a></section>{% endblock %}
