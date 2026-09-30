@@ -111,8 +111,9 @@ def apply_preferences(lead, config, status, reason):
     from .core import topics
     if 'topics' in config and not set(topics(lead.title+' '+lead.text)).intersection(config['topics']):
         return 'rejected', 'направление выключено'
+    known = {s['name'] for s in config.get('sources',[])}
     enabled = {s['name'] for s in config.get('sources',[]) if s['enabled']}
-    if 'sources' in config and lead.source not in enabled:
+    if lead.source in known and lead.source not in enabled:
         return 'rejected', 'источник выключен'
     return status, reason
 

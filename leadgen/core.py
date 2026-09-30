@@ -20,6 +20,7 @@ class Lead:
     score: int = 0
     summary: str = ''
     score_reason: str = ''
+    intent: str = 'direct'
 
     def data(self):
         return asdict(self)
@@ -41,10 +42,21 @@ ADS = r'заработал|заработай|пошагов.{0,15}инстру�
 URGENCY = r'срочн|как можно скорее|в ближайш|до (?:завтра|конца недели)|горит|asap'
 DEADLINE = r'(?:срок|дедлайн|готово|запуск).{0,35}(?:\d{1,2}[./]\d{1,2}|дн|недел|месяц|завтра)'
 CONTACT = r'@[a-zA-Z][\w]{3,}|https?://t\.me/[\w+/-]+|(?:телефон|whatsapp|ватсап|связь|лс|личк)'
+POSSIBLE_NEEDS = {
+    'Сайты': r'нет сайта|сайт.{0,25}(?:устарел|не принос|не работает|медлен)|низк.{0,15}конверси.{0,20}сайт',
+    'Боты': r'однотипн.{0,20}вопрос|клиент.{0,25}(?:долго жд|не получают ответ)|поддержк.{0,25}не успева',
+    'Мобильные приложения': r'клиент.{0,25}(?:личн.{0,10}кабинет|с телефона)|мобильн.{0,15}верси.{0,20}не хватает',
+    'Автоматизации': r'вручн.{0,35}(?:перенос|копир|обрабаты|свод|заполня)|рутин.{0,25}(?:занима|отнима)|дублиру.{0,20}данн|постоянн.{0,20}ошиб',
+    'CRM': r'(?:теря|пропада).{0,25}(?:заявк|лид|клиент)|(?:заявк|лид).{0,25}(?:теря|пропада)|нет единой базы|менеджер.{0,35}(?:таблиц|excel|эксел)',
+}
 
 def topics(text):
     t = normalize(text)
     return [name for name, regex in TOPICS.items() if re.search(regex, t)]
+
+def possible_need_topics(text):
+    t = normalize(text)
+    return [name for name,regex in POSSIBLE_NEEDS.items() if re.search(regex,t)]
 
 def budget(text):
     """Return conservative lower bound, status. Never treat hourly/monthly as a project."""
@@ -80,7 +92,9 @@ def budget(text):
 def classify(lead, minimum=5000, max_age_hours=72, now=None):
     now = now or datetime.now(UTC)
     text = normalize(lead.title + '\n' + lead.text)
-    tags = topics(lead.title if lead.trusted_order else text)
+    direct_tags = topics(lead.title if lead.trusted_order else text)
+    need_tags = possible_need_topics(text)
+    tags = list(dict.fromkeys(direct_tags+need_tags))
     if not tags:
         return 'rejected', 'другая услуга', tags
     if lead.kind != 'order':
@@ -89,6 +103,8 @@ def classify(lead, minimum=5000, max_age_hours=72, now=None):
         return 'rejected', 'самореклама или обучение', tags
     if re.search(JOBS, text):
         return 'rejected', 'вакансия', tags
+    if not lead.trusted_order and not re.search(DEMAND, text) and need_tags:
+        return 'review', 'возможная потребность: '+', '.join(need_tags), tags
     if not lead.trusted_order and not re.search(DEMAND, text):
         return 'review', 'неясно, ищут ли исполнителя', tags
     try:
@@ -111,12 +127,16 @@ def lead_profile(lead, minimum=5000):
     """Create a compact, deterministic brief and a transparent intent score."""
     raw = re.sub(r'\s+', ' ', (lead.title + ' ' + lead.text)).strip()
     text = normalize(raw)
-    tags = topics(text)
+    direct_tags = topics(text)
+    need_tags = possible_need_topics(text)
+    tags = list(dict.fromkeys(direct_tags+need_tags))
     points, reasons = 0, []
     if tags:
         points += 20; reasons.append('подходящая услуга')
     if re.search(DEMAND, text):
         points += 25; reasons.append('явный запрос исполнителя')
+    elif need_tags:
+        points += 18; reasons.append('описана проблема, которую можно решить услугой')
     if re.search(SELLER, text) or re.search(ADS, text):
         points -= 45; reasons.append('похоже на рекламу исполнителя')
     if re.search(JOBS, text):
@@ -162,6 +182,7 @@ def enrich(lead, minimum=5000):
     lead.score = profile['score']
     lead.summary = profile['summary']
     lead.score_reason = profile['reason']
+    lead.intent = 'direct' if re.search(DEMAND,normalize(lead.title+' '+lead.text)) else ('possible' if possible_need_topics(lead.title+' '+lead.text) else 'unclear')
     return lead
 
 def fingerprint(lead):
@@ -172,9 +193,10 @@ def fingerprint(lead):
 def message(lead, reason):
     lead = enrich(lead)
     label = {'горячий':'🔥','тёплый':'🌤','холодный':'❄️'}.get(lead.temperature,'')
+    intent = '\nСигнал: возможная потребность, готовый заказ не подтверждён.' if lead.intent=='possible' else ''
     # Plain text avoids HTML injection from untrusted listings.
     return (f'{label} {lead.temperature.capitalize()} лид · {lead.score}/100\n'
-            f'{lead.source}\n\n{lead.summary}\n\n'
+            f'{lead.source}{intent}\n\n{lead.summary}\n\n'
             f'Почему такая оценка: {lead.score_reason}\n'
             f'Фильтр: {reason}\nОпубликован: {lead.published or "не указано"}\n\n'
             f'Открыть заявку: {lead.url}')[:3900]

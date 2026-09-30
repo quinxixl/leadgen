@@ -1,4 +1,4 @@
-"""Owner-only local Telegram UI. Network collection runs outside the UI thread."""
+"""Telegram UI. PostgreSQL uses the multi-user product controller; SQLite keeps legacy tests."""
 import copy
 import json
 import os
@@ -185,7 +185,12 @@ def re_amount(text):
     return int(value) if value.isascii() and value.isdigit() and len(value)<=9 and int(value)<=100000000 else None
 
 def run_bot(db,config):
-    ui=Controller(db,config)
+    product_mode=db.backend=='postgres'
+    if product_mode:
+        from .product import ProductController
+        ui=ProductController(db,config,telegram)
+    else:
+        ui=Controller(db,config)
     webhook=telegram('getWebhookInfo',{})
     if webhook.get('url'):
         raise ValueError('У бота настроен webhook. Используйте отдельного бота без webhook для локального запуска.')
@@ -248,8 +253,13 @@ def run_bot(db,config):
                 if (ui.manual or (ui.get('active',False) and time.monotonic()>=next_scan)) and future is None:
                     future=pool.submit(collect_batch,ui.config())
                 if ui.get('active',False) or ui.drain:
-                    deliver(db,ui.config(),limit=1)
-                    ui.drain=bool(db.execute("SELECT 1 FROM leads WHERE status='ready' AND next_attempt<=? LIMIT 1",(time.time(),)).fetchone())
+                    if product_mode:
+                        from .product import deliver_registered
+                        deliver_registered(db,config,telegram,limit_per_user=1)
+                        ui.drain=False
+                    else:
+                        deliver(db,ui.config(),limit=1)
+                        ui.drain=bool(db.execute("SELECT 1 FROM leads WHERE status='ready' AND next_attempt<=? LIMIT 1",(time.time(),)).fetchone())
             except RuntimeError as exc:
                 print(str(exc),flush=True)
                 time.sleep(3)

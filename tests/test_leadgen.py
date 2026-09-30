@@ -8,6 +8,7 @@ from unittest.mock import patch
 from leadgen.core import Lead, UTC, budget, classify, message, lead_profile
 from leadgen.adapters import parse
 from leadgen.app import db_open, ingest, deliver, telegram, notification_chat_ids
+from leadgen.product import eligible_for_user, lead_buttons
 import socket
 import ssl
 from urllib.error import URLError
@@ -66,6 +67,26 @@ class Filters(unittest.TestCase):
     def test_seller_is_cold(self):
         profile=lead_profile(lead(text='Предлагаю услуги разработки сайтов, ищу клиентов',budget_text=''))
         self.assertEqual(profile['temperature'],'холодный')
+
+    def test_implicit_business_problem_is_possible_need(self):
+        item=lead(title='Теряем заявки',text='Менеджеры вручную переносят заявки с сайта в таблицу, постоянно теряем клиентов',budget_text='')
+        state,reason,tags=classify(item)
+        self.assertEqual(state,'review')
+        self.assertTrue(reason.startswith('возможная потребность:'))
+        self.assertIn('Автоматизации',tags)
+        self.assertIn('CRM',tags)
+
+    def test_user_can_toggle_unknown_budget_separately(self):
+        item=lead(budget_text='')
+        prefs={'show_without_budget':False,'show_possible_needs':True}
+        self.assertFalse(eligible_for_user(item,CONFIG,prefs)[0])
+        prefs['show_without_budget']=True
+        self.assertTrue(eligible_for_user(item,CONFIG,prefs)[0])
+
+    def test_product_card_has_feedback_pipeline_and_reply_actions(self):
+        markup=json.dumps(lead_buttons(42,'https://example.org/lead'),ensure_ascii=False)
+        for value in ('feedback:fit:42','feedback:ad:42','pipeline:menu:42','reply:42'):
+            self.assertIn(value,markup)
 
 class TelegramDiagnostics(unittest.TestCase):
     def test_errors_hide_token_and_distinguish_setup(self):
