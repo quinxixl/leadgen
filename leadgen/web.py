@@ -201,8 +201,11 @@ def create_app(test_config=None):
         rows,count,page=filtered_leads()
         projects=db().execute('SELECT id,name FROM projects WHERE workspace_id=? ORDER BY name',(g.workspace['id'],)).fetchall()
         sources=db().execute("SELECT DISTINCT l.payload::jsonb->>'source' AS name FROM user_leads ul JOIN leads l ON l.id=ul.lead_id WHERE ul.user_id=? AND ul.delivery_status<>'filtered' ORDER BY name",(g.owner_id,)).fetchall()
+        members=db().execute('''SELECT m.user_id,u.display_name FROM workspace_members m JOIN app_users u ON u.id=m.user_id
+            WHERE m.workspace_id=? ORDER BY u.display_name''',(g.workspace['id'],)).fetchall()
         filters={k:request.args.get(k,'') for k in ('q','status','project','source','feedback','from','to')}
-        return render_template('leads.html',rows=rows,count=count,page=page,projects=projects,sources=sources,filters=filters)
+        return render_template('leads.html',rows=rows,count=count,page=page,projects=projects,sources=sources,
+                               members=members,filters=filters)
 
     @app.get('/app/leads/export')
     def export():
@@ -262,8 +265,13 @@ def create_app(test_config=None):
         assignment=db().execute('''SELECT a.assignee_user_id,u.display_name FROM lead_assignments a
             JOIN app_users u ON u.id=a.assignee_user_id WHERE a.workspace_id=? AND a.lead_id=?''',
             (g.workspace['id'],lid)).fetchone()
-        return render_template('detail.html',row=row,lead=enrich(Lead(**json.loads(row['payload']))),activity=activity,
-                               reminder=reminder,members=members,assignment=assignment)
+        profile=db().execute('SELECT profile_services,portfolio FROM user_preferences WHERE user_id=?',(g.owner_id,)).fetchone()
+        from .drafts import reply_drafts
+        lead=enrich(Lead(**json.loads(row['payload'])))
+        drafts=reply_drafts(lead,profile['profile_services'],profile['portfolio'])
+        tags=db().execute('SELECT tag FROM lead_tags WHERE user_id=? AND lead_id=? ORDER BY tag',(g.owner_id,lid)).fetchall()
+        return render_template('detail.html',row=row,lead=lead,activity=activity,reminder=reminder,
+                               members=members,assignment=assignment,drafts=drafts,tags=tags)
 
     @app.route('/app/settings',methods=['GET','POST'])
     def settings():
@@ -317,4 +325,6 @@ def create_app(test_config=None):
     register_telegram_routes(app,db)
     from .teams import register_team_routes
     register_team_routes(app,db)
+    from .lead_actions import register_lead_actions
+    register_lead_actions(app,db)
     return app

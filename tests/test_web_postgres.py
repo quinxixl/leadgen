@@ -51,6 +51,8 @@ class WebPostgres(unittest.TestCase):
             cls.db.connection.execute(Path('supabase/migrations/20261001041250_personal_telegram_connections.sql').read_text(),prepare=False)
         if not cls.db.execute("SELECT to_regclass('leadgen.workspaces') AS name").fetchone()['name']:
             cls.db.connection.execute(Path('supabase/migrations/20261001061514_team_workspaces_and_assignments.sql').read_text(),prepare=False)
+        if not cls.db.execute("SELECT to_regclass('leadgen.lead_tags') AS name").fetchone()['name']:
+            cls.db.connection.execute(Path('supabase/migrations/20261001062736_lead_feedback_and_tags.sql').read_text(),prepare=False)
         cls.db.commit()
         cls.app=create_app({'TESTING':True,'SECRET_KEY':'test-'*10,'BOT_USERNAME':'test_bot',
             'SESSION_COOKIE_SECURE':False,'DB_FACTORY':lambda:db_open(DSN),
@@ -310,3 +312,23 @@ class WebPostgres(unittest.TestCase):
             'csrf':'test-csrf','role':'viewer'}).status_code,403)
         self.assertEqual(self.client.post('/app/team/invite',data={
             'csrf':'test-csrf','role':'admin'}).status_code,403)
+
+    def test_drafts_feedback_tags_and_bulk_actions(self):
+        detail=self.client.get(f'/app/leads/{self.ids[0]}')
+        for name in ('Короткий','Экспертный','Дружелюбный'):
+            self.assertIn(name,detail.text)
+        response=self.client.post('/app/leads/bulk',data={
+            'csrf':'test-csrf','leads':str(self.ids[0]),'action':'feedback:competitor'})
+        self.assertEqual(response.status_code,302)
+        self.assertEqual(self.db.execute('SELECT label FROM lead_feedback WHERE user_id=? AND lead_id=?',
+                                        (self.u,self.ids[0])).fetchone()['label'],'competitor')
+        response=self.client.post('/app/leads/bulk',data={
+            'csrf':'test-csrf','leads':str(self.ids[0]),'action':'tag','tag':'важный'})
+        self.assertEqual(response.status_code,302)
+        self.assertIn('важный',self.client.get(f'/app/leads/{self.ids[0]}').text)
+        self.assertEqual(self.client.post('/app/leads/bulk',data={
+            'csrf':'test-csrf','leads':str(self.ids[1]),'action':'status:won'}).status_code,404)
+        self.assertEqual(self.client.post(f'/app/leads/{self.ids[0]}/tags',data={
+            'csrf':'test-csrf','tag':'важный','action':'remove'}).status_code,302)
+        self.assertFalse(self.db.execute('SELECT 1 FROM lead_tags WHERE user_id=? AND lead_id=?',
+                                         (self.u,self.ids[0])).fetchone())

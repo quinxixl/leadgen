@@ -5,6 +5,7 @@ import re
 
 from .app import classify_for_config
 from .core import TOPICS, Lead, message, topics, budget
+from .drafts import reply_drafts
 
 MENU={'keyboard':[
     [{'text':'▶️ Начать'},{'text':'⏸ Пауза'}],
@@ -20,7 +21,9 @@ PUBLIC_CHAT=re.compile(r'^(?:https?://t\.me/|@)?([A-Za-z][A-Za-z0-9_]{3,})/?$')
 PIPELINE={'saved':'Новый / сохранён','viewed':'Просмотрен','working':'В работе','contacted':'Написали',
           'discussing':'Получен ответ','meeting':'Назначена встреча','proposal':'Отправлено предложение','won':'Получил заказ',
           'lost':'Не подошёл','not_fit':'Не подходит'}
-FEEDBACK={'fit':'Подходит','ad':'Реклама','job':'Ищет работу','not_service':'Не моя услуга'}
+FEEDBACK={'fit':'Подходит','ad':'Реклама','job':'Ищет работу','not_service':'Не моя услуга',
+          'too_cold':'Слишком холодный','wrong_geo':'Неверная география','competitor':'Конкурент',
+          'vacancy':'Вакансия','duplicate':'Дубль'}
 
 
 def lead_buttons(lead_id,url):
@@ -183,11 +186,8 @@ class ProductController:
         return (row,Lead(**json.loads(row['payload']))) if row else (None,None)
 
     def _draft(self,user,lead):
-        service=', '.join(topics(lead.title+' '+lead.text)) or user['profile_services'] or 'разработке и автоматизации'
-        proof=(' Из релевантного опыта: '+user['portfolio'].strip()+'.') if user['portfolio'].strip() else ''
-        return (f'Здравствуйте! Увидел ваш запрос по направлению: {service}. '
-                f'Могу уточнить текущий процесс и предложить решение с этапами, сроками и оценкой стоимости.{proof} '
-                'Подскажите, какой результат для вас приоритетен и есть ли желаемый срок запуска?')[:3500]
+        drafts=reply_drafts(lead,user['profile_services'],user['portfolio'])
+        return '\n\n'.join(name+':\n'+text for name,text in drafts.items())[:3500]
 
     def _stats(self,user_id):
         feedback={r['label']:r['total'] for r in self.db.execute(

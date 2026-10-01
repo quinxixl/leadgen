@@ -18,7 +18,8 @@ def migrate():
             root=Path(__file__).resolve().parent.parent/'supabase'/'migrations'
             for name in ('20260930143416_web_projects_crm.sql','20260930193638_lead_reminders.sql',
                          '20261001041250_personal_telegram_connections.sql',
-                         '20261001061514_team_workspaces_and_assignments.sql'):
+                         '20261001061514_team_workspaces_and_assignments.sql',
+                         '20261001062736_lead_feedback_and_tags.sql'):
                 sql=(root/name).read_text();checksum=hashlib.sha256(sql.encode()).hexdigest()
                 old=db.execute('SELECT checksum FROM leadgen.web_schema_versions WHERE name=?',(name,)).fetchone()
                 if old:
