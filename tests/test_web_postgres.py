@@ -53,11 +53,14 @@ class WebPostgres(unittest.TestCase):
             cls.db.connection.execute(Path('supabase/migrations/20261001061514_team_workspaces_and_assignments.sql').read_text(),prepare=False)
         if not cls.db.execute("SELECT to_regclass('leadgen.lead_tags') AS name").fetchone()['name']:
             cls.db.connection.execute(Path('supabase/migrations/20261001062736_lead_feedback_and_tags.sql').read_text(),prepare=False)
+        if not cls.db.execute("SELECT to_regclass('leadgen.api_tokens') AS name").fetchone()['name']:
+            cls.db.connection.execute(Path('supabase/migrations/20261001063156_api_and_webhook_integrations.sql').read_text(),prepare=False)
         cls.db.commit()
         cls.app=create_app({'TESTING':True,'SECRET_KEY':'test-'*10,'BOT_USERNAME':'test_bot',
             'SESSION_COOKIE_SECURE':False,'DB_FACTORY':lambda:db_open(DSN),
             'TELEGRAM_CIPHER_KEY':Fernet.generate_key().decode(),
-            'TELEGRAM_GATEWAY_FACTORY':FakeTelegramGateway})
+            'TELEGRAM_GATEWAY_FACTORY':FakeTelegramGateway,
+            'WEBHOOK_RESOLVER':lambda *args,**kwargs:[(2,1,6,'',('93.184.216.34',443))]})
 
     @classmethod
     def tearDownClass(cls):cls.db.close()
@@ -332,3 +335,38 @@ class WebPostgres(unittest.TestCase):
             'csrf':'test-csrf','tag':'важный','action':'remove'}).status_code,302)
         self.assertFalse(self.db.execute('SELECT 1 FROM lead_tags WHERE user_id=? AND lead_id=?',
                                          (self.u,self.ids[0])).fetchone())
+
+    def test_api_tokens_and_signed_webhook_delivery(self):
+        import hashlib,hmac
+        from leadgen.integrations import deliver_webhooks,enqueue_lead_event
+        response=self.client.post('/app/integrations/tokens',data={
+            'csrf':'test-csrf','name':'CRM чтение','access':'read'})
+        self.assertEqual(response.status_code,302)
+        with self.client.session_transaction() as state:read_token=state['new_api_token']
+        headers={'Authorization':'Bearer '+read_token}
+        payload=self.client.get('/api/v1/leads',headers=headers).get_json()
+        self.assertEqual([row['id'] for row in payload['data']],[self.ids[0]])
+        self.assertEqual(self.client.patch(f'/api/v1/leads/{self.ids[0]}',headers=headers,
+            json={'status':'won'}).status_code,403)
+        self.client.post('/app/integrations/tokens',data={'csrf':'test-csrf','name':'CRM запись','access':'write'})
+        with self.client.session_transaction() as state:write_token=state['new_api_token']
+        response=self.client.patch(f'/api/v1/leads/{self.ids[0]}',headers={
+            'Authorization':'Bearer '+write_token},json={'status':'won','deal_amount':12345,'feedback':'fit'})
+        self.assertEqual(response.status_code,200)
+        self.assertEqual(self.db.execute('SELECT deal_amount FROM user_leads WHERE user_id=? AND lead_id=?',
+                                        (self.u,self.ids[0])).fetchone()['deal_amount'],12345)
+        self.client.post('/app/integrations/webhooks',data={'csrf':'test-csrf','name':'CRM','url':'https://example.com/hook'})
+        with self.client.session_transaction() as state:secret=state['new_webhook_secret']
+        stored=self.db.execute('SELECT secret_cipher FROM webhooks WHERE workspace_id=?',(self.ws,)).fetchone()['secret_cipher']
+        self.assertNotIn(secret,stored)
+        with self.db:enqueue_lead_event(self.db,self.u,self.ids[0],'lead.updated')
+        calls=[]
+        def sender(url,body,request_headers,resolver):calls.append((url,body,request_headers))
+        self.assertEqual(deliver_webhooks(self.db,self.app.config['TELEGRAM_CIPHER_KEY'],sender,
+            self.app.config['WEBHOOK_RESOLVER']),1)
+        self.assertEqual(calls[0][0],'https://example.com/hook')
+        signature='sha256='+hmac.new(secret.encode(),calls[0][1],hashlib.sha256).hexdigest()
+        self.assertEqual(calls[0][2]['X-Leadfinder-Signature'],signature)
+        self.assertEqual(deliver_webhooks(self.db,self.app.config['TELEGRAM_CIPHER_KEY'],sender,
+            self.app.config['WEBHOOK_RESOLVER']),0)
+        self.assertEqual(self.client.get('/api/v1/leads',headers={'Authorization':'Bearer wrong'}).status_code,401)

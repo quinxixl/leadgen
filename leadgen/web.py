@@ -8,7 +8,7 @@ import hmac
 from datetime import date, timedelta
 from urllib.parse import urlsplit
 
-from flask import Flask, abort, flash, g, redirect, render_template, request, session, url_for, Response
+from flask import Flask, abort, flash, g, jsonify, redirect, render_template, request, session, url_for, Response
 from .app import env_load
 from .database import db_open
 from .core import TOPICS, Lead, enrich
@@ -42,7 +42,7 @@ def create_app(test_config=None):
     @app.before_request
     def protect():
         session.setdefault('csrf',secrets.token_urlsafe(32))
-        if request.method=='POST' and not hmac.compare_digest(session['csrf'].encode(),request.form.get('csrf','').encode()):
+        if request.method=='POST' and not request.path.startswith('/api/') and not hmac.compare_digest(session['csrf'].encode(),request.form.get('csrf','').encode()):
             abort(400,description='Сессия формы истекла. Обновите страницу.')
         g.user=None
         if session.get('user_id'):
@@ -257,6 +257,8 @@ def create_app(test_config=None):
                 if label:db().execute('''INSERT INTO lead_feedback(user_id,lead_id,label) VALUES(?,?,?)
                     ON CONFLICT(user_id,lead_id) DO UPDATE SET label=excluded.label,updated_at=now()''',(g.owner_id,lid,label))
                 else:db().execute('DELETE FROM lead_feedback WHERE user_id=? AND lead_id=?',(g.owner_id,lid))
+                from .integrations import enqueue_lead_event
+                enqueue_lead_event(db(),g.owner_id,lid,'lead.updated')
             flash('Изменения сохранены. Статус доступен и в Telegram.');return redirect(url_for('detail',lid=lid))
         activity=db().execute('SELECT kind,detail,created_at FROM lead_activity WHERE user_id=? AND lead_id=? ORDER BY id DESC LIMIT 100',(g.owner_id,lid)).fetchall()
         reminder=db().execute('SELECT * FROM lead_reminders WHERE user_id=? AND lead_id=?',(g.owner_id,lid)).fetchone()
@@ -315,6 +317,8 @@ def create_app(test_config=None):
         if isinstance(exc,SecurityError):return 'Недопустимый адрес сайта.',400
         messages={400:'Проверьте введённые данные.',403:'У вас нет доступа к этой странице.',
             404:'Страница или лид не найдены.',413:'Слишком большой запрос.',500:'Не удалось обработать запрос. Попробуйте позже.'}
+        if request.path.startswith('/api/'):
+            return jsonify({'error':messages.get(exc.code,'Ошибка запроса.'),'status':exc.code}),exc.code
         return render_template('error.html',message=messages.get(exc.code,'Ошибка запроса.')),exc.code
 
     from .web_projects import register_projects
@@ -327,4 +331,6 @@ def create_app(test_config=None):
     register_team_routes(app,db)
     from .lead_actions import register_lead_actions
     register_lead_actions(app,db)
+    from .integrations import register_integrations
+    register_integrations(app,db)
     return app

@@ -113,6 +113,9 @@ def deliver_registered(db,base,sender,limit_per_user=1):
                     VALUES(?,?,'sent',?,now(),now()) ON CONFLICT(user_id,lead_id) DO UPDATE SET
                     delivery_status='sent',filter_reason=excluded.filter_reason,sent_at=now(),updated_at=now()''',
                     (prefs['id'],row['id'],reason))
+                with db:
+                    from .integrations import enqueue_lead_event
+                    enqueue_lead_event(db,prefs['id'],row['id'],'lead.created')
                 delivered+=1;processed+=1
                 if processed>=limit_per_user:break
     return delivered
