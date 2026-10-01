@@ -65,7 +65,7 @@ def ingest(db, lead, config, origin_user_id=None):
         return
     duplicate = db.execute("""SELECT url FROM leads WHERE fingerprint=? AND url<>?
         AND status IN ('ready','sent','sending','uncertain')
-        AND (origin_user_id=? OR (origin_user_id IS NULL AND ? IS NULL)) LIMIT 1""",
+        AND (origin_user_id=? OR (origin_user_id IS NULL AND CAST(? AS BIGINT) IS NULL)) LIMIT 1""",
         (fp,lead.url,origin_user_id,origin_user_id)).fetchone()
     if duplicate:
         status,reason = 'duplicate','совпадает с '+duplicate['url']
