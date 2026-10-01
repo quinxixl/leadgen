@@ -166,7 +166,8 @@ def register_team_routes(app, db):
                 db().execute('''INSERT INTO lead_assignments
                     (workspace_id,owner_user_id,lead_id,assignee_user_id,assigned_by) VALUES(?,?,?,?,?)
                     ON CONFLICT(workspace_id,lead_id) DO UPDATE SET assignee_user_id=excluded.assignee_user_id,
-                    assigned_by=excluded.assigned_by,assigned_at=now()''',
+                    assigned_by=excluded.assigned_by,assigned_at=now(),notification_status='pending',
+                    notification_error='',notification_updated_at=now()''',
                     (g.workspace['id'],g.owner_id,lead_id,int(assignee),g.user['id']))
                 person=db().execute('SELECT display_name FROM app_users WHERE id=?',(int(assignee),)).fetchone()
                 label='Ответственный: '+person['display_name']

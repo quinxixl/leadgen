@@ -55,6 +55,8 @@ class WebPostgres(unittest.TestCase):
             cls.db.connection.execute(Path('supabase/migrations/20261001062736_lead_feedback_and_tags.sql').read_text(),prepare=False)
         if not cls.db.execute("SELECT to_regclass('leadgen.api_tokens') AS name").fetchone()['name']:
             cls.db.connection.execute(Path('supabase/migrations/20261001063156_api_and_webhook_integrations.sql').read_text(),prepare=False)
+        columns=cls.db.execute("SELECT 1 FROM information_schema.columns WHERE table_schema='leadgen' AND table_name='lead_assignments' AND column_name='notification_status'").fetchone()
+        if not columns:cls.db.connection.execute(Path('supabase/migrations/20261001064130_assignment_notifications.sql').read_text(),prepare=False)
         cls.db.commit()
         cls.app=create_app({'TESTING':True,'SECRET_KEY':'test-'*10,'BOT_USERNAME':'test_bot',
             'SESSION_COOKIE_SECURE':False,'DB_FACTORY':lambda:db_open(DSN),
@@ -296,6 +298,11 @@ class WebPostgres(unittest.TestCase):
         assignment=self.db.execute('SELECT assignee_user_id FROM lead_assignments WHERE workspace_id=? AND lead_id=?',
                                    (self.ws,self.ids[0])).fetchone()
         self.assertEqual(assignment['assignee_user_id'],self.other)
+        from leadgen.team_notifications import deliver_assignments
+        sent=[]
+        self.assertEqual(deliver_assignments(self.db,lambda method,data:sent.append(data)),1)
+        self.assertEqual(sent[0]['chat_id'],'2')
+        self.assertEqual(deliver_assignments(self.db,lambda method,data:sent.append(data)),0)
         with self.db:self.db.execute("UPDATE workspace_members SET role='viewer' WHERE workspace_id=? AND user_id=?",
                                     (self.ws,self.other))
         self.assertEqual(self.client.get(f'/app/leads/{self.ids[0]}').status_code,200)

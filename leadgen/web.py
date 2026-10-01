@@ -152,8 +152,15 @@ def create_app(test_config=None):
             FROM project_leads pl JOIN projects p ON p.id=pl.project_id AND p.user_id=pl.user_id
             JOIN user_leads ul ON ul.user_id=pl.user_id AND ul.lead_id=pl.lead_id JOIN leads l ON l.id=ul.lead_id
             WHERE """+base+" GROUP BY p.id ORDER BY count DESC",owner).fetchall()
+        team=db().execute('''SELECT u.display_name,m.role,count(a.lead_id) AS assigned,
+            count(a.lead_id) FILTER(WHERE ul.pipeline_status='won') AS won
+            FROM workspace_members m JOIN app_users u ON u.id=m.user_id
+            LEFT JOIN lead_assignments a ON a.workspace_id=m.workspace_id AND a.assignee_user_id=m.user_id
+            LEFT JOIN user_leads ul ON ul.user_id=a.owner_user_id AND ul.lead_id=a.lead_id
+            WHERE m.workspace_id=? GROUP BY u.id,m.role ORDER BY won DESC,assigned DESC,u.display_name''',
+            (g.workspace['id'],)).fetchall()
         return render_template('dashboard.html',stats=stats,stages=stages,sources=sources,days=days,daily=daily,
-            peak=max((r['count'] for r in daily),default=1),quality=quality,response=response,projects=projects)
+            peak=max((r['count'] for r in daily),default=1),quality=quality,response=response,projects=projects,team=team)
 
     def filtered_leads(export=False):
         try:page=max(1,min(10000,int(request.args.get('page','1'))))
