@@ -5,7 +5,7 @@
 <link rel="stylesheet" href="{{ url_for('static',filename='app.css') }}"></head>
 <body><a class="skip" href="#content">Перейти к содержимому</a>
 <header><a class="brand" href="/">Лидоловец<span>Поиск клиентов</span></a><nav aria-label="Основная навигация">
-{% if user %}<a href="/app">Аналитика</a><a href="/app/leads">Лиды</a><a href="/app/projects">Проекты</a><a href="/app/sources">Источники</a><a href="/app/telegram">Telegram</a><a href="/app/team">Команда</a>{% if role in ('owner','admin') %}<a href="/app/integrations">Интеграции</a>{% endif %}<a href="/app/settings">Настройки</a>
+{% if user %}<a href="/app">Аналитика</a><a href="/app/demand">Спрос</a><a href="/app/leads">Лиды</a><a href="/app/projects">Проекты</a><a href="/app/sources">Источники</a><a href="/app/telegram">Telegram</a><a href="/app/team">Команда</a>{% if role in ('owner','admin') %}<a href="/app/integrations">Интеграции</a>{% endif %}<a href="/app/settings">Настройки</a>
 {% if workspace and workspaces|length>1 %}<form action="/app/workspace" method="post" class="workspace-switch"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="next" value="{{ request.path }}"><label>Рабочее пространство<select name="workspace_id">{% for item in workspaces %}<option value="{{ item.id }}" {% if item.id==workspace.id %}selected{% endif %}>{{ item.name }} · {{ roles[item.role] }}</option>{% endfor %}</select></label><button>Переключить</button></form>{% endif %}
 <form action="/logout" method="post"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="quiet">Выйти</button></form>
 {% else %}<a href="/#how">Как работает</a><a href="/#access">Доступ</a><a class="button" href="/login">Войти в кабинет</a>{% endif %}

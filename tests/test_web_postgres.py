@@ -377,3 +377,13 @@ class WebPostgres(unittest.TestCase):
         self.assertEqual(deliver_webhooks(self.db,self.app.config['TELEGRAM_CIPHER_KEY'],sender,
             self.app.config['WEBHOOK_RESOLVER']),0)
         self.assertEqual(self.client.get('/api/v1/leads',headers={'Authorization':'Bearer wrong'}).status_code,401)
+
+    def test_demand_report_is_scoped_and_period_bound(self):
+        page=self.client.get('/app/demand?days=30')
+        self.assertEqual(page.status_code,200)
+        self.assertIn('Всего запросов</span><strong>1',page.text)
+        self.assertIn('Сайты',page.text)
+        with self.db:self.db.execute("UPDATE leads SET first_seen=(now()-interval '20 days')::text WHERE id=?",(self.ids[0],))
+        self.assertIn('Всего запросов</span><strong>0',self.client.get('/app/demand?days=7').text)
+        self.assertIn('Всего запросов</span><strong>1',self.client.get('/app/demand?days=30').text)
+        self.assertEqual(self.client.get('/app/demand?days=365').status_code,400)

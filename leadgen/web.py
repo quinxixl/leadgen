@@ -340,4 +340,6 @@ def create_app(test_config=None):
     register_lead_actions(app,db)
     from .integrations import register_integrations
     register_integrations(app,db)
+    from .demand import register_demand
+    register_demand(app,db)
     return app
