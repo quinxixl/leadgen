@@ -50,6 +50,11 @@ def create_app(test_config=None):
             if not g.user:session.clear()
         if request.path.startswith(('/app','/admin')) and not g.user:
             return redirect(url_for('login'))
+        g.workspaces=[];g.workspace=None;g.role=None;g.owner_id=None
+        if g.user and request.path.startswith('/app'):
+            from .teams import load_workspace
+            g.workspaces,g.workspace=load_workspace(db(),g.user,session.get('workspace_id'))
+            session['workspace_id']=g.workspace['id'];g.role=g.workspace['role'];g.owner_id=g.workspace['owner_user_id']
 
     @app.after_request
     def headers(response):
@@ -63,7 +68,9 @@ def create_app(test_config=None):
 
     @app.context_processor
     def context():
-        return dict(csrf=session.get('csrf',''),user=g.get('user'),pipeline=PIPELINE,feedback=FEEDBACK)
+        from .teams import ROLES
+        return dict(csrf=session.get('csrf',''),user=g.get('user'),pipeline=PIPELINE,feedback=FEEDBACK,
+                    workspaces=g.get('workspaces',[]),workspace=g.get('workspace'),role=g.get('role'),roles=ROLES)
 
     @app.template_filter('original_url')
     def original_url(value):
@@ -106,7 +113,7 @@ def create_app(test_config=None):
         row=db().execute('''SELECT l.*,ul.pipeline_status,ul.deal_amount,ul.filter_reason,
             f.label AS feedback FROM user_leads ul JOIN leads l ON l.id=ul.lead_id
             LEFT JOIN lead_feedback f ON f.user_id=ul.user_id AND f.lead_id=ul.lead_id
-            WHERE ul.user_id=? AND l.id=? AND ul.delivery_status<>'filtered' ''',(g.user['id'],lid)).fetchone()
+            WHERE ul.user_id=? AND l.id=? AND ul.delivery_status<>'filtered' ''',(g.owner_id,lid)).fetchone()
         if not row:abort(404)
         return row
 
@@ -115,7 +122,7 @@ def create_app(test_config=None):
         try:days=int(request.args.get('days','30'))
         except ValueError:abort(400)
         if days not in (7,30,90):abort(400)
-        owner=(g.user['id'],days)
+        owner=(g.owner_id,days)
         base="ul.user_id=? AND ul.delivery_status<>'filtered' AND ul.updated_at IS NOT NULL AND l.first_seen::timestamptz >= now()-(? * interval '1 day')"
         stats=db().execute("""SELECT count(*) AS total,
             count(*) FILTER (WHERE ul.pipeline_status='won') AS won,
@@ -153,7 +160,7 @@ def create_app(test_config=None):
         except ValueError:abort(400)
         search=request.args.get('q','')[:200];status=request.args.get('status','')
         project=request.args.get('project','')
-        args=[g.user['id']];where="ul.user_id=? AND ul.delivery_status<>'filtered'"
+        args=[g.owner_id];where="ul.user_id=? AND ul.delivery_status<>'filtered'"
         if project:
             if not project.isdigit():abort(400)
             where+=' AND EXISTS (SELECT 1 FROM project_leads pl WHERE pl.user_id=ul.user_id AND pl.lead_id=l.id AND pl.project_id=?)'
@@ -192,8 +199,8 @@ def create_app(test_config=None):
     @app.get('/app/leads')
     def leads():
         rows,count,page=filtered_leads()
-        projects=db().execute('SELECT id,name FROM projects WHERE user_id=? ORDER BY name',(g.user['id'],)).fetchall()
-        sources=db().execute("SELECT DISTINCT l.payload::jsonb->>'source' AS name FROM user_leads ul JOIN leads l ON l.id=ul.lead_id WHERE ul.user_id=? AND ul.delivery_status<>'filtered' ORDER BY name",(g.user['id'],)).fetchall()
+        projects=db().execute('SELECT id,name FROM projects WHERE workspace_id=? ORDER BY name',(g.workspace['id'],)).fetchall()
+        sources=db().execute("SELECT DISTINCT l.payload::jsonb->>'source' AS name FROM user_leads ul JOIN leads l ON l.id=ul.lead_id WHERE ul.user_id=? AND ul.delivery_status<>'filtered' ORDER BY name",(g.owner_id,)).fetchall()
         filters={k:request.args.get(k,'') for k in ('q','status','project','source','feedback','from','to')}
         return render_template('leads.html',rows=rows,count=count,page=page,projects=projects,sources=sources,filters=filters)
 
@@ -228,8 +235,10 @@ def create_app(test_config=None):
 
     @app.route('/app/leads/<int:lid>',methods=['GET','POST'])
     def detail(lid):
+        from .teams import EDIT_LEADS,require_role
         row=user_lead(lid)
         if request.method=='POST':
+            require_role(*EDIT_LEADS)
             status=request.form.get('status');label=request.form.get('feedback','')
             if status not in PIPELINE or label and label not in FEEDBACK:abort(400)
             amount=request.form.get('amount','').strip()
@@ -239,30 +248,38 @@ def create_app(test_config=None):
                 for kind,value,old in [('status',status,row['pipeline_status']),('amount',amount,str(row['deal_amount']) if row['deal_amount'] is not None else ''),('feedback',label,row['feedback'] or '')]:
                     if value!=old:
                         detail=PIPELINE.get(value,value) if kind=='status' else FEEDBACK.get(value,value) if kind=='feedback' else value or 'Сумма не указана'
-                        db().execute('INSERT INTO lead_activity(user_id,lead_id,kind,detail) VALUES(?,?,?,?)',(g.user['id'],lid,kind,detail or 'Без оценки'))
+                        db().execute('INSERT INTO lead_activity(user_id,lead_id,kind,detail) VALUES(?,?,?,?)',(g.owner_id,lid,kind,detail or 'Без оценки'))
                 db().execute('UPDATE user_leads SET pipeline_status=?,deal_amount=?,updated_at=now() WHERE user_id=? AND lead_id=?',
-                    (status,int(amount) if amount else None,g.user['id'],lid))
+                    (status,int(amount) if amount else None,g.owner_id,lid))
                 if label:db().execute('''INSERT INTO lead_feedback(user_id,lead_id,label) VALUES(?,?,?)
-                    ON CONFLICT(user_id,lead_id) DO UPDATE SET label=excluded.label,updated_at=now()''',(g.user['id'],lid,label))
-                else:db().execute('DELETE FROM lead_feedback WHERE user_id=? AND lead_id=?',(g.user['id'],lid))
+                    ON CONFLICT(user_id,lead_id) DO UPDATE SET label=excluded.label,updated_at=now()''',(g.owner_id,lid,label))
+                else:db().execute('DELETE FROM lead_feedback WHERE user_id=? AND lead_id=?',(g.owner_id,lid))
             flash('Изменения сохранены. Статус доступен и в Telegram.');return redirect(url_for('detail',lid=lid))
-        activity=db().execute('SELECT kind,detail,created_at FROM lead_activity WHERE user_id=? AND lead_id=? ORDER BY id DESC LIMIT 100',(g.user['id'],lid)).fetchall()
-        reminder=db().execute('SELECT * FROM lead_reminders WHERE user_id=? AND lead_id=?',(g.user['id'],lid)).fetchone()
-        return render_template('detail.html',row=row,lead=enrich(Lead(**json.loads(row['payload']))),activity=activity,reminder=reminder)
+        activity=db().execute('SELECT kind,detail,created_at FROM lead_activity WHERE user_id=? AND lead_id=? ORDER BY id DESC LIMIT 100',(g.owner_id,lid)).fetchall()
+        reminder=db().execute('SELECT * FROM lead_reminders WHERE user_id=? AND lead_id=?',(g.owner_id,lid)).fetchone()
+        members=db().execute('''SELECT m.user_id,u.display_name FROM workspace_members m JOIN app_users u ON u.id=m.user_id
+            WHERE m.workspace_id=? ORDER BY u.display_name''',(g.workspace['id'],)).fetchall()
+        assignment=db().execute('''SELECT a.assignee_user_id,u.display_name FROM lead_assignments a
+            JOIN app_users u ON u.id=a.assignee_user_id WHERE a.workspace_id=? AND a.lead_id=?''',
+            (g.workspace['id'],lid)).fetchone()
+        return render_template('detail.html',row=row,lead=enrich(Lead(**json.loads(row['payload']))),activity=activity,
+                               reminder=reminder,members=members,assignment=assignment)
 
     @app.route('/app/settings',methods=['GET','POST'])
     def settings():
+        from .teams import EDIT_SETTINGS,require_role
         if request.method=='POST':
+            require_role(*EDIT_SETTINGS)
             budget=request.form.get('min_budget','');selected=request.form.getlist('topics')
             if not budget.isdigit() or int(budget)>100000000 or not set(selected)<=set(TOPICS):abort(400)
             with db():
                 db().execute('''UPDATE user_preferences SET min_budget=?,topics=?::jsonb,
                     show_without_budget=?,show_possible_needs=?,monitoring_active=?,portfolio=?,updated_at=now()
                     WHERE user_id=?''',(int(budget),json.dumps(selected),bool(request.form.get('no_budget')),
-                    bool(request.form.get('possible')),bool(request.form.get('active')),request.form.get('portfolio','')[:3000],g.user['id']))
-                db().execute("DELETE FROM user_leads WHERE user_id=? AND delivery_status='filtered'",(g.user['id'],))
+                    bool(request.form.get('possible')),bool(request.form.get('active')),request.form.get('portfolio','')[:3000],g.owner_id))
+                db().execute("DELETE FROM user_leads WHERE user_id=? AND delivery_status='filtered'",(g.owner_id,))
             flash('Настройки применены к уведомлениям.');return redirect(url_for('settings'))
-        prefs=db().execute('SELECT * FROM user_preferences WHERE user_id=?',(g.user['id'],)).fetchone()
+        prefs=db().execute('SELECT * FROM user_preferences WHERE user_id=?',(g.owner_id,)).fetchone()
         return render_template('settings.html',prefs=prefs,topics=TOPICS)
 
     @app.get('/app/sources')
@@ -298,4 +315,6 @@ def create_app(test_config=None):
     register_routes(app,db)
     from .web_telegram import register_telegram_routes
     register_telegram_routes(app,db)
+    from .teams import register_team_routes
+    register_team_routes(app,db)
     return app

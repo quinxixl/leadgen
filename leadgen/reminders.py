@@ -57,15 +57,17 @@ def register_routes(app,db):
 
     @app.post('/app/leads/<int:lid>/reminder')
     def reminder(lid):
-        owner=db().execute("SELECT 1 FROM user_leads WHERE user_id=? AND lead_id=? AND delivery_status<>'filtered'",(g.user['id'],lid)).fetchone()
+        from .teams import EDIT_LEADS,require_role
+        require_role(*EDIT_LEADS)
+        owner=db().execute("SELECT 1 FROM user_leads WHERE user_id=? AND lead_id=? AND delivery_status<>'filtered'",(g.owner_id,lid)).fetchone()
         if not owner:abort(404)
         if request.form.get('action')=='cancel':
-            flash('Напоминание отменено.' if cancel(db(),g.user['id'],lid) else 'Напоминание уже отправлено или отправляется.')
+            flash('Напоминание отменено.' if cancel(db(),g.owner_id,lid) else 'Напоминание уже отправлено или отправляется.')
         else:
             try:
                 due=datetime.fromisoformat(request.form.get('due',''))
                 if due.tzinfo:raise ValueError('Укажите местное время МСК.')
-                schedule(db(),g.user['id'],lid,due.replace(tzinfo=timezone(timedelta(hours=3))),request.form.get('note','').strip())
+                schedule(db(),g.owner_id,lid,due.replace(tzinfo=timezone(timedelta(hours=3))),request.form.get('note','').strip())
                 flash('Напоминание сохранено. Оно придёт в Telegram.')
             except ValueError:flash('Укажите время в будущем (МСК), не дальше чем через год. Заметка — до 500 символов. Если напоминание отправляется, повторите позже.')
         return redirect('/app/leads/'+str(lid))

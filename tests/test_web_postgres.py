@@ -49,6 +49,8 @@ class WebPostgres(unittest.TestCase):
             cls.db.connection.execute(Path('supabase/migrations/20260930193638_lead_reminders.sql').read_text(),prepare=False)
         if not cls.db.execute("SELECT to_regclass('leadgen.telegram_connections') AS name").fetchone()['name']:
             cls.db.connection.execute(Path('supabase/migrations/20261001041250_personal_telegram_connections.sql').read_text(),prepare=False)
+        if not cls.db.execute("SELECT to_regclass('leadgen.workspaces') AS name").fetchone()['name']:
+            cls.db.connection.execute(Path('supabase/migrations/20261001061514_team_workspaces_and_assignments.sql').read_text(),prepare=False)
         cls.db.commit()
         cls.app=create_app({'TESTING':True,'SECRET_KEY':'test-'*10,'BOT_USERNAME':'test_bot',
             'SESSION_COOKIE_SECURE':False,'DB_FACTORY':lambda:db_open(DSN),
@@ -68,6 +70,11 @@ class WebPostgres(unittest.TestCase):
             for uid in (self.u,self.other):
                 self.db.execute('INSERT INTO user_preferences(user_id) VALUES(?)',(uid,))
                 self.db.execute('INSERT INTO subscriptions(user_id) VALUES(?)',(uid,))
+                workspace=self.db.execute("INSERT INTO workspaces(owner_user_id,name) VALUES(?,?) RETURNING id",
+                                          (uid,'Команда '+str(uid))).fetchone()['id']
+                self.db.execute("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES(?,?,'owner')",(workspace,uid))
+                if uid==self.u:self.ws=workspace
+                else:self.other_ws=workspace
             self.ids=[]
             for i,uid in enumerate((self.u,self.other)):
                 payload=dict(source='Telegram: test',url=f'https://t.me/test/{i}',title='Нужен сайт '+str(i),
@@ -133,8 +140,8 @@ class WebPostgres(unittest.TestCase):
             self.db.execute('UPDATE user_preferences SET monitoring_active=true WHERE user_id=?',(self.u,))
             self.db.execute("UPDATE leads SET first_seen=(now()+interval '1 second')::text")
             for name in ('Первый проект','Второй проект'):
-                self.db.execute('''INSERT INTO projects(user_id,name,topics,show_without_budget)
-                    VALUES(?,?,?::jsonb,true)''',(self.u,name,json.dumps(['Сайты'])))
+                self.db.execute('''INSERT INTO projects(user_id,workspace_id,name,topics,show_without_budget)
+                    VALUES(?,?,?,?::jsonb,true)''',(self.u,self.ws,name,json.dumps(['Сайты'])))
         calls=[]
         delivered=deliver_registered(self.db,{'sources':[],'max_age_hours':72,'min_budget':5000},lambda *args:calls.append(args))
         self.assertEqual(delivered,1);self.assertEqual(len(calls),1)
@@ -265,3 +272,41 @@ class WebPostgres(unittest.TestCase):
         sent=[]
         deliver_registered(self.db,CONFIG|{'sources':[]},lambda method,data:sent.append(data),limit_per_user=10)
         self.assertEqual([item['chat_id'] for item in sent],['1'])
+
+    def test_team_invite_roles_shared_leads_and_assignment(self):
+        response=self.client.post('/app/team/invite',data={'csrf':'test-csrf','role':'manager'})
+        self.assertEqual(response.status_code,302)
+        with self.client.session_transaction() as state:
+            invite_path=state['new_invite_path'];state['user_id']=self.other;state['workspace_id']=self.other_ws
+        self.assertIn('Команда',self.client.get(invite_path).text)
+        self.assertEqual(self.client.post(invite_path,data={'csrf':'test-csrf'}).status_code,302)
+        membership=self.db.execute('SELECT role FROM workspace_members WHERE workspace_id=? AND user_id=?',
+                                   (self.ws,self.other)).fetchone()
+        self.assertEqual(membership['role'],'manager')
+        self.assertEqual(self.client.get(f'/app/leads/{self.ids[0]}').status_code,200)
+        self.assertEqual(self.client.post(f'/app/leads/{self.ids[0]}',data={
+            'csrf':'test-csrf','status':'working','amount':'','feedback':''}).status_code,302)
+        self.assertEqual(self.client.post(f'/app/leads/{self.ids[0]}/assign',data={
+            'csrf':'test-csrf','assignee':str(self.other)}).status_code,302)
+        assignment=self.db.execute('SELECT assignee_user_id FROM lead_assignments WHERE workspace_id=? AND lead_id=?',
+                                   (self.ws,self.ids[0])).fetchone()
+        self.assertEqual(assignment['assignee_user_id'],self.other)
+        with self.db:self.db.execute("UPDATE workspace_members SET role='viewer' WHERE workspace_id=? AND user_id=?",
+                                    (self.ws,self.other))
+        self.assertEqual(self.client.get(f'/app/leads/{self.ids[0]}').status_code,200)
+        self.assertEqual(self.client.post(f'/app/leads/{self.ids[0]}',data={
+            'csrf':'test-csrf','status':'won','amount':'1','feedback':'fit'}).status_code,403)
+        self.assertEqual(self.client.post(f'/app/leads/{self.ids[0]}/notes',data={
+            'csrf':'test-csrf','note':'Нельзя'}).status_code,403)
+        self.assertEqual(self.client.post(invite_path,data={'csrf':'test-csrf'}).status_code,400)
+
+    def test_admin_cannot_promote_admin_or_change_owner(self):
+        with self.db:
+            self.db.execute("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES(?,?,'admin')",
+                            (self.ws,self.other))
+        with self.client.session_transaction() as state:
+            state['user_id']=self.other;state['workspace_id']=self.ws
+        self.assertEqual(self.client.post(f'/app/team/members/{self.u}',data={
+            'csrf':'test-csrf','role':'viewer'}).status_code,403)
+        self.assertEqual(self.client.post('/app/team/invite',data={
+            'csrf':'test-csrf','role':'admin'}).status_code,403)
