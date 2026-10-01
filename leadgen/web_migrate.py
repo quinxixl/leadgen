@@ -7,10 +7,16 @@ from .database import db_open
 
 def migrate():
     env_load()
+    print('Подключение к Supabase Postgres…',flush=True)
     db=db_open()
     try:
+        print('Подключение установлено. Проверка блокировки миграций…',flush=True)
         with db:
-            db.execute('SELECT pg_advisory_xact_lock(734297159)')
+            lock=db.execute('SELECT pg_try_advisory_xact_lock(734297159) AS acquired').fetchone()
+            if not lock['acquired']:
+                raise RuntimeError('Другой процесс уже применяет миграции. Остановите старый run-контейнер и повторите команду.')
+            db.execute("SET LOCAL lock_timeout = '15s'")
+            db.execute("SET LOCAL statement_timeout = '120s'")
             db.execute('''CREATE TABLE IF NOT EXISTS leadgen.web_schema_versions
                 (name text PRIMARY KEY,checksum text NOT NULL,applied_at timestamptz NOT NULL DEFAULT now())''')
             db.execute('ALTER TABLE leadgen.web_schema_versions ENABLE ROW LEVEL SECURITY')
