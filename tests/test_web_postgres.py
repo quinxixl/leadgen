@@ -7,6 +7,24 @@ from datetime import datetime,timezone
 from leadgen.database import db_open
 from leadgen.web import create_app
 from leadgen.web_auth import approve_login
+from cryptography.fernet import Fernet
+
+
+class FakeTelegramGateway:
+    def begin(self,phone):
+        return {'phone':phone,'phone_code_hash':'hash','session':'pending-session'}
+    def verify_code(self,state,code):
+        if code=='2222':return {'password_required':True,'state':state|{'session':'password-session'}}
+        return {'password_required':False,'session':'active-session','telegram_user_id':9001,'display_name':'Тестовый аккаунт'}
+    def verify_password(self,state,password):
+        if password!='correct':
+            from leadgen.telegram_accounts import TelegramAccountError
+            raise TelegramAccountError('Неверный облачный пароль Telegram.')
+        return {'password_required':False,'session':'active-session','telegram_user_id':9001,'display_name':'Тестовый аккаунт'}
+    def dialogs(self,session):
+        return [{'peer_id':-10001,'title':'Бизнес-чат','username':'business_chat','kind':'supergroup'},
+                {'peer_id':-10002,'title':'Автоматизации','username':None,'kind':'supergroup'}]
+    def logout(self,session):return True
 
 DSN=os.environ.get('WEB_TEST_DATABASE_URL','')
 
@@ -29,9 +47,13 @@ class WebPostgres(unittest.TestCase):
             cls.db.connection.execute(Path('supabase/migrations/20260930143416_web_projects_crm.sql').read_text(),prepare=False)
         if not cls.db.execute("SELECT to_regclass('leadgen.lead_reminders') AS name").fetchone()['name']:
             cls.db.connection.execute(Path('supabase/migrations/20260930193638_lead_reminders.sql').read_text(),prepare=False)
+        if not cls.db.execute("SELECT to_regclass('leadgen.telegram_connections') AS name").fetchone()['name']:
+            cls.db.connection.execute(Path('supabase/migrations/20261001041250_personal_telegram_connections.sql').read_text(),prepare=False)
         cls.db.commit()
         cls.app=create_app({'TESTING':True,'SECRET_KEY':'test-'*10,'BOT_USERNAME':'test_bot',
-            'SESSION_COOKIE_SECURE':False,'DB_FACTORY':lambda:db_open(DSN)})
+            'SESSION_COOKIE_SECURE':False,'DB_FACTORY':lambda:db_open(DSN),
+            'TELEGRAM_CIPHER_KEY':Fernet.generate_key().decode(),
+            'TELEGRAM_GATEWAY_FACTORY':FakeTelegramGateway})
 
     @classmethod
     def tearDownClass(cls):cls.db.close()
@@ -197,3 +219,49 @@ class WebPostgres(unittest.TestCase):
         sent=[]
         self.assertEqual(deliver_registered(self.db,CONFIG|{'sources':[]},lambda *a:sent.append(a)),0)
         self.assertEqual(sent,[])
+
+    def test_personal_telegram_connection_and_group_selection(self):
+        self.assertEqual(self.client.get('/app/telegram').status_code,200)
+        response=self.client.post('/app/telegram/connect',data={'csrf':'test-csrf','phone':'+79991234567'})
+        self.assertEqual(response.status_code,302)
+        connection=self.db.execute('SELECT * FROM telegram_connections WHERE user_id=?',(self.u,)).fetchone()
+        self.assertEqual(connection['phone_hint'],'+79••••••567')
+        auth=self.db.execute('SELECT state_cipher FROM telegram_connection_auth WHERE user_id=?',(self.u,)).fetchone()
+        self.assertNotIn('+79991234567',auth['state_cipher'])
+        response=self.client.post('/app/telegram/code',data={'csrf':'test-csrf','code':'1111'})
+        self.assertEqual(response.status_code,302)
+        connection=self.db.execute('SELECT * FROM telegram_connections WHERE user_id=?',(self.u,)).fetchone()
+        self.assertEqual(connection['status'],'active')
+        self.assertNotIn('active-session',connection['session_cipher'])
+        self.assertEqual(self.db.execute('SELECT count(*) AS n FROM user_telegram_dialogs WHERE user_id=?',(self.u,)).fetchone()['n'],2)
+        self.client.post('/app/telegram/groups',data={'csrf':'test-csrf','groups':'-10001'})
+        selected=self.db.execute('SELECT peer_id FROM user_telegram_dialogs WHERE user_id=? AND enabled=true',(self.u,)).fetchall()
+        self.assertEqual([row['peer_id'] for row in selected],[-10001])
+        self.assertEqual(self.client.post('/app/telegram/groups',data={'csrf':'test-csrf','groups':'-99999'}).status_code,302)
+        self.assertFalse(self.db.execute('SELECT 1 FROM user_telegram_dialogs WHERE user_id=? AND enabled=true',(self.u,)).fetchone())
+        response=self.client.post('/app/telegram/disconnect',data={'csrf':'test-csrf'})
+        self.assertEqual(response.status_code,302)
+        connection=self.db.execute('SELECT status,session_cipher FROM telegram_connections WHERE user_id=?',(self.u,)).fetchone()
+        self.assertEqual((connection['status'],connection['session_cipher']),('revoked',''))
+
+    def test_personal_telegram_two_factor_flow(self):
+        self.client.post('/app/telegram/connect',data={'csrf':'test-csrf','phone':'+79991234567'})
+        self.client.post('/app/telegram/code',data={'csrf':'test-csrf','code':'2222'})
+        self.assertEqual(self.db.execute('SELECT stage FROM telegram_connection_auth WHERE user_id=?',(self.u,)).fetchone()['stage'],'password')
+        self.client.post('/app/telegram/password',data={'csrf':'test-csrf','password':'wrong'})
+        self.assertEqual(self.db.execute('SELECT status FROM telegram_connections WHERE user_id=?',(self.u,)).fetchone()['status'],'pending')
+        self.client.post('/app/telegram/password',data={'csrf':'test-csrf','password':'correct'})
+        self.assertEqual(self.db.execute('SELECT status FROM telegram_connections WHERE user_id=?',(self.u,)).fetchone()['status'],'active')
+
+    def test_private_origin_is_delivered_only_to_connection_owner(self):
+        from leadgen.product import deliver_registered
+        from test_leadgen import CONFIG
+        payload=dict(source='Telegram · Личная группа',url='https://t.me/c/1/2',title='Нужен сайт',
+            text='Нужен сайт, бюджет 20000 рублей',published=datetime.now(timezone.utc).isoformat(),budget_text='20000 рублей')
+        with self.db:
+            self.db.execute('UPDATE user_preferences SET monitoring_active=true WHERE user_id IN (?,?)',(self.u,self.other))
+            self.db.execute('INSERT INTO leads(url,fingerprint,payload,status,reason,first_seen,origin_user_id) VALUES(?,?,?,?,?,?,?)',
+                (payload['url'],'private',json.dumps(payload),'ready','test',payload['published'],self.u))
+        sent=[]
+        deliver_registered(self.db,CONFIG|{'sources':[]},lambda method,data:sent.append(data),limit_per_user=10)
+        self.assertEqual([item['chat_id'] for item in sent],['1'])

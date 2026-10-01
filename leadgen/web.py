@@ -24,6 +24,7 @@ def create_app(test_config=None):
         SESSION_COOKIE_SECURE=True, SESSION_COOKIE_SAMESITE='Lax',
         PERMANENT_SESSION_LIFETIME=timedelta(hours=12), MAX_CONTENT_LENGTH=65536,
         BOT_USERNAME=os.environ.get('TELEGRAM_BOT_USERNAME',''),
+        TELEGRAM_CIPHER_KEY=os.environ.get('TELEGRAM_SESSION_ENCRYPTION_KEY',''),
         DB_FACTORY=db_open, TRUSTED_HOSTS=os.environ.get('WEB_ALLOWED_HOSTS','localhost,127.0.0.1').split(','))
     if test_config:app.config.update(test_config)
     if not app.config['SECRET_KEY'] or len(app.config['SECRET_KEY']) < 32:
@@ -295,4 +296,6 @@ def create_app(test_config=None):
     register_projects(app,db)
     from .reminders import register_routes
     register_routes(app,db)
+    from .web_telegram import register_telegram_routes
+    register_telegram_routes(app,db)
     return app

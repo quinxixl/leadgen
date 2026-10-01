@@ -57,20 +57,24 @@ def telegram(method, payload):
         raise RuntimeError('Telegram rejected request')
     return data['result']
 
-def ingest(db, lead, config):
+def ingest(db, lead, config, origin_user_id=None):
     status,reason = classify_for_config(lead,config)
     fp = fingerprint(lead)
     existing = db.execute('SELECT status FROM leads WHERE url=?',(lead.url,)).fetchone()
     if existing and existing['status'] in ('sent','uncertain','sending'):
         return
-    duplicate = db.execute("SELECT url FROM leads WHERE fingerprint=? AND url<>? AND status IN ('ready','sent','sending','uncertain') LIMIT 1",(fp,lead.url)).fetchone()
+    duplicate = db.execute("""SELECT url FROM leads WHERE fingerprint=? AND url<>?
+        AND status IN ('ready','sent','sending','uncertain')
+        AND (origin_user_id=? OR (origin_user_id IS NULL AND ? IS NULL)) LIMIT 1""",
+        (fp,lead.url,origin_user_id,origin_user_id)).fetchone()
     if duplicate:
         status,reason = 'duplicate','совпадает с '+duplicate['url']
-    db.execute('''INSERT INTO leads(url,fingerprint,payload,status,reason,first_seen)
-                  VALUES(?,?,?,?,?,?) ON CONFLICT(url) DO UPDATE SET
+    db.execute('''INSERT INTO leads(url,fingerprint,payload,status,reason,first_seen,origin_user_id)
+                  VALUES(?,?,?,?,?,?,?) ON CONFLICT(url) DO UPDATE SET
                   fingerprint=excluded.fingerprint,payload=excluded.payload,
                   status=excluded.status,reason=excluded.reason''',
-               (lead.url,fp,json.dumps(lead.data(),ensure_ascii=False),status,reason,datetime.now(UTC).isoformat()))
+               (lead.url,fp,json.dumps(lead.data(),ensure_ascii=False),status,reason,
+                datetime.now(UTC).isoformat(),origin_user_id))
 
 def classify_for_config(lead,config):
     # The score is shared across projects; their budget floors only gate delivery.

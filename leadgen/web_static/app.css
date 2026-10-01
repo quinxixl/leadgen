@@ -2,3 +2,4 @@
 
 .daily{display:grid;grid-template-columns:100px 1fr 35px;gap:12px;align-items:center;font-size:13px}.daily meter{width:100%;height:18px;accent-color:#08182f}.filters select{max-width:100%}
 .daily meter::-webkit-meter-bar{background:#eaf0f8;border:0;border-radius:5px}.daily meter::-webkit-meter-optimum-value{background:#17375d}.daily meter::-moz-meter-bar{background:#17375d}
+.source-picker{max-height:520px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:8px 18px}.source-picker .check{padding:9px 0;border-bottom:1px solid var(--line);margin:0}.source-picker .check:last-child{border-bottom:0}button:disabled{opacity:.5;cursor:not-allowed}
