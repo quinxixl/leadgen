@@ -120,15 +120,14 @@ server {
 
 ## Автообновления
 
-Для тестового сервера, который должен следить за этой веткой, добавьте к systemd-сервису:
+Установите таймер с нужной веткой и поддержкой web-контейнера:
 
-```ini
-[Service]
-Environment=LEADFINDER_BRANCH=codex/web-product
-Environment=LEADFINDER_WEB=1
+```sh
+cd /opt/leadfinder
+sudo env LEADFINDER_BRANCH=codex/web-product LEADFINDER_WEB=1 ./deploy/install-auto-update.sh
+sudo systemctl status leadfinder-update.timer --no-pager
 ```
 
-После изменения выполните `sudo systemctl daemon-reload`.
 Обновлятор собирает образ, применяет миграции и только потом заменяет контейнеры.
 Включайте ветку разработки только на тестовом сервере до завершения списка требований.
 Рабочий сервер на `main` продолжает использовать текущую версию.
