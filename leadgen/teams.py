@@ -171,7 +171,9 @@ def register_team_routes(app, db):
                     (g.workspace['id'],g.owner_id,lead_id,int(assignee),g.user['id']))
                 person=db().execute('SELECT display_name FROM app_users WHERE id=?',(int(assignee),)).fetchone()
                 label='Ответственный: '+person['display_name']
-            db().execute("INSERT INTO lead_activity(user_id,lead_id,kind,detail) VALUES(?,?,'assignment',?)",
-                         (g.owner_id,lead_id,label))
+                db().execute("INSERT INTO lead_activity(user_id,lead_id,kind,detail) VALUES(?,?,'assignment',?)",
+                             (g.owner_id,lead_id,label))
+            from .integrations import enqueue_lead_event
+            enqueue_lead_event(db(),g.owner_id,lead_id,'lead.updated')
         flash(label+'.')
         return redirect('/app/leads/'+str(lead_id))

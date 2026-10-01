@@ -188,8 +188,11 @@ class ProductController:
             AND ul.delivery_status<>'filtered' ''',(lead_id,int(self.last_chat))).fetchone()
         return (row,Lead(**json.loads(row['payload']))) if row else (None,None)
 
-    def _draft(self,user,lead):
-        drafts=reply_drafts(lead,user['profile_services'],user['portfolio'])
+    def _draft(self,user,lead,lead_id):
+        project=self.db.execute('''SELECT p.* FROM project_leads pl JOIN projects p
+            ON p.id=pl.project_id AND p.user_id=pl.user_id
+            WHERE pl.user_id=? AND pl.lead_id=? ORDER BY p.id LIMIT 1''',(user['id'],lead_id)).fetchone()
+        drafts=reply_drafts(lead,user['profile_services'],user['portfolio'],dict(project) if project else None)
         return '\n\n'.join(name+':\n'+text for name,text in drafts.items())[:3500]
 
     def _stats(self,user_id):
@@ -283,7 +286,8 @@ class ProductController:
                     self.say('Напомню об этом лиде через час.')
                 except ValueError as exc:self.say(str(exc))
             elif action=='reply' and len(parts)==2 and parts[1].isdigit():
-                _,lead=self._lead(int(parts[1]));self.say('Черновик отклика:\n\n'+self._draft(user,lead) if lead else 'Лид не найден.')
+                lead_id=int(parts[1]);_,lead=self._lead(lead_id)
+                self.say('Черновик отклика:\n\n'+self._draft(user,lead,lead_id) if lead else 'Лид не найден.')
             elif action=='subscribe':
                 self.say('Оплата пока не подключена. Тестовая подписка остаётся активной; списаний не будет.')
             return

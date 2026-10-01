@@ -41,13 +41,25 @@ def register_projects(app, db):
                 words=list(dict.fromkeys(x.strip() for x in request.form.get(field,'').splitlines() if x.strip()))
                 if len(words)>100 or any(len(x)>200 for x in words):abort(400)
                 return json.dumps(words,ensure_ascii=False)
+            def reply_lines(field):
+                words=list(dict.fromkeys(x.strip() for x in request.form.get(field,'').splitlines() if x.strip()))
+                if len(words)>30 or any(len(x)>300 for x in words):abort(400)
+                return json.dumps(words,ensure_ascii=False)
+            reply_length=request.form.get('reply_max_length',str(project['reply_max_length']))
+            if not reply_length.isdigit() or not 200<=int(reply_length)<=1500:abort(400)
             with db():
                 db().execute('''UPDATE projects SET name=?,description=?,keywords=?::jsonb,stop_words=?::jsonb,
                     topics=?::jsonb,source_names=?::jsonb,min_budget=?,min_score=?,show_without_budget=?,
-                    show_possible_needs=?,enabled=?,updated_at=now() WHERE id=? AND user_id=?''',
+                    show_possible_needs=?,enabled=?,reply_sender=?,reply_offer=?,reply_proof=?::jsonb,
+                    reply_question=?,reply_signature=?,forbidden_phrases=?::jsonb,reply_max_length=?,
+                    updated_at=now() WHERE id=? AND user_id=?''',
                     (name,request.form.get('description','')[:3000],lines('keywords'),lines('stop_words'),json.dumps(topics),
                     lines('source_names'),int(budget),int(score),bool(request.form.get('no_budget')),
-                    bool(request.form.get('possible')),bool(request.form.get('enabled')),pid,g.owner_id))
+                    bool(request.form.get('possible')),bool(request.form.get('enabled')),
+                    request.form.get('reply_sender','').strip()[:120],request.form.get('reply_offer','').strip()[:1000],
+                    reply_lines('reply_proof'),request.form.get('reply_question','').strip()[:300],
+                    request.form.get('reply_signature','').strip()[:300],reply_lines('forbidden_phrases'),
+                    int(reply_length),pid,g.owner_id))
                 db().execute("DELETE FROM user_leads WHERE user_id=? AND delivery_status='filtered'",(g.owner_id,))
             flash('Фильтры проекта сохранены. Они применяются при доставке лидов.');return redirect(request.path)
         return render_template('project.html',project=project,topics=TOPICS)
@@ -60,5 +72,8 @@ def register_projects(app, db):
         if not row:abort(404)
         note=request.form.get('note','').strip()
         if not note or len(note)>4000:abort(400)
-        with db():db().execute("INSERT INTO lead_activity(user_id,lead_id,kind,detail) VALUES(?,?,'note',?)",(g.owner_id,lid,note))
+        with db():
+            db().execute("INSERT INTO lead_activity(user_id,lead_id,kind,detail) VALUES(?,?,'note',?)",(g.owner_id,lid,note))
+            from .integrations import enqueue_lead_event
+            enqueue_lead_event(db(),g.owner_id,lid,'lead.updated')
         flash('Заметка сохранена.');return redirect('/app/leads/'+str(lid))

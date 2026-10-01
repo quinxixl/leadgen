@@ -57,6 +57,8 @@ class WebPostgres(unittest.TestCase):
             cls.db.connection.execute(Path('supabase/migrations/20261001063156_api_and_webhook_integrations.sql').read_text(),prepare=False)
         columns=cls.db.execute("SELECT 1 FROM information_schema.columns WHERE table_schema='leadgen' AND table_name='lead_assignments' AND column_name='notification_status'").fetchone()
         if not columns:cls.db.connection.execute(Path('supabase/migrations/20261001064130_assignment_notifications.sql').read_text(),prepare=False)
+        columns=cls.db.execute("SELECT 1 FROM information_schema.columns WHERE table_schema='leadgen' AND table_name='projects' AND column_name='reply_sender'").fetchone()
+        if not columns:cls.db.connection.execute(Path('supabase/migrations/20261001064937_project_reply_profiles.sql').read_text(),prepare=False)
         cls.db.commit()
         cls.app=create_app({'TESTING':True,'SECRET_KEY':'test-'*10,'BOT_USERNAME':'test_bot',
             'SESSION_COOKIE_SECURE':False,'DB_FACTORY':lambda:db_open(DSN),
@@ -133,7 +135,17 @@ class WebPostgres(unittest.TestCase):
         self.assertEqual(r.status_code,302)
         path=r.headers['Location']
         self.assertEqual(self.client.get(path).status_code,200)
-        self.assertEqual(self.client.post(path,data={'csrf':'test-csrf','name':'Сайты','min_budget':'5000','min_score':'20','topics':['Сайты'],'keywords':'сайт\nлендинг','enabled':'on'}).status_code,302)
+        self.assertEqual(self.client.post(path,data={'csrf':'test-csrf','name':'Сайты','min_budget':'5000','min_score':'20',
+            'topics':['Сайты'],'keywords':'сайт\nлендинг','enabled':'on','reply_sender':'Студия Север',
+            'reply_offer':'Разрабатываем сайты','reply_proof':'Сайт для школы','reply_question':'Когда нужен запуск?',
+            'reply_signature':'Анна','forbidden_phrases':'гарантия','reply_max_length':'700'}).status_code,302)
+        project=self.db.execute('SELECT * FROM projects WHERE user_id=?',(self.u,)).fetchone()
+        self.assertEqual(project['reply_sender'],'Студия Север')
+        self.assertEqual(project['reply_proof'],['Сайт для школы'])
+        with self.db:self.db.execute('INSERT INTO project_leads(project_id,user_id,lead_id) VALUES(?,?,?)',
+                                     (project['id'],self.u,self.ids[0]))
+        detail=self.client.get(f'/app/leads/{self.ids[0]}')
+        self.assertIn('Студия Север',detail.text);self.assertIn('Когда нужен запуск?',detail.text)
         self.assertEqual(self.client.post(f'/app/leads/{self.ids[0]}/notes',data={'csrf':'test-csrf','note':'Созвон в четверг'}).status_code,302)
         self.assertIn('Созвон в четверг',self.client.get(f'/app/leads/{self.ids[0]}').text)
         with self.client.session_transaction() as s:s['user_id']=self.other
@@ -345,7 +357,7 @@ class WebPostgres(unittest.TestCase):
 
     def test_api_tokens_and_signed_webhook_delivery(self):
         import hashlib,hmac
-        from leadgen.integrations import deliver_webhooks,enqueue_lead_event
+        from leadgen.integrations import deliver_webhooks
         response=self.client.post('/app/integrations/tokens',data={
             'csrf':'test-csrf','name':'CRM чтение','access':'read'})
         self.assertEqual(response.status_code,302)
@@ -366,7 +378,11 @@ class WebPostgres(unittest.TestCase):
         with self.client.session_transaction() as state:secret=state['new_webhook_secret']
         stored=self.db.execute('SELECT secret_cipher FROM webhooks WHERE workspace_id=?',(self.ws,)).fetchone()['secret_cipher']
         self.assertNotIn(secret,stored)
-        with self.db:enqueue_lead_event(self.db,self.u,self.ids[0],'lead.updated')
+        self.client.post(f'/app/leads/{self.ids[0]}/tags',data={
+            'csrf':'test-csrf','tag':'передать-в-crm','action':'add'})
+        queued=self.db.execute('SELECT payload FROM webhook_outbox ORDER BY id DESC LIMIT 1').fetchone()['payload']
+        self.assertIn('передать-в-crm',queued['lead']['tags'])
+        self.assertEqual(queued['lead']['last_activity'],None)
         calls=[]
         def sender(url,body,request_headers,resolver):calls.append((url,body,request_headers))
         self.assertEqual(deliver_webhooks(self.db,self.app.config['TELEGRAM_CIPHER_KEY'],sender,

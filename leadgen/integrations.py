@@ -70,15 +70,27 @@ def send_webhook(url,body,headers,resolver=socket.getaddrinfo):
 
 
 def enqueue_lead_event(db,owner_user_id,lead_id,event_type='lead.updated'):
-    row=db.execute('''SELECT w.id AS workspace_id,l.payload,ul.pipeline_status,ul.deal_amount
+    row=db.execute('''SELECT w.id AS workspace_id,l.payload,ul.pipeline_status,ul.deal_amount,
+        f.label AS feedback,a.assignee_user_id,
+        coalesce((SELECT jsonb_agg(t.tag ORDER BY t.tag) FROM lead_tags t
+            WHERE t.user_id=ul.user_id AND t.lead_id=ul.lead_id),'[]'::jsonb) AS tags,
+        (SELECT jsonb_build_object('kind',activity.kind,'detail',activity.detail,
+                'created_at',activity.created_at)
+            FROM lead_activity activity WHERE activity.user_id=ul.user_id
+                AND activity.lead_id=ul.lead_id ORDER BY activity.id DESC LIMIT 1) AS last_activity
         FROM workspaces w JOIN user_leads ul ON ul.user_id=w.owner_user_id
-        JOIN leads l ON l.id=ul.lead_id WHERE w.owner_user_id=? AND l.id=?''',
+        JOIN leads l ON l.id=ul.lead_id
+        LEFT JOIN lead_feedback f ON f.user_id=ul.user_id AND f.lead_id=ul.lead_id
+        LEFT JOIN lead_assignments a ON a.workspace_id=w.id AND a.lead_id=ul.lead_id
+        WHERE w.owner_user_id=? AND l.id=?''',
         (owner_user_id,lead_id)).fetchone()
     if not row:return 0
     lead=enrich(Lead(**json.loads(row['payload'])))
     payload={'event':event_type,'lead':{'id':lead_id,'title':lead.title,'text':lead.text,'source':lead.source,
         'url':lead.url,'published':lead.published,'score':lead.score,'temperature':lead.temperature,
-        'summary':lead.summary,'pipeline_status':row['pipeline_status'],'deal_amount':row['deal_amount']}}
+        'summary':lead.summary,'pipeline_status':row['pipeline_status'],'deal_amount':row['deal_amount'],
+        'feedback':row['feedback'],'tags':row['tags'],'assignee_user_id':row['assignee_user_id'],
+        'last_activity':row['last_activity']}}
     suffix=str(lead_id) if event_type=='lead.created' else str(lead_id)+':'+secrets.token_hex(8)
     hooks=db.execute('SELECT id FROM webhooks WHERE workspace_id=? AND active=true',(row['workspace_id'],)).fetchall()
     for hook in hooks:
@@ -183,15 +195,21 @@ def register_integrations(app,db):
         identity=api_identity(db())
         try:limit=max(1,min(100,int(request.args.get('limit','50'))));after=max(0,int(request.args.get('after','0')))
         except ValueError:abort(400)
-        rows=db().execute('''SELECT l.id,l.payload,ul.pipeline_status,ul.deal_amount FROM user_leads ul
-            JOIN leads l ON l.id=ul.lead_id WHERE ul.user_id=? AND ul.delivery_status<>'filtered' AND l.id>?
-            ORDER BY l.id LIMIT ?''',(identity['owner_user_id'],after,limit)).fetchall()
+        rows=db().execute('''SELECT l.id,l.payload,ul.pipeline_status,ul.deal_amount,f.label AS feedback,
+            a.assignee_user_id,coalesce((SELECT jsonb_agg(t.tag ORDER BY t.tag) FROM lead_tags t
+                WHERE t.user_id=ul.user_id AND t.lead_id=ul.lead_id),'[]'::jsonb) AS tags
+            FROM user_leads ul JOIN leads l ON l.id=ul.lead_id
+            LEFT JOIN lead_feedback f ON f.user_id=ul.user_id AND f.lead_id=ul.lead_id
+            LEFT JOIN lead_assignments a ON a.workspace_id=? AND a.lead_id=ul.lead_id
+            WHERE ul.user_id=? AND ul.delivery_status<>'filtered' AND l.id>?
+            ORDER BY l.id LIMIT ?''',(identity['workspace_id'],identity['owner_user_id'],after,limit)).fetchall()
         result=[]
         for row in rows:
             lead=enrich(Lead(**json.loads(row['payload'])))
             result.append({'id':row['id'],'title':lead.title,'text':lead.text,'source':lead.source,'url':lead.url,
                            'published':lead.published,'score':lead.score,'temperature':lead.temperature,
-                           'pipeline_status':row['pipeline_status'],'deal_amount':row['deal_amount']})
+                           'pipeline_status':row['pipeline_status'],'deal_amount':row['deal_amount'],
+                           'feedback':row['feedback'],'tags':row['tags'],'assignee_user_id':row['assignee_user_id']})
         return jsonify({'data':result,'next_after':result[-1]['id'] if result else after})
 
     @app.patch('/api/v1/leads/<int:lead_id>')

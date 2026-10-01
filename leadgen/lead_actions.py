@@ -72,6 +72,8 @@ def register_lead_actions(app, db):
                         ON CONFLICT DO NOTHING''',(g.owner_id,lead_id,tag))
                 label='Тег добавлен'
             else:abort(400)
+            from .integrations import enqueue_lead_event
+            for lead_id in ids:enqueue_lead_event(db(),g.owner_id,lead_id,'lead.updated')
         flash(f'{label} для лидов: {len(ids)}.')
         return redirect('/app/leads')
 
@@ -90,4 +92,6 @@ def register_lead_actions(app, db):
             else:
                 db().execute('INSERT INTO lead_tags(user_id,lead_id,tag) VALUES(?,?,?) ON CONFLICT DO NOTHING',
                              (g.owner_id,lead_id,tag));message='Тег добавлен.'
+            from .integrations import enqueue_lead_event
+            enqueue_lead_event(db(),g.owner_id,lead_id,'lead.updated')
         flash(message);return redirect('/app/leads/'+str(lead_id))

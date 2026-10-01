@@ -9,6 +9,7 @@ from datetime import date, timedelta
 from urllib.parse import urlsplit
 
 from flask import Flask, abort, flash, g, jsonify, redirect, render_template, request, session, url_for, Response
+from werkzeug.middleware.proxy_fix import ProxyFix
 from .app import env_load
 from .database import db_open
 from .core import TOPICS, Lead, enrich
@@ -19,6 +20,8 @@ from .web_auth import begin_login, consume_login
 def create_app(test_config=None):
     env_load()
     app = Flask(__name__, template_folder='web_templates', static_folder='web_static')
+    # compose.web.yaml exposes this process only on loopback behind one HTTPS proxy.
+    app.wsgi_app=ProxyFix(app.wsgi_app,x_for=1,x_proto=1,x_host=1)
     app.config.update(SECRET_KEY=os.environ.get('WEB_SECRET_KEY'),
         SESSION_COOKIE_NAME='leadfinder_web', SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SECURE=True, SESSION_COOKIE_SAMESITE='Lax',
@@ -274,13 +277,22 @@ def create_app(test_config=None):
         assignment=db().execute('''SELECT a.assignee_user_id,u.display_name FROM lead_assignments a
             JOIN app_users u ON u.id=a.assignee_user_id WHERE a.workspace_id=? AND a.lead_id=?''',
             (g.workspace['id'],lid)).fetchone()
+        draft_projects=db().execute('''SELECT p.* FROM project_leads pl JOIN projects p
+            ON p.id=pl.project_id AND p.user_id=pl.user_id
+            WHERE pl.lead_id=? AND p.workspace_id=? ORDER BY p.id''',(lid,g.workspace['id'])).fetchall()
+        requested_project=request.args.get('reply_project','')
+        if requested_project and not requested_project.isdigit():abort(400)
+        draft_project=next((item for item in draft_projects if str(item['id'])==requested_project),
+                           draft_projects[0] if draft_projects else None)
+        if requested_project and not draft_project:abort(404)
         profile=db().execute('SELECT profile_services,portfolio FROM user_preferences WHERE user_id=?',(g.owner_id,)).fetchone()
         from .drafts import reply_drafts
         lead=enrich(Lead(**json.loads(row['payload'])))
-        drafts=reply_drafts(lead,profile['profile_services'],profile['portfolio'])
+        drafts=reply_drafts(lead,profile['profile_services'],profile['portfolio'],dict(draft_project) if draft_project else None)
         tags=db().execute('SELECT tag FROM lead_tags WHERE user_id=? AND lead_id=? ORDER BY tag',(g.owner_id,lid)).fetchall()
         return render_template('detail.html',row=row,lead=lead,activity=activity,reminder=reminder,
-                               members=members,assignment=assignment,drafts=drafts,tags=tags)
+                               members=members,assignment=assignment,drafts=drafts,tags=tags,
+                               draft_projects=draft_projects,draft_project=draft_project)
 
     @app.route('/app/settings',methods=['GET','POST'])
     def settings():
