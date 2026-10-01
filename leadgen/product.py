@@ -192,8 +192,20 @@ class ProductController:
         project=self.db.execute('''SELECT p.* FROM project_leads pl JOIN projects p
             ON p.id=pl.project_id AND p.user_id=pl.user_id
             WHERE pl.user_id=? AND pl.lead_id=? ORDER BY p.id LIMIT 1''',(user['id'],lead_id)).fetchone()
-        drafts=reply_drafts(lead,user['profile_services'],user['portfolio'],dict(project) if project else None)
-        return '\n\n'.join(name+':\n'+text for name,text in drafts.items())[:3500]
+        settings=dict(project) if project else None
+        try:
+            from .ai_offers import generate_for_lead
+            from .teams import ensure_workspace
+            workspace_id=ensure_workspace(self.db,user)
+            drafts,_,_=generate_for_lead(self.db,workspace_id,user['id'],user['id'],lead_id,lead,
+                user['profile_services'],user['portfolio'],settings)
+            heading='AI-офферы от Groq. Проверьте факты, цену и сроки перед отправкой.'
+        except Exception as exc:
+            from .ai_offers import AIOfferError
+            drafts=reply_drafts(lead,user['profile_services'],user['portfolio'],settings)
+            reason=str(exc) if isinstance(exc,AIOfferError) else 'AI временно недоступен.'
+            heading=reason+' Ниже быстрые локальные шаблоны.'
+        return (heading+'\n\n'+'\n\n'.join(name+':\n'+text for name,text in drafts.items()))[:3900]
 
     def _stats(self,user_id):
         feedback={r['label']:r['total'] for r in self.db.execute(
@@ -287,7 +299,10 @@ class ProductController:
                 except ValueError as exc:self.say(str(exc))
             elif action=='reply' and len(parts)==2 and parts[1].isdigit():
                 lead_id=int(parts[1]);_,lead=self._lead(lead_id)
-                self.say('Черновик отклика:\n\n'+self._draft(user,lead,lead_id) if lead else 'Лид не найден.')
+                if lead:
+                    self.say('Готовлю персональные офферы…')
+                    self.say(self._draft(user,lead,lead_id))
+                else:self.say('Лид не найден.')
             elif action=='subscribe':
                 self.say('Оплата пока не подключена. Тестовая подписка остаётся активной; списаний не будет.')
             return

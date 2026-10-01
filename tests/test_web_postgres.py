@@ -2,6 +2,7 @@
 import json
 import os
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from datetime import datetime,timezone
 from leadgen.database import db_open
@@ -25,6 +26,13 @@ class FakeTelegramGateway:
         return [{'peer_id':-10001,'title':'Бизнес-чат','username':'business_chat','kind':'supergroup'},
                 {'peer_id':-10002,'title':'Автоматизации','username':None,'kind':'supergroup'}]
     def logout(self,session):return True
+
+
+def fake_ai_generator(lead,profile_services='',portfolio='',settings=None,api_key=None,model=None,opener=None,user_id=None):
+    return ({'Короткий':'Готов обсудить вашу задачу. Когда нужен результат?',
+             'Экспертный':'Вижу проблему с потерей заявок. Предлагаю сначала описать текущий процесс.',
+             'Дружелюбный':'Здравствуйте! Давайте разберём задачу и выберем подходящий вариант.'},
+            {'prompt_tokens':321,'completion_tokens':123})
 
 DSN=os.environ.get('WEB_TEST_DATABASE_URL','')
 
@@ -59,11 +67,14 @@ class WebPostgres(unittest.TestCase):
         if not columns:cls.db.connection.execute(Path('supabase/migrations/20261001064130_assignment_notifications.sql').read_text(),prepare=False)
         columns=cls.db.execute("SELECT 1 FROM information_schema.columns WHERE table_schema='leadgen' AND table_name='projects' AND column_name='reply_sender'").fetchone()
         if not columns:cls.db.connection.execute(Path('supabase/migrations/20261001064937_project_reply_profiles.sql').read_text(),prepare=False)
+        if not cls.db.execute("SELECT to_regclass('leadgen.ai_offer_generations') AS name").fetchone()['name']:
+            cls.db.connection.execute(Path('supabase/migrations/20261001094118_ai_offer_generations.sql').read_text(),prepare=False)
         cls.db.commit()
         cls.app=create_app({'TESTING':True,'SECRET_KEY':'test-'*10,'BOT_USERNAME':'test_bot',
             'SESSION_COOKIE_SECURE':False,'DB_FACTORY':lambda:db_open(DSN),
             'TELEGRAM_CIPHER_KEY':Fernet.generate_key().decode(),
             'TELEGRAM_GATEWAY_FACTORY':FakeTelegramGateway,
+            'AI_OFFER_GENERATOR':fake_ai_generator,
             'WEBHOOK_RESOLVER':lambda *args,**kwargs:[(2,1,6,'',('93.184.216.34',443))]})
 
     @classmethod
@@ -403,3 +414,18 @@ class WebPostgres(unittest.TestCase):
         self.assertIn('Всего запросов</span><strong>0',self.client.get('/app/demand?days=7').text)
         self.assertIn('Всего запросов</span><strong>1',self.client.get('/app/demand?days=30').text)
         self.assertEqual(self.client.get('/app/demand?days=365').status_code,400)
+
+    def test_ai_offers_are_on_demand_persisted_scoped_and_rate_limited(self):
+        with patch.dict(os.environ,{'GROQ_API_KEY':'test-key','GROQ_MODEL':'openai/gpt-oss-120b'}):
+            response=self.client.post(f'/app/leads/{self.ids[0]}/ai-offers',data={'csrf':'test-csrf','project_id':''})
+            self.assertEqual(response.status_code,302)
+            page=self.client.get(f'/app/leads/{self.ids[0]}')
+            self.assertIn('Готов обсудить вашу задачу',page.text)
+            record=self.db.execute('SELECT * FROM ai_offer_generations WHERE owner_user_id=?',(self.u,)).fetchone()
+            self.assertEqual(record['status'],'completed')
+            self.assertEqual((record['input_tokens'],record['output_tokens']),(321,123))
+            self.client.post(f'/app/leads/{self.ids[0]}/ai-offers',data={'csrf':'test-csrf','project_id':''})
+            self.assertEqual(self.db.execute('SELECT count(*) AS n FROM ai_offer_generations WHERE owner_user_id=?',
+                                             (self.u,)).fetchone()['n'],1)
+            self.assertEqual(self.client.post(f'/app/leads/{self.ids[1]}/ai-offers',data={
+                'csrf':'test-csrf','project_id':''}).status_code,404)

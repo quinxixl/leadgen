@@ -23,6 +23,14 @@ def _remove_forbidden(text, phrases):
     return re.sub(r'\s+([,.!?])',r'\1',re.sub(r'\s{2,}',' ',text)).strip(' ,')
 
 
+def apply_draft_rules(drafts, settings=None):
+    settings=settings or {}
+    forbidden=_items(settings.get('forbidden_phrases'))
+    try:limit=max(200,min(1500,int(settings.get('reply_max_length',1500))))
+    except (TypeError,ValueError):limit=1500
+    return {name:_clean(_remove_forbidden(text,forbidden),limit) for name,text in drafts.items()}
+
+
 def reply_drafts(lead, profile_services='', portfolio='', settings=None):
     settings=settings or {}
     services = ', '.join(topics(lead.title+' '+lead.text)) or _clean(profile_services,120) or 'вашей задаче'
@@ -46,7 +54,4 @@ def reply_drafts(lead, profile_services='', portfolio='', settings=None):
         drafts['Экспертный'] += ' Подтверждённые примеры: ' + proof + '.'
     if signature:
         drafts={name:text+' '+signature for name,text in drafts.items()}
-    forbidden=_items(settings.get('forbidden_phrases'))
-    try:limit=max(200,min(1500,int(settings.get('reply_max_length',1500))))
-    except (TypeError,ValueError):limit=1500
-    return {name:_clean(_remove_forbidden(text,forbidden),limit) for name,text in drafts.items()}
+    return apply_draft_rules(drafts,settings)

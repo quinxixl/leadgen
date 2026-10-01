@@ -8,7 +8,7 @@ import hmac
 from datetime import date, timedelta
 from urllib.parse import urlsplit
 
-from flask import Flask, abort, flash, g, jsonify, redirect, render_template, request, session, url_for, Response
+from flask import Flask, abort, current_app, flash, g, jsonify, redirect, render_template, request, session, url_for, Response
 from werkzeug.middleware.proxy_fix import ProxyFix
 from .app import env_load
 from .database import db_open
@@ -287,12 +287,40 @@ def create_app(test_config=None):
         if requested_project and not draft_project:abort(404)
         profile=db().execute('SELECT profile_services,portfolio FROM user_preferences WHERE user_id=?',(g.owner_id,)).fetchone()
         from .drafts import reply_drafts
+        from .ai_offers import ai_enabled,latest_for_lead
         lead=enrich(Lead(**json.loads(row['payload'])))
         drafts=reply_drafts(lead,profile['profile_services'],profile['portfolio'],dict(draft_project) if draft_project else None)
+        ai_offer=latest_for_lead(db(),g.owner_id,lid,draft_project['id'] if draft_project else None)
         tags=db().execute('SELECT tag FROM lead_tags WHERE user_id=? AND lead_id=? ORDER BY tag',(g.owner_id,lid)).fetchall()
         return render_template('detail.html',row=row,lead=lead,activity=activity,reminder=reminder,
                                members=members,assignment=assignment,drafts=drafts,tags=tags,
-                               draft_projects=draft_projects,draft_project=draft_project)
+                               draft_projects=draft_projects,draft_project=draft_project,
+                               ai_offer=ai_offer,ai_configured=ai_enabled())
+
+    @app.post('/app/leads/<int:lid>/ai-offers')
+    def generate_ai_offers(lid):
+        from .teams import EDIT_LEADS,require_role
+        from .ai_offers import AIOfferError,generate_for_lead,groq_offer_drafts
+        require_role(*EDIT_LEADS);row=user_lead(lid)
+        project_id=request.form.get('project_id','')
+        if project_id and not project_id.isdigit():abort(400)
+        project=None
+        if project_id:
+            project=db().execute('''SELECT p.* FROM project_leads pl JOIN projects p
+                ON p.id=pl.project_id AND p.user_id=pl.user_id
+                WHERE pl.lead_id=? AND p.id=? AND p.workspace_id=?''',
+                (lid,int(project_id),g.workspace['id'])).fetchone()
+            if not project:abort(404)
+        profile=db().execute('SELECT profile_services,portfolio FROM user_preferences WHERE user_id=?',(g.owner_id,)).fetchone()
+        lead=enrich(Lead(**json.loads(row['payload'])))
+        try:
+            generate_for_lead(db(),g.workspace['id'],g.owner_id,g.user['id'],lid,lead,
+                profile['profile_services'],profile['portfolio'],dict(project) if project else None,
+                current_app.config.get('AI_OFFER_GENERATOR',groq_offer_drafts))
+        except AIOfferError as exc:flash(str(exc))
+        else:flash('AI-офферы готовы. Проверьте факты и условия перед отправкой.')
+        target=url_for('detail',lid=lid,reply_project=project_id) if project_id else url_for('detail',lid=lid)
+        return redirect(target+'#ai-offers')
 
     @app.route('/app/settings',methods=['GET','POST'])
     def settings():
