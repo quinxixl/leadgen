@@ -1,5 +1,7 @@
 import unittest
-from leadgen.web import create_app
+import os
+from unittest.mock import patch
+from leadgen.web import create_app, platform_admin_ids
 
 
 class WebPublic(unittest.TestCase):
@@ -23,3 +25,6 @@ class WebPublic(unittest.TestCase):
         self.assertIn('HttpOnly',r.headers['Set-Cookie'])
     def test_invalid_host(self):
         self.assertEqual(self.client.get('/',base_url='http://attacker.example').status_code,400)
+    def test_platform_admin_ids_accept_multiple_values_and_spaces(self):
+        with patch.dict(os.environ,{'WEB_ADMIN_TELEGRAM_IDS':'123, 5947200567, '}):
+            self.assertEqual(platform_admin_ids(),{'123','5947200567'})

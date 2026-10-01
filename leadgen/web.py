@@ -17,6 +17,10 @@ from .product import PIPELINE, FEEDBACK, ProductController
 from .web_auth import begin_login, consume_login
 
 
+def platform_admin_ids():
+    return {value.strip() for value in os.environ.get('WEB_ADMIN_TELEGRAM_IDS','').split(',') if value.strip()}
+
+
 def create_app(test_config=None):
     env_load()
     app = Flask(__name__, template_folder='web_templates', static_folder='web_static')
@@ -73,7 +77,8 @@ def create_app(test_config=None):
     def context():
         from .teams import ROLES
         return dict(csrf=session.get('csrf',''),user=g.get('user'),pipeline=PIPELINE,feedback=FEEDBACK,
-                    workspaces=g.get('workspaces',[]),workspace=g.get('workspace'),role=g.get('role'),roles=ROLES)
+                    workspaces=g.get('workspaces',[]),workspace=g.get('workspace'),role=g.get('role'),roles=ROLES,
+                    platform_admin=bool(g.get('user') and str(g.user['telegram_user_id']) in platform_admin_ids()))
 
     @app.template_filter('original_url')
     def original_url(value):
@@ -349,7 +354,7 @@ def create_app(test_config=None):
 
     @app.get('/admin')
     def admin():
-        if str(g.user['telegram_user_id']) not in os.environ.get('WEB_ADMIN_TELEGRAM_IDS','').split(','):abort(403)
+        if str(g.user['telegram_user_id']) not in platform_admin_ids():abort(403)
         health=db().execute('SELECT * FROM health ORDER BY source').fetchall()
         users=db().execute('SELECT display_name,status,registered_at,last_seen_at FROM app_users ORDER BY id DESC LIMIT 100').fetchall()
         return render_template('admin.html',health=health,users=users)
