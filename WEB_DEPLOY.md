@@ -99,7 +99,18 @@ curl -fsS http://127.0.0.1:8000/healthz
 
 ## Публичный HTTPS
 
-Для доступа клиентов направьте DNS-запись домена на IP сервера. Пример прокси Nginx:
+Для production-домена `signalid.ru` направьте A-записи `@` и `www` на выделенный
+публичный IP сервера. Готовая конфигурация Nginx находится в
+`deploy/nginx/signalid.ru.conf`; установите её командами:
+
+```sh
+sudo install -m 0644 deploy/nginx/signalid.ru.conf /etc/nginx/sites-available/leadfinder
+sudo ln -sf /etc/nginx/sites-available/leadfinder /etc/nginx/sites-enabled/leadfinder
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+Для другого домена замените `server_name` в копии конфигурации. Эквивалентный пример прокси Nginx:
 
 ```nginx
 server {
