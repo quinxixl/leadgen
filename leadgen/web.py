@@ -21,6 +21,10 @@ def platform_admin_ids():
     return {value.strip() for value in os.environ.get('WEB_ADMIN_TELEGRAM_IDS','').split(',') if value.strip()}
 
 
+def is_platform_admin(user):
+    return bool(user and str(user['telegram_user_id']) in platform_admin_ids())
+
+
 def create_app(test_config=None):
     env_load()
     app = Flask(__name__, template_folder='web_templates', static_folder='web_static')
@@ -61,7 +65,7 @@ def create_app(test_config=None):
         if g.user and request.path.startswith('/app'):
             from .teams import load_workspace
             g.workspaces,g.workspace=load_workspace(db(),g.user,session.get('workspace_id'))
-            session['workspace_id']=g.workspace['id'];g.role=g.workspace['role'];g.owner_id=g.workspace['owner_user_id']
+            session['workspace_id']=g.workspace['id'];g.role='owner' if is_platform_admin(g.user) else g.workspace['role'];g.owner_id=g.workspace['owner_user_id']
 
     @app.after_request
     def headers(response):
@@ -78,7 +82,7 @@ def create_app(test_config=None):
         from .teams import ROLES
         return dict(csrf=session.get('csrf',''),user=g.get('user'),pipeline=PIPELINE,feedback=FEEDBACK,
                     workspaces=g.get('workspaces',[]),workspace=g.get('workspace'),role=g.get('role'),roles=ROLES,
-                    platform_admin=bool(g.get('user') and str(g.user['telegram_user_id']) in platform_admin_ids()))
+                    platform_admin=is_platform_admin(g.get('user')))
 
     @app.template_filter('original_url')
     def original_url(value):
@@ -354,7 +358,7 @@ def create_app(test_config=None):
 
     @app.get('/admin')
     def admin():
-        if str(g.user['telegram_user_id']) not in platform_admin_ids():abort(403)
+        if not is_platform_admin(g.user):abort(403)
         health=db().execute('SELECT * FROM health ORDER BY source').fetchall()
         users=db().execute('SELECT display_name,status,registered_at,last_seen_at FROM app_users ORDER BY id DESC LIMIT 100').fetchall()
         return render_template('admin.html',health=health,users=users)

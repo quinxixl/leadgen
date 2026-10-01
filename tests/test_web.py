@@ -1,7 +1,7 @@
 import unittest
 import os
 from unittest.mock import patch
-from leadgen.web import create_app, platform_admin_ids
+from leadgen.web import create_app, is_platform_admin, platform_admin_ids
 
 
 class WebPublic(unittest.TestCase):
@@ -28,3 +28,5 @@ class WebPublic(unittest.TestCase):
     def test_platform_admin_ids_accept_multiple_values_and_spaces(self):
         with patch.dict(os.environ,{'WEB_ADMIN_TELEGRAM_IDS':'123, 5947200567, '}):
             self.assertEqual(platform_admin_ids(),{'123','5947200567'})
+            self.assertTrue(is_platform_admin({'telegram_user_id':5947200567}))
+            self.assertFalse(is_platform_admin({'telegram_user_id':999}))
