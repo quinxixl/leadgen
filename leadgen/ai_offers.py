@@ -93,7 +93,7 @@ def groq_offer_drafts(lead,profile_services='',portfolio='',settings=None,api_ke
         api_key=api_key or configured_key;model=model or configured_model
     body,_=build_request(lead,profile_services,portfolio,settings,model,user_id)
     request=urllib.request.Request(GROQ_URL,data=json.dumps(body,ensure_ascii=False).encode(),method='POST',headers={
-        'Authorization':'Bearer '+api_key,'Content-Type':'application/json','User-Agent':'Leadfinder/1.0'})
+        'Authorization':'Bearer '+api_key,'Content-Type':'application/json','User-Agent':'Signalid/1.0'})
     try:
         with opener(request,timeout=35) as response:
             raw=response.read(1048576)

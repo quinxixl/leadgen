@@ -29,9 +29,11 @@ def resolve_public(hostname, resolver=socket.getaddrinfo):
     addresses=[]
     for record in records:
         address=record[4][0]
-        try:ip=ipaddress.ip_address(address)
+        try:ip=ipaddress.ip_address(address.split('%',1)[0])
         except ValueError:continue
-        if not ip.is_global:
+        # ::ffff:127.0.0.1 must be judged as the IPv4 address it maps to.
+        if ip.version==6 and ip.ipv4_mapped:ip=ip.ipv4_mapped
+        if not ip.is_global or ip.is_multicast:
             raise ValueError('Webhook не может вести на локальный или служебный адрес.')
         addresses.append(address)
     if not addresses:raise ValueError('У webhook-сервера нет доступного публичного адреса.')
@@ -115,7 +117,8 @@ def deliver_webhooks(db,cipher_key,sender=send_webhook,resolver=socket.getaddrin
         body=json.dumps(row['payload'],ensure_ascii=False,separators=(',',':')).encode()
         secret=cipher.decrypt(row['secret_cipher'])['secret'].encode()
         signature='sha256='+hmac.new(secret,body,hashlib.sha256).hexdigest()
-        try:sender(row['url'],body,{'Content-Type':'application/json','User-Agent':'Leadfinder-Webhook/1.0','X-Leadfinder-Signature':signature},resolver)
+        try:sender(row['url'],body,{'Content-Type':'application/json','User-Agent':'Signalid-Webhook/1.0',
+            'X-Signalid-Signature':signature,'X-Leadfinder-Signature':signature},resolver)
         except Exception as exc:
             attempts=row['attempts']+1;dead=attempts>=8;delay=min(3600,30*(2**min(attempts,6)))
             with db:db.execute("""UPDATE webhook_outbox SET status=?,last_error=?,next_attempt_at=now()+(? * interval '1 second')
@@ -134,6 +137,9 @@ def api_identity(db):
     row=db.execute('''SELECT t.*,w.owner_user_id FROM api_tokens t JOIN workspaces w ON w.id=t.workspace_id
         WHERE t.token_hash=? AND t.revoked=false''',(token_hash(token),)).fetchone()
     if not row:abort(401)
+    from .rate_limit import RateLimited,hit
+    try:hit(db,'api',row['id'],120,60)
+    except RateLimited:abort(429)
     with db:db.execute('UPDATE api_tokens SET last_used_at=now() WHERE id=?',(row['id'],))
     return row
 

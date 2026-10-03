@@ -69,6 +69,7 @@ class WebPostgres(unittest.TestCase):
         if not columns:cls.db.connection.execute(Path('supabase/migrations/20261001064937_project_reply_profiles.sql').read_text(),prepare=False)
         if not cls.db.execute("SELECT to_regclass('leadgen.ai_offer_generations') AS name").fetchone()['name']:
             cls.db.connection.execute(Path('supabase/migrations/20261001094118_ai_offer_generations.sql').read_text(),prepare=False)
+        cls.db.connection.execute(Path('supabase/migrations/20261003120000_subscription_trials.sql').read_text(),prepare=False)
         cls.db.commit()
         cls.app=create_app({'TESTING':True,'SECRET_KEY':'test-'*10,'BOT_USERNAME':'test_bot',
             'SESSION_COOKIE_SECURE':False,'DB_FACTORY':lambda:db_open(DSN),
@@ -113,6 +114,25 @@ class WebPostgres(unittest.TestCase):
         self.assertEqual(self.client.get(f'/app/leads/{self.ids[1]}').status_code,404)
         self.assertEqual(self.client.get('/admin').status_code,403)
 
+    def test_trial_then_expired_subscription_redirects_to_billing(self):
+        sub=self.db.execute('SELECT status,ends_at FROM subscriptions WHERE user_id=?',(self.u,)).fetchone()
+        self.assertEqual(sub['status'],'trial');self.assertIsNotNone(sub['ends_at'])
+        self.assertEqual(self.client.get('/app/leads').status_code,200)
+        with self.db:self.db.execute("UPDATE subscriptions SET ends_at=now()-interval '1 minute' WHERE user_id=?",(self.u,))
+        r=self.client.get('/app/leads');self.assertEqual(r.status_code,302);self.assertTrue(r.location.endswith('/app/billing'))
+        r=self.client.post(f'/app/leads/{self.ids[0]}',data={'csrf':'test-csrf','status':'won'})
+        self.assertEqual(r.status_code,302)
+        self.assertEqual(self.db.execute('SELECT pipeline_status FROM user_leads WHERE lead_id=?',(self.ids[0],)).fetchone()['pipeline_status'],'saved')
+        self.assertEqual(self.client.get('/app/billing').status_code,200)
+
+    def test_login_rate_limited_per_ip(self):
+        with self.db:self.db.execute("DELETE FROM settings WHERE key LIKE ?",('rl:%',))
+        c=self.app.test_client();c.get('/login')
+        with c.session_transaction() as s:csrf=s['csrf']
+        codes=[c.post('/login',data={'csrf':csrf,'action':'begin','consent':'1'}).status_code for _ in range(11)]
+        self.assertEqual(codes[:10],[200]*10);self.assertEqual(codes[10],429)
+        with self.db:self.db.execute("DELETE FROM settings WHERE key LIKE ?",('rl:%',))
+
     def test_cross_user_mutation_is_denied(self):
         r=self.client.post(f'/app/leads/{self.ids[1]}',data={'csrf':'test-csrf','status':'won','amount':'100'})
         self.assertEqual(r.status_code,404)
@@ -131,9 +151,9 @@ class WebPostgres(unittest.TestCase):
     def test_login_flow(self):
         c=self.app.test_client();c.get('/login')
         with c.session_transaction() as s:csrf=s['csrf']
-        self.assertEqual(c.post('/login',data={'csrf':csrf,'action':'begin'}).status_code,200)
-        with c.session_transaction() as s:token=s['login_token']
-        approve_login(self.db,token,self.u)
+        self.assertEqual(c.post('/login',data={'csrf':csrf,'action':'begin','consent':'1'}).status_code,200)
+        with c.session_transaction() as s:token,code=s['login_token'],s['login_code']
+        approve_login(self.db,token,self.u,code)
         self.assertEqual(c.post('/login',data={'csrf':csrf,'action':'finish'}).status_code,302)
         self.assertEqual(c.get('/app').status_code,200)
 

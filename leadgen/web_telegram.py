@@ -1,6 +1,8 @@
 """Web routes for a user's own Telegram connection."""
 from flask import abort, current_app, flash, g, redirect, render_template, request
 
+from .rate_limit import RateLimited, hit
+
 from .telegram_accounts import (SessionCipher, TelegramAccountError, TelethonGateway,
                                 begin_connection, disconnect, sync_dialogs,
                                 verify_code, verify_password)
@@ -28,11 +30,15 @@ def register_telegram_routes(app, db):
 
     @app.post('/app/telegram/connect')
     def telegram_connect():
+        phone = request.form.get('phone', '').strip()
         try:
+            # Each request makes Telegram send a code to that number: cap it per account and per number.
+            hit(db(), 'tg-code-user', g.user['id'], 3, 3600)
+            hit(db(), 'tg-code-phone', phone, 3, 3600)
             cipher, gateway = services()
-            begin_connection(db(), g.user['id'], request.form.get('phone', '').strip(), cipher, gateway)
+            begin_connection(db(), g.user['id'], phone, cipher, gateway)
             flash('Код отправлен приложением Telegram. Введите его ниже.')
-        except TelegramAccountError as exc:
+        except (TelegramAccountError, RateLimited) as exc:
             flash(str(exc))
         return redirect('/app/telegram')
 

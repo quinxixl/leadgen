@@ -1,0 +1,13 @@
+{% extends 'base.html' %}{% from '_plans.html' import plans_grid %}{% block title %}Тарифы — Сигналид{% endblock %}
+{% block content %}
+<section class="section">
+<div class="section-head center"><p class="eyebrow">Тарифы</p><h1>Простые цены. 7 дней бесплатно</h1><p class="muted">Выберите тариф после пробного периода. Карта не нужна, автоматических списаний нет.</p></div>
+{{ plans_grid(plans) }}
+<p class="pricing-note">Цены указаны за месяц. Для агентств с большим числом участников — индивидуальные условия{% if support %}: <a href="https://t.me/{{ support }}" rel="noopener noreferrer">напишите нам</a>{% endif %}.</p>
+</section>
+<section class="section" id="faq"><div class="faq">
+<details><summary>Что входит в пробный период?</summary><p>Все возможности сервиса на 7 дней. После окончания доступ к кабинету и уведомлениям приостанавливается до оплаты тарифа; ваши лиды и настройки сохраняются.</p></details>
+<details><summary>Можно ли сменить тариф?</summary><p>Да, в любой момент через раздел «Подписка» в кабинете или через поддержку.</p></details>
+<details><summary>Есть ли возврат?</summary><p>Условия возврата описаны в <a href="/terms">публичной оферте</a>.</p></details>
+</div></section>
+{% endblock %}

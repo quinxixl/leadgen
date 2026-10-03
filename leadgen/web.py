@@ -15,6 +15,8 @@ from .database import db_open
 from .core import TOPICS, Lead, enrich
 from .product import PIPELINE, FEEDBACK, ProductController
 from .web_auth import begin_login, consume_login
+from .billing import PLANS, PLAN_NAMES, days_left, legal_entity, subscription_active, support_contact
+from .rate_limit import RateLimited, hit, purge_expired
 
 
 def platform_admin_ids():
@@ -25,13 +27,34 @@ def is_platform_admin(user):
     return bool(user and str(user['telegram_user_id']) in platform_admin_ids())
 
 
+# Paths that stay open when the subscription has ended, so the user can pay or leave.
+BILLING_OPEN=('/app/billing','/app/workspace','/app/telegram/disconnect','/app/team/join/')
+
+
+def like_pattern(value):
+    """Literal substring for ILIKE: user input must not act as a wildcard."""
+    return '%'+value.replace('\\','\\\\').replace('%','\\%').replace('_','\\_')+'%'
+
+
+def browser_hint(user_agent, now=None):
+    """Short, non-identifying description of the browser asking to sign in."""
+    ua=user_agent or ''
+    browser=next((name for key,name in (('YaBrowser','Яндекс Браузер'),('Edg/','Edge'),('OPR/','Opera'),
+        ('Firefox/','Firefox'),('Chrome/','Chrome'),('Safari/','Safari')) if key in ua),'браузер')
+    system=next((name for key,name in (('Android','Android'),('iPhone','iPhone'),('iPad','iPad'),
+        ('Windows','Windows'),('Mac OS X','macOS'),('Linux','Linux')) if key in ua),'')
+    from datetime import datetime,timezone
+    moment=(now or datetime.now(timezone.utc)).astimezone(timezone(timedelta(hours=3))).strftime('%H:%M МСК')
+    return ' · '.join(x for x in (browser,system,moment) if x)
+
+
 def create_app(test_config=None):
     env_load()
     app = Flask(__name__, template_folder='web_templates', static_folder='web_static')
     # compose.web.yaml exposes this process only on loopback behind one HTTPS proxy.
     app.wsgi_app=ProxyFix(app.wsgi_app,x_for=1,x_proto=1,x_host=1)
     app.config.update(SECRET_KEY=os.environ.get('WEB_SECRET_KEY'),
-        SESSION_COOKIE_NAME='leadfinder_web', SESSION_COOKIE_HTTPONLY=True,
+        SESSION_COOKIE_NAME='signalid_session', SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SECURE=True, SESSION_COOKIE_SAMESITE='Lax',
         PERMANENT_SESSION_LIFETIME=timedelta(hours=12), MAX_CONTENT_LENGTH=65536,
         BOT_USERNAME=os.environ.get('TELEGRAM_BOT_USERNAME',''),
@@ -66,12 +89,20 @@ def create_app(test_config=None):
             from .teams import load_workspace
             g.workspaces,g.workspace=load_workspace(db(),g.user,session.get('workspace_id'))
             session['workspace_id']=g.workspace['id'];g.role='owner' if is_platform_admin(g.user) else g.workspace['role'];g.owner_id=g.workspace['owner_user_id']
+            # Team members work under the workspace owner's subscription.
+            g.subscription=db().execute('SELECT status,plan_code,ends_at FROM subscriptions WHERE user_id=?',(g.owner_id,)).fetchone()
+            if (not subscription_active(g.subscription) and not is_platform_admin(g.user)
+                    and not request.path.startswith(BILLING_OPEN)):
+                return redirect(url_for('billing'))
 
     @app.after_request
     def headers(response):
         response.headers['X-Content-Type-Options']='nosniff'
         response.headers['X-Frame-Options']='DENY'
         response.headers['Referrer-Policy']='same-origin'
+        if request.is_secure:
+            response.headers['Strict-Transport-Security']='max-age=31536000; includeSubDomains'
+        response.headers['Permissions-Policy']='camera=(), microphone=(), geolocation=(), payment=()'
         response.headers['Content-Security-Policy']="default-src 'self'; style-src 'self'; img-src 'self' data:; script-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
         if not request.path.startswith('/web_static/'):
             response.headers['Cache-Control']='no-store'
@@ -80,7 +111,11 @@ def create_app(test_config=None):
     @app.context_processor
     def context():
         from .teams import ROLES
+        sub=g.get('subscription')
         return dict(csrf=session.get('csrf',''),user=g.get('user'),pipeline=PIPELINE,feedback=FEEDBACK,
+                    subscription=sub,subscription_ok=subscription_active(sub),plan_names=PLAN_NAMES,
+                    trial_days_left=days_left(sub) if sub else None,support=support_contact(),plans=PLANS,
+                    legal_entity=legal_entity(),
                     workspaces=g.get('workspaces',[]),workspace=g.get('workspace'),role=g.get('role'),roles=ROLES,
                     platform_admin=is_platform_admin(g.get('user')))
 
@@ -89,11 +124,38 @@ def create_app(test_config=None):
         parts=urlsplit(value or '')
         return value if parts.scheme=='https' and parts.hostname else '#'
 
+    @app.template_filter('dt')
+    def moscow_time(value):
+        """ISO string or datetime as «03.10.2026 18:19 МСК»; unknown values pass through."""
+        from datetime import datetime,timezone
+        if not value:return ''
+        try:moment=value if isinstance(value,datetime) else datetime.fromisoformat(str(value))
+        except ValueError:return value
+        if moment.tzinfo is None:moment=moment.replace(tzinfo=timezone.utc)
+        return moment.astimezone(timezone(timedelta(hours=3))).strftime('%d.%m.%Y %H:%M МСК')
+
     @app.template_filter('money')
     def money(value):return f'{value:,}'.replace(',',' ') if value is not None else 'Не указана'
 
     @app.get('/')
     def landing():return render_template('landing.html')
+
+    @app.get('/pricing')
+    def pricing():return render_template('pricing.html')
+
+    @app.get('/privacy')
+    def privacy():return render_template('privacy.html')
+
+    @app.get('/terms')
+    def terms():return render_template('terms.html')
+
+    @app.get('/robots.txt')
+    def robots():
+        return Response('User-agent: *\nDisallow: /app\nDisallow: /admin\nDisallow: /login\n',mimetype='text/plain')
+
+    @app.get('/app/billing')
+    def billing():
+        return render_template('billing.html',active=subscription_active(g.subscription))
 
     @app.get('/healthz')
     def health():return {'status':'ok'}
@@ -114,7 +176,15 @@ def create_app(test_config=None):
                 except ValueError as exc:
                     flash(str(exc));session.pop('login_token',None)
             else:
-                token,browser,code=begin_login(db())
+                if not request.form.get('consent'):
+                    flash('Чтобы продолжить, примите условия оферты и согласие на обработку персональных данных.')
+                    return render_template('login.html',bot=app.config['BOT_USERNAME']),400
+                try:
+                    hit(db(),'login-ip',request.remote_addr or '',10,600)
+                except RateLimited as exc:
+                    flash(str(exc));return render_template('login.html',bot=app.config['BOT_USERNAME']),429
+                if secrets.randbelow(20)==0:purge_expired(db())
+                token,browser,code=begin_login(db(),browser_hint(request.headers.get('User-Agent')))
                 session.update(login_token=token,login_browser=browser,login_code=code)
         return render_template('login.html',bot=app.config['BOT_USERNAME'])
 
@@ -204,7 +274,7 @@ def create_app(test_config=None):
                 where+=' AND l.first_seen::timestamptz '+operator+' ?::timestamptz'
                 args.append(day.isoformat()+'T00:00:00+00:00')
         if len(dates)==2 and dates['from']>dates['to']:abort(400)
-        if search:where+=' AND l.payload ILIKE ?';args.append('%'+search+'%')
+        if search:where+=" AND l.payload ILIKE ? ESCAPE '\\'";args.append(like_pattern(search))
         if status:
             if status not in PIPELINE:abort(400)
             where+=' AND ul.pipeline_status=?';args.append(status)
@@ -233,7 +303,7 @@ def create_app(test_config=None):
         values=[]
         def safe(v):
             v=str(v or '')
-            return "'"+v if v.lstrip().startswith(('=','+','-','@')) else v
+            return "'"+v if v.lstrip().startswith(('=','+','-','@','\t','\r')) else v
         for r in rows:
             l=r['lead'];values.append([safe(x) for x in [l.title,l.source,l.url,l.published,l.score,PIPELINE[r['pipeline_status']],r['deal_amount']]])
         if request.args.get('format')=='xlsx':
@@ -352,8 +422,8 @@ def create_app(test_config=None):
     def sources():
         q=request.args.get('q','')[:100]
         rows=db().execute('''SELECT username,title,members,online,checked_at,last_message_at,check_reason
-            FROM telegram_sources WHERE enabled=1 AND status='active' AND title ILIKE ?
-            ORDER BY priority,online DESC LIMIT 100''',('%'+q+'%',)).fetchall()
+            FROM telegram_sources WHERE enabled=1 AND status='active' AND title ILIKE ? ESCAPE '\\'
+            ORDER BY priority,online DESC LIMIT 100''',(like_pattern(q),)).fetchall()
         return render_template('sources.html',rows=rows)
 
     @app.get('/admin')
@@ -367,11 +437,12 @@ def create_app(test_config=None):
     @app.errorhandler(403)
     @app.errorhandler(404)
     @app.errorhandler(413)
+    @app.errorhandler(429)
     @app.errorhandler(500)
     def error(exc):
         from werkzeug.exceptions import SecurityError
         if isinstance(exc,SecurityError):return 'Недопустимый адрес сайта.',400
-        messages={400:'Проверьте введённые данные.',403:'У вас нет доступа к этой странице.',
+        messages={400:'Проверьте введённые данные.',403:'У вас нет доступа к этой странице.',429:'Слишком много запросов. Подождите минуту и повторите.',
             404:'Страница или лид не найдены.',413:'Слишком большой запрос.',500:'Не удалось обработать запрос. Попробуйте позже.'}
         if request.path.startswith('/api/'):
             return jsonify({'error':messages.get(exc.code,'Ошибка запроса.'),'status':exc.code}),exc.code
