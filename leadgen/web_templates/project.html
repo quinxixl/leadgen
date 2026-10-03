@@ -1,0 +1,39 @@
+{% extends 'base.html' %}
+{% block content %}
+<a href="/app/projects">← Все проекты</a>
+<h1>{{ project.name }}</h1>
+{% if role=='viewer' %}<p class="notice">Режим просмотра: менять проект могут владелец и администратор.</p>{% endif %}
+<form method="post" class="panel">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <fieldset class="plain" {% if role=='viewer' %}disabled{% endif %}>
+    <section class="grid two">
+      <div>
+        <h2>Отбор лидов</h2>
+        <label>Название проекта<input name="name" required maxlength="100" value="{{ project.name }}"></label>
+        <label>Описание проекта<textarea name="description" rows="4" maxlength="3000">{{ project.description }}</textarea><small>Внутренняя информация для команды.</small></label>
+        <fieldset><legend>Услуги</legend>{% for topic in topics %}<label class="check"><input type="checkbox" name="topics" value="{{ topic }}" {% if topic in project.topics %}checked{% endif %}>{{ topic }}</label>{% endfor %}</fieldset>
+        <label>Минимальный бюджет, ₽<input name="min_budget" type="number" min="0" max="100000000" required value="{{ project.min_budget }}"></label>
+        <label>Минимальная оценка, 0–100<input name="min_score" type="number" min="0" max="100" required value="{{ project.min_score }}"></label>
+        <label>Ключевые слова — по одному на строку<textarea name="keywords" rows="5">{{ project.keywords|join('\n') }}</textarea><small>Достаточно одного совпадения. Пустое поле не ограничивает поиск словами.</small></label>
+        <label>Исключения — по одному на строку<textarea name="stop_words" rows="5">{{ project.stop_words|join('\n') }}</textarea></label>
+        <label>Точные названия источников — по одному на строку<textarea name="source_names" rows="3">{{ project.source_names|join('\n') }}</textarea><small>Пустое поле разрешает все доступные источники.</small></label>
+        <label class="check"><input type="checkbox" name="no_budget" {% if project.show_without_budget %}checked{% endif %}>Показывать запросы без бюджета</label>
+        <label class="check"><input type="checkbox" name="possible" {% if project.show_possible_needs %}checked{% endif %}>Показывать возможные потребности</label>
+        <label class="check"><input type="checkbox" name="enabled" {% if project.enabled %}checked{% endif %}>Включить проект</label>
+      </div>
+      <div>
+        <h2>Профиль отклика</h2>
+        <p class="muted">Эти данные используются только для черновиков. Добавляйте лишь факты, которые можно отправить заказчику.</p>
+        <label>Имя или название команды<input name="reply_sender" maxlength="120" value="{{ project.reply_sender }}"></label>
+        <label>Что вы предлагаете<textarea name="reply_offer" rows="5" maxlength="1000">{{ project.reply_offer }}</textarea><small>Например: разрабатываем CRM и автоматизации под ключ.</small></label>
+        <label>Подтверждённые факты и кейсы — по одному на строку<textarea name="reply_proof" rows="5">{{ project.reply_proof|join('\n') }}</textarea><small>Не добавляйте цифры и опыт, которые нельзя подтвердить.</small></label>
+        <label>Вопрос заказчику<textarea name="reply_question" rows="3" maxlength="300">{{ project.reply_question }}</textarea><small>Если поле пустое, будет задан нейтральный вопрос о результате и сроке.</small></label>
+        <label>Подпись<textarea name="reply_signature" rows="2" maxlength="300">{{ project.reply_signature }}</textarea></label>
+        <label>Запрещённые фразы — по одной на строку<textarea name="forbidden_phrases" rows="4">{{ project.forbidden_phrases|join('\n') }}</textarea><small>Указанные фразы удаляются из всех трёх черновиков без учёта регистра.</small></label>
+        <label>Максимальная длина черновика, символов<input name="reply_max_length" type="number" min="200" max="1500" required value="{{ project.reply_max_length }}"></label>
+      </div>
+    </section>
+  </fieldset>
+  {% if role!='viewer' %}<button>Сохранить проект</button>{% endif %}
+</form>
+{% endblock %}

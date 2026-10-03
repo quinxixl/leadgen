@@ -212,6 +212,17 @@ def run_bot(db,config):
         return True
     if not start_reader_if_ready():
         print('Чтение групп не запущено: выполните setup-telegram после добавления API-параметров.',flush=True)
+    if product_mode and all(os.getenv(key) for key in ('TELEGRAM_API_ID','TELEGRAM_API_HASH','TELEGRAM_SESSION_ENCRYPTION_KEY')):
+        def personal_monitors():
+            try:
+                from .telegram_accounts import run_personal_monitors
+                run_personal_monitors(db_target, config)
+            except Exception as exc:
+                print('Личные Telegram-подключения остановлены: '+type(exc).__name__, flush=True)
+        threading.Thread(target=personal_monitors, daemon=True).start()
+        print('Менеджер личных Telegram-подключений запущен.', flush=True)
+    elif product_mode:
+        print('Личные Telegram-подключения отключены: добавьте API-параметры и ключ шифрования.', flush=True)
     future=None;next_scan=0;telegram_retry_delay=2
     with ThreadPoolExecutor(max_workers=1) as pool:
         while True:
@@ -252,6 +263,14 @@ def run_bot(db,config):
                     next_scan=time.monotonic()+config['poll_seconds']
                 if (ui.manual or (ui.get('active',False) and time.monotonic()>=next_scan)) and future is None:
                     future=pool.submit(collect_batch,ui.config())
+                if product_mode:
+                    from .reminders import deliver_due
+                    deliver_due(db,telegram)
+                    if os.getenv('TELEGRAM_SESSION_ENCRYPTION_KEY'):
+                        from .integrations import deliver_webhooks
+                        deliver_webhooks(db,os.environ['TELEGRAM_SESSION_ENCRYPTION_KEY'],limit=2)
+                    from .team_notifications import deliver_assignments
+                    deliver_assignments(db,telegram,limit=2)
                 if ui.get('active',False) or ui.drain:
                     if product_mode:
                         from .product import deliver_registered

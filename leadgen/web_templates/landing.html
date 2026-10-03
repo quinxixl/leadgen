@@ -1,0 +1,86 @@
+{% extends 'base.html' %}{% from '_icons.html' import icon %}{% from '_plans.html' import plans_grid %}
+{% block header_class %}on-night{% endblock %}
+{% block content %}
+<section class="glow night">
+<div class="hero">
+<div>
+<p class="eyebrow">Заказы из Telegram-чатов и с бирж</p>
+<h1>Ловите заказы <em>раньше конкурентов</em></h1>
+<p class="lead">Сигналид читает чаты и биржи вместо вас, отбрасывает рекламу и вакансии и присылает в Telegram только живые запросы на сайты, ботов, приложения и автоматизацию — с оценкой и готовым откликом.</p>
+<div class="actions"><a class="button large signal" href="/login">Попробовать 7 дней бесплатно</a><a class="button large ghost" href="#how">Как это работает</a></div>
+<ul class="trust"><li>Без привязки карты</li><li>Вход через Telegram</li><li>Настройка за 5 минут</li></ul>
+</div>
+<div class="mock" aria-hidden="true"><div class="mock-window">
+<div class="mock-top"><span class="live">Мониторинг включён</span><span>сегодня, 14:32</span></div>
+<div class="lead-card"><div class="meta"><span>Telegram · Фриланс для IT</span><span class="badge hot">горячий · <span class="score">86</span></span></div>
+<h3>Нужен Telegram-бот для записи клиентов в салон</h3><p>Бот с выбором мастера и времени, напоминания клиентам, выгрузка записей в Google Таблицу. Старт на этой неделе.</p>
+<div class="facts"><span>Боты</span><span>Бюджет 40 000 ₽</span><span>Срок: неделя</span><span>Есть контакт</span></div>
+<div class="row"><span class="primary">Подготовить отклик</span><span>Подходит</span><span>Открыть</span></div></div>
+<div class="lead-card dim"><div class="meta"><span>FL.ru</span><span class="badge warm">тёплый · 61</span></div>
+<h3>Доработать сайт на Тильде и подключить amoCRM</h3><p>Заявки с сайта должны попадать в воронку…</p></div>
+</div></div>
+</div>
+<div class="strip"><div class="inner"><span>Источники:</span><strong>Telegram-чаты заказчиков</strong><strong>FL.ru</strong><strong>Freelance.ru</strong><strong>Workspace</strong><strong>Ваши собственные группы</strong></div></div>
+</section>
+
+<section class="section">
+<div class="section-head"><p class="eyebrow">Знакомо?</p><h2>Заказы есть. Вы просто видите их слишком поздно</h2></div>
+<div class="pains">
+<article class="pain"><span class="num">01</span><h3>Часы в чатах</h3><p>Десятки групп, сотни сообщений в день. Пока вы листаете ленту, работа простаивает.</p></article>
+<article class="pain"><span class="num">02</span><h3>Шум вместо заказов</h3><p>Самореклама исполнителей, вакансии и курсы занимают большую часть ленты.</p></article>
+<article class="pain"><span class="num">03</span><h3>Первым пишет другой</h3><p>Заказчик выбирает из первых откликов. Через пару часов пост уже не актуален.</p></article>
+</div>
+</section>
+
+<section class="section" id="features">
+<div class="section-head"><p class="eyebrow">Возможности</p><h2>Всё для работы с входящим спросом — в одном месте</h2><p>От первого сигнала до оплаченного счёта: найти, оценить, ответить и довести до сделки.</p></div>
+<div class="features">
+<article class="feature"><div class="icon">{{ icon('filter') }}</div><h3>Умный отбор</h3><p>Фильтры по услугам, бюджету и ключевым словам. Реклама подрядчиков, вакансии и обучение отсекаются автоматически.</p></article>
+<article class="feature"><div class="icon">{{ icon('score') }}</div><h3>Оценка лида 0–100</h3><p>Горячий, тёплый или холодный — с понятными причинами: бюджет, срок, срочность, контакт. Неизвестный бюджет не выдумывается.</p></article>
+<article class="feature"><div class="icon">{{ icon('spark') }}</div><h3>AI-отклик за секунды</h3><p>Три варианта ответа на основе запроса и ваших реальных кейсов. Вы проверяете и отправляете сами.</p></article>
+<article class="feature"><div class="icon">{{ icon('funnel') }}</div><h3>Воронка и напоминания</h3><p>Статусы от «Написали» до «Получил заказ», суммы сделок и напоминания в Telegram, чтобы лид не остыл.</p></article>
+<article class="feature"><div class="icon">{{ icon('team') }}</div><h3>Командная работа</h3><p>Роли, назначение ответственных и уведомления исполнителю. Аналитика по каждому участнику.</p></article>
+<article class="feature"><div class="icon">{{ icon('webhook') }}</div><h3>API и webhook</h3><p>Лиды и статусы уходят в вашу CRM. Подписанные запросы и очередь повторов при сбоях.</p></article>
+</div>
+</section>
+
+<section class="night" id="how"><div class="section">
+<div class="section-head"><p class="eyebrow">Как это работает</p><h2>Три шага до первого заказа</h2></div>
+<div class="steps">
+<article class="step"><h3>Войдите через Telegram</h3><p>Без паролей и форм. Подтвердите вход в нашем боте — и кабинет готов.</p></article>
+<article class="step"><h3>Опишите, что вы делаете</h3><p>Выберите услуги, минимальный бюджет и при желании подключите свои рабочие группы.</p></article>
+<article class="step"><h3>Получайте сигналы</h3><p>Подходящие запросы приходят в Telegram в течение минут. Отвечайте первым и ведите сделку в кабинете.</p></article>
+</div></div></section>
+
+<section class="section">
+<div class="section-head"><p class="eyebrow">Для кого</p><h2>Для тех, кто продаёт digital-услуги</h2></div>
+<div class="audience">
+<article><h3>Фрилансеры</h3><p>Стабильный поток заказов без бесконечного мониторинга чатов и бирж.</p></article>
+<article><h3>Студии и агентства</h3><p>Отдельные проекты под направления, общая воронка и распределение лидов по менеджерам.</p></article>
+<article><h3>Продуктовые команды</h3><p>Отчёт о спросе: какие задачи просят чаще, в какие дни и часы.</p></article>
+</div>
+</section>
+
+<section class="section" id="pricing">
+<div class="section-head center"><p class="eyebrow">Тарифы</p><h2>Окупается первым заказом</h2><p>7 дней бесплатно на любом тарифе. Без карты и автосписаний.</p></div>
+{{ plans_grid(plans) }}
+<p class="pricing-note">Цены указаны за месяц. Нужен индивидуальный тариф? {% if support %}<a href="https://t.me/{{ support }}" rel="noopener noreferrer">Напишите нам</a>{% else %}Напишите в поддержку{% endif %}.</p>
+</section>
+
+<section class="section" id="faq">
+<div class="section-head center"><p class="eyebrow">Вопросы</p><h2>Частые вопросы</h2></div>
+<div class="faq">
+<details><summary>Откуда берутся заказы?</summary><p>Из публичных Telegram-чатов, где заказчики ищут исполнителей, и с бирж FL.ru, Freelance.ru и Workspace. На тарифе «Профи» можно подключить собственный Telegram-аккаунт и выбрать конкретные группы.</p></details>
+<details><summary>Все найденные сообщения — готовые заказы?</summary><p>Нет. Прямые запросы и «возможные потребности» помечаются отдельно, вторые можно выключить. Оценка помогает расставить приоритеты, но не гарантирует сделку.</p></details>
+<details><summary>Отправляет ли сервис сообщения заказчикам от моего имени?</summary><p>Нет. Сигналид готовит черновики откликов, а решение, кому и что написать, остаётся за вами.</p></details>
+<details><summary>Что будет после пробного периода?</summary><p>Доступ приостановится, пока вы не выберете тариф. Автоматических списаний нет — карта на пробном периоде не нужна.</p></details>
+<details><summary>Безопасно ли подключать свой Telegram?</summary><p>Это необязательно. Если подключаете, сервис получает только новые сообщения из выбранных групп: история, личные диалоги и каналы не читаются. Сессия хранится в зашифрованном виде и отзывается в один клик.</p></details>
+<details><summary>Как оплатить и получить закрывающие документы?</summary><p>Тариф подключается через поддержку: пришлём ссылку на оплату картой или выставим счёт для ИП и юрлиц. Закрывающие документы — по запросу.</p></details>
+</div>
+</section>
+
+<section class="cta"><div class="box glow night">
+<div><h2>Следующий заказ уже где-то опубликован</h2><p>Включите мониторинг за 5 минут и получите первые сигналы сегодня.</p></div>
+<a class="button large signal" href="/login">Попробовать бесплатно</a>
+</div></section>
+{% endblock %}

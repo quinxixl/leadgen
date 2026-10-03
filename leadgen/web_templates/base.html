@@ -1,0 +1,60 @@
+{% from '_icons.html' import icon, logo %}<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{% block title %}Сигналид — заказы из Telegram и с бирж в реальном времени{% endblock %}</title>
+<meta name="description" content="{% block description %}Сигналид находит запросы на сайты, ботов, приложения и автоматизацию в Telegram-чатах и на биржах, оценивает их и присылает в Telegram за минуты.{% endblock %}">
+<meta name="theme-color" content="#0a0f1e">
+<meta property="og:title" content="Сигналид — ловите заказы раньше конкурентов">
+<meta property="og:description" content="Заказы из Telegram-чатов и с бирж с оценкой и готовым откликом. 7 дней бесплатно.">
+<meta property="og:type" content="website"><meta property="og:locale" content="ru_RU">
+<link rel="icon" href="{{ url_for('static',filename='favicon.svg') }}" type="image/svg+xml">
+<link rel="stylesheet" href="{{ url_for('static',filename='app.css') }}"></head>
+{% set app_mode = user and request.path.startswith(('/app','/admin')) %}
+{% macro nav_link(href,label,name,exact=False) -%}
+<a href="{{ href }}"{% if request.path==href or (not exact and request.path.startswith(href+'/')) %} aria-current="page"{% endif %}>{{ icon(name) }}<span>{{ label }}</span></a>
+{%- endmacro %}
+{% macro app_nav() -%}
+<nav class="side-nav" aria-label="Разделы кабинета">
+{{ nav_link('/app','Обзор','home',True) }}{{ nav_link('/app/leads','Лиды','leads') }}{{ nav_link('/app/demand','Спрос','demand') }}{{ nav_link('/app/projects','Проекты','projects') }}
+<span class="group">Источники</span>{{ nav_link('/app/sources','Каталог чатов','sources') }}{{ nav_link('/app/telegram','Мой Telegram','telegram') }}
+<span class="group">Аккаунт</span>{{ nav_link('/app/team','Команда','team') }}{% if role in ('owner','admin') %}{{ nav_link('/app/integrations','API и webhook','integrations') }}{% endif %}{{ nav_link('/app/settings','Настройки','settings') }}{{ nav_link('/app/billing','Подписка','billing') }}{% if platform_admin %}{{ nav_link('/admin','Админка','admin') }}{% endif %}
+</nav>
+{%- endmacro %}
+{% macro workspace_switch() -%}
+{% if workspace and workspaces|length>1 %}<form action="/app/workspace" method="post" class="workspace-switch"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="next" value="{{ request.path }}"><label>Рабочее пространство<select name="workspace_id">{% for item in workspaces %}<option value="{{ item.id }}" {% if item.id==workspace.id %}selected{% endif %}>{{ item.name }} · {{ roles[item.role] }}</option>{% endfor %}</select></label><button>Переключить</button></form>{% endif %}
+{%- endmacro %}
+{% macro side_foot() -%}
+<div class="side-foot">
+{% if subscription %}<a class="plan-chip{% if not subscription_ok %} expired{% endif %}" href="/app/billing"><strong>{{ plan_names.get(subscription.plan_code, subscription.plan_code) }}</strong><span>{% if not subscription_ok %}Доступ приостановлен — продлить{% elif trial_days_left is not none %}Осталось дней: {{ trial_days_left }}{% else %}Активна{% endif %}</span></a>{% endif %}
+<div class="who"><span class="avatar">{{ (user.display_name or 'С')[:1]|upper }}</span><span>{{ user.display_name or 'Аккаунт' }}</span></div>
+<form action="/logout" method="post"><input type="hidden" name="csrf" value="{{ csrf }}"><button>Выйти</button></form>
+</div>
+{%- endmacro %}
+<body{% block body_class %}{% endblock %}><a class="skip" href="#content">Перейти к содержимому</a>
+{% if app_mode %}
+<div class="mobile-top on-night"><div class="bar"><a class="brand" href="/app">{{ logo() }}Сигналид</a><details><summary aria-label="Меню"><span></span></summary><div class="drawer">{{ app_nav() }}{{ workspace_switch() }}{{ side_foot() }}</div></details></div></div>
+<div class="app">
+<aside class="sidebar on-night"><a class="brand" href="/app">{{ logo() }}<span>Сигналид<small>кабинет</small></span></a>{{ workspace_switch() }}{{ app_nav() }}{{ side_foot() }}</aside>
+<main id="content" class="workspace">
+{% if subscription and subscription_ok and trial_days_left is not none and trial_days_left<=3 and request.path!='/app/billing' %}<p class="notice warn">Пробный период заканчивается{% if trial_days_left==0 %} сегодня{% else %} через {{ trial_days_left }} {{ 'день' if trial_days_left==1 else 'дня' }}{% endif %}. <a href="/app/billing">Выбрать тариф</a></p>{% endif %}
+{% for message in get_flashed_messages() %}<p class="notice" role="status">{{ message }}</p>{% endfor %}
+{% block content %}{% endblock %}
+</main></div>
+{% else %}
+<header class="site-header {% block header_class %}{% endblock %}"><div class="bar">
+<a class="brand" href="/">{{ logo() }}<span>Сигналид<small>заказы в реальном времени</small></span></a>
+{% set links %}<a href="/#features">Возможности</a><a href="/#how">Как это работает</a><a href="/pricing">Тарифы</a><a href="/#faq">Вопросы</a>{% if user %}<a class="button" href="/app">Открыть кабинет</a>{% else %}<a class="button quiet" href="/login">Войти</a><a class="button" href="/login">Попробовать бесплатно</a>{% endif %}{% endset %}
+<nav class="site-nav" aria-label="Основная навигация">{{ links }}</nav>
+<details class="menu"><summary aria-label="Меню"><span></span></summary><nav class="site-nav" aria-label="Меню">{{ links }}</nav></details>
+</div></header>
+<main id="content">
+{% with messages = get_flashed_messages() %}{% if messages %}<div class="page">{% for message in messages %}<p class="notice" role="status">{{ message }}</p>{% endfor %}</div>{% endif %}{% endwith %}
+{{ self.content() }}
+</main>
+<footer class="site-footer"><div class="inner">
+<div><a class="brand" href="/">{{ logo() }}<span>Сигналид</span></a><p class="muted">Находим запросы клиентов в Telegram-чатах и на биржах, пока они ещё актуальны.</p></div>
+<div><h3>Продукт</h3><ul><li><a href="/#features">Возможности</a></li><li><a href="/pricing">Тарифы</a></li><li><a href="/#faq">Вопросы и ответы</a></li><li><a href="/login">Вход в кабинет</a></li></ul></div>
+<div><h3>Документы и поддержка</h3><ul><li><a href="/terms">Публичная оферта</a></li><li><a href="/privacy">Политика конфиденциальности</a></li>{% if support %}<li><a href="https://t.me/{{ support }}" rel="noopener noreferrer">Поддержка в Telegram</a></li>{% endif %}</ul></div>
+<div class="legal"><span>© 2026 Сигналид{% if legal_entity %} · {{ legal_entity }}{% endif %}</span><span>Сервис не отправляет сообщения от вашего имени и не гарантирует заключение сделок.</span></div>
+</div></footer>
+{% endif %}
+</body></html>

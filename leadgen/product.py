@@ -4,7 +4,9 @@ import json
 import re
 
 from .app import classify_for_config
-from .core import TOPICS, Lead, message, topics
+from .core import TOPICS, Lead, message, topics, budget
+from .billing import PLAN_NAMES, days_left, subscription_active, support_contact
+from .drafts import reply_drafts
 
 MENU={'keyboard':[
     [{'text':'▶️ Начать'},{'text':'⏸ Пауза'}],
@@ -17,9 +19,19 @@ MENU={'keyboard':[
 
 REGISTER={'inline_keyboard':[[{'text':'Зарегистрироваться','callback_data':'register:confirm'}]]}
 PUBLIC_CHAT=re.compile(r'^(?:https?://t\.me/|@)?([A-Za-z][A-Za-z0-9_]{3,})/?$')
-PIPELINE={'saved':'Сохранён','contacted':'Написал','discussing':'Обсуждаем','won':'Получил заказ',
+PIPELINE={'saved':'Новый / сохранён','viewed':'Просмотрен','working':'В работе','contacted':'Написали',
+          'discussing':'Получен ответ','meeting':'Назначена встреча','proposal':'Отправлено предложение','won':'Получил заказ',
           'lost':'Не подошёл','not_fit':'Не подходит'}
-FEEDBACK={'fit':'Подходит','ad':'Реклама','job':'Ищет работу','not_service':'Не моя услуга'}
+FEEDBACK={'fit':'Подходит','ad':'Реклама','job':'Ищет работу','not_service':'Не моя услуга',
+          'too_cold':'Слишком холодный','wrong_geo':'Неверная география','competitor':'Конкурент',
+          'vacancy':'Вакансия','duplicate':'Дубль'}
+
+
+def amount(text,maximum):
+    """Whole rubles within a column's range; anything else is not an amount."""
+    value=text.replace(' ','').replace('\u00a0','')
+    if not (value.isascii() and value.isdigit() and len(value)<=10):return None
+    return int(value) if int(value)<=maximum else None
 
 
 def lead_buttons(lead_id,url):
@@ -29,7 +41,8 @@ def lead_buttons(lead_id,url):
          {'text':'📢 Реклама','callback_data':f'feedback:ad:{lead_id}'}],
         [{'text':'💼 Ищет работу','callback_data':f'feedback:job:{lead_id}'},
          {'text':'🚫 Не моя услуга','callback_data':f'feedback:not_service:{lead_id}'}],
-        [{'text':'Изменить статус','callback_data':f'pipeline:menu:{lead_id}'}]]}
+        [{'text':'Изменить статус','callback_data':f'pipeline:menu:{lead_id}'},
+         {'text':'Напомнить через час','callback_data':f'remind:{lead_id}'}]]}
 
 
 def user_config(base,row):
@@ -50,6 +63,9 @@ def eligible_for_user(lead,config,prefs):
     if reason in ('бюджет не указан','указан только потолок бюджета') and prefs['show_without_budget']:
         return True,'запрос без подтверждённого бюджета'
     if reason.startswith('возможная потребность:') and prefs['show_possible_needs']:
+        amount,_=budget(lead.budget_text)
+        if amount is None and not prefs['show_without_budget']:
+            return False,'возможная потребность без бюджета: показ отключён'
         return True,reason
     return False,reason
 
@@ -59,21 +75,39 @@ def deliver_registered(db,base,sender,limit_per_user=1):
         JOIN user_preferences p ON p.user_id=u.id
         JOIN subscriptions s ON s.user_id=u.id
         WHERE u.status='active' AND p.monitoring_active=true
-          AND s.status IN ('stub_active','active') ORDER BY u.id''').fetchall()
+          AND s.status IN ('stub_active','trial','active')
+          AND (s.ends_at IS NULL OR s.ends_at>now()) ORDER BY u.id''').fetchall()
     delivered=0
     for prefs in users:
         config=user_config(base,prefs);processed=0
+        projects=db.execute('SELECT * FROM projects WHERE user_id=? ORDER BY id',(prefs['id'],)).fetchall()
         rows=db.execute('''SELECT l.id,l.payload FROM leads l
-            WHERE NOT EXISTS (SELECT 1 FROM user_leads ul WHERE ul.user_id=? AND ul.lead_id=l.id)
+            WHERE l.status<>'duplicate' AND (l.origin_user_id IS NULL OR l.origin_user_id=?)
+              AND NOT EXISTS (SELECT 1 FROM user_leads ul WHERE ul.user_id=? AND ul.lead_id=l.id)
+              AND NOT EXISTS (SELECT 1 FROM user_leads seen JOIN leads original ON original.id=seen.lead_id
+                  WHERE seen.user_id=? AND seen.delivery_status<>'filtered' AND original.fingerprint=l.fingerprint)
               AND l.first_seen::timestamptz >= ?
-            ORDER BY l.id DESC LIMIT 100''',(prefs['id'],prefs['registered_at'])).fetchall()
+            ORDER BY l.id DESC LIMIT 100''',(prefs['id'],prefs['id'],prefs['id'],prefs['registered_at'])).fetchall()
         for row in rows:
             lead=Lead(**json.loads(row['payload']))
             allowed,reason=eligible_for_user(lead,config,prefs)
+            matches=[]
+            if projects:
+                from .projects import project_eligibility
+                for project in projects:
+                    match,why=project_eligibility(lead,config,project)
+                    if match:matches.append(project['id']);reason=why
+                allowed=bool(matches)
+                if not allowed:reason='не соответствует фильтрам проектов'
             if not allowed:
                 with db:db.execute('''INSERT INTO user_leads(user_id,lead_id,delivery_status,filter_reason)
                     VALUES(?,?,'filtered',?) ON CONFLICT(user_id,lead_id) DO NOTHING''',(prefs['id'],row['id'],reason))
                 continue
+            if matches:
+                with db:
+                    for project_id in matches:
+                        db.execute('''INSERT INTO project_leads(project_id,user_id,lead_id) VALUES(?,?,?)
+                            ON CONFLICT(project_id,lead_id) DO NOTHING''',(project_id,prefs['id'],row['id']))
             try:
                 sender('sendMessage',{'chat_id':str(prefs['telegram_chat_id']),'text':message(lead,reason),
                     'link_preview_options':{'is_disabled':True},'reply_markup':lead_buttons(row['id'],lead.url)})
@@ -88,6 +122,9 @@ def deliver_registered(db,base,sender,limit_per_user=1):
                     VALUES(?,?,'sent',?,now(),now()) ON CONFLICT(user_id,lead_id) DO UPDATE SET
                     delivery_status='sent',filter_reason=excluded.filter_reason,sent_at=now(),updated_at=now()''',
                     (prefs['id'],row['id'],reason))
+                with db:
+                    from .integrations import enqueue_lead_event
+                    enqueue_lead_event(db,prefs['id'],row['id'],'lead.created')
                 delivered+=1;processed+=1
                 if processed>=limit_per_user:break
     return delivered
@@ -118,7 +155,7 @@ class ProductController:
     def _user(self,telegram_id):
         return self.db.execute('''SELECT u.*,p.monitoring_active,p.min_budget,p.show_without_budget,
             p.show_possible_needs,p.topics,p.source_switches,p.profile_services,p.portfolio,p.state,
-            s.status AS subscription_status,s.plan_code
+            s.status AS subscription_status,s.plan_code,s.ends_at
             FROM app_users u JOIN user_preferences p ON p.user_id=u.id
             JOIN subscriptions s ON s.user_id=u.id WHERE u.telegram_user_id=?''',(telegram_id,)).fetchone()
 
@@ -155,15 +192,42 @@ class ProductController:
         self.say('Какие услуги вы оказываете?',keys)
 
     def _lead(self,lead_id):
-        row=self.db.execute('SELECT id,payload,reason FROM leads WHERE id=?',(lead_id,)).fetchone()
+        row=self.db.execute('''SELECT l.id,l.payload,l.reason FROM leads l JOIN user_leads ul ON ul.lead_id=l.id
+            JOIN app_users u ON u.id=ul.user_id WHERE l.id=? AND u.telegram_chat_id=?
+            AND ul.delivery_status<>'filtered' ''',(lead_id,int(self.last_chat))).fetchone()
         return (row,Lead(**json.loads(row['payload']))) if row else (None,None)
 
-    def _draft(self,user,lead):
-        service=', '.join(topics(lead.title+' '+lead.text)) or user['profile_services'] or 'разработке и автоматизации'
-        proof=(' Из релевантного опыта: '+user['portfolio'].strip()+'.') if user['portfolio'].strip() else ''
-        return (f'Здравствуйте! Увидел ваш запрос по направлению: {service}. '
-                f'Могу уточнить текущий процесс и предложить решение с этапами, сроками и оценкой стоимости.{proof} '
-                'Подскажите, какой результат для вас приоритетен и есть ли желаемый срок запуска?')[:3500]
+    def _draft(self,user,lead,lead_id):
+        project=self.db.execute('''SELECT p.* FROM project_leads pl JOIN projects p
+            ON p.id=pl.project_id AND p.user_id=pl.user_id
+            WHERE pl.user_id=? AND pl.lead_id=? ORDER BY p.id LIMIT 1''',(user['id'],lead_id)).fetchone()
+        settings=dict(project) if project else None
+        try:
+            from .ai_offers import generate_for_lead
+            from .teams import ensure_workspace
+            workspace_id=ensure_workspace(self.db,user)
+            drafts,_,_=generate_for_lead(self.db,workspace_id,user['id'],user['id'],lead_id,lead,
+                user['profile_services'],user['portfolio'],settings)
+            heading='AI-офферы от Groq. Проверьте факты, цену и сроки перед отправкой.'
+        except Exception as exc:
+            from .ai_offers import AIOfferError
+            drafts=reply_drafts(lead,user['profile_services'],user['portfolio'],settings)
+            reason=str(exc) if isinstance(exc,AIOfferError) else 'AI временно недоступен.'
+            heading=reason+' Ниже быстрые локальные шаблоны.'
+        return (heading+'\n\n'+'\n\n'.join(name+':\n'+text for name,text in drafts.items()))[:3900]
+
+    def _subscription_text(self,user):
+        row={'status':user['subscription_status'],'ends_at':user['ends_at']}
+        name=PLAN_NAMES.get(user['plan_code'],user['plan_code'])
+        if not subscription_active(row):
+            line='Доступ приостановлен: пробный период или оплаченный срок закончился.'
+        elif days_left(row) is None:
+            line=f'Тариф «{name}» активен.'
+        else:
+            line=f'Тариф «{name}». Осталось дней: {days_left(row)}.'
+        contact=support_contact()
+        tail=f'\n\nПродлить или сменить тариф — в веб-кабинете в разделе «Подписка» или у поддержки: @{contact}' if contact else '\n\nПродлить или сменить тариф можно в веб-кабинете, раздел «Подписка».'
+        return line+tail
 
     def _stats(self,user_id):
         feedback={r['label']:r['total'] for r in self.db.execute(
@@ -191,16 +255,41 @@ class ProductController:
         chat_id=str(chat['id']);self.last_chat=chat_id
         user=self._user(actor['id'])
         text=(msg or {}).get('text','').strip()
+        if text.startswith('/start web_') or (callback and callback.get('data','').startswith('webok:')):
+            from .web_auth import login_record, approve_login, code_choices
+            if callback:
+                token,_,code=callback['data'][6:].partition(':')
+            else:
+                token,code=text[len('/start web_'):],''
+            try:
+                if user and user['status']=='blocked':
+                    self.say('Доступ заблокирован.');return
+                record=login_record(self.db,token)
+                if callback:
+                    self.sender('answerCallbackQuery',{'callback_query_id':callback['id']})
+                    if not user:user=self._register(actor,chat['id'])
+                    approve_login(self.db,token,user['id'],code)
+                    self.say('Вход подтверждён. Вернитесь на сайт и нажмите «Завершить вход».')
+                else:
+                    # The code is never shown here: the user must read it on the site.
+                    keys=[[{'text':choice,'callback_data':'webok:'+token+':'+choice} for choice in code_choices(record)]]
+                    requester=record.get('requester') or 'неизвестный браузер'
+                    self.say('Вход в веб-кабинет Сигналид.\n\nЗапрос: '+requester+
+                        '\nВыберите код, который сейчас показан на сайте. Если вы не открывали сайт сами — '
+                        'ничего не нажимайте: кто-то пытается войти в ваш аккаунт.\n\n'
+                        'Доступ к вашей переписке при входе не предоставляется.',{'inline_keyboard':keys})
+            except ValueError as exc:self.say(str(exc))
+            return
         if not user:
             if callback and callback.get('data')=='register:confirm':
                 self.sender('answerCallbackQuery',{'callback_query_id':callback['id']});user=self._register(actor,chat['id'])
-                self.say('Регистрация завершена. Тестовый доступ активирован; оплата пока работает как заглушка.',chat_id=chat_id)
-            else:self.say('IT Lead Finder находит прямые заказы и возможные потребности. Для начала зарегистрируйтесь.',REGISTER,chat_id)
+                self.say('Регистрация завершена. Пробный период — 7 дней, без привязки карты. Настройте услуги и включите мониторинг.',chat_id=chat_id)
+            else:self.say('Сигналид находит прямые заказы и возможные потребности. Для начала зарегистрируйтесь.',REGISTER,chat_id)
             return
         with self.db:self.db.execute('UPDATE app_users SET last_seen_at=now() WHERE id=?',(user['id'],))
         if user['status']=='blocked':
             self.say('Аккаунт заблокирован. Обратитесь в поддержку.');return
-        if user['subscription_status'] not in ('stub_active','active') and text!='💳 Подписка':
+        if not subscription_active({'status':user['subscription_status'],'ends_at':user['ends_at']}) and text!='💳 Подписка':
             self.say('Доступ приостановлен. Откройте раздел «Подписка».');return
         if callback:
             self.sender('answerCallbackQuery',{'callback_query_id':callback['id']})
@@ -208,10 +297,12 @@ class ProductController:
             if action=='topic' and len(parts)==2 and parts[1].isdigit() and int(parts[1])<len(TOPICS):
                 selected=user['topics'] if isinstance(user['topics'],list) else json.loads(user['topics']);name=list(TOPICS)[int(parts[1])]
                 selected.remove(name) if name in selected else selected.append(name);self._update_pref(user['id'],'topics',json.dumps(selected));self._services(self._user(actor['id']))
-            elif action=='toggle' and parts[1]=='no_budget':self._update_pref(user['id'],'show_without_budget',not user['show_without_budget']);self._filters(self._user(actor['id']))
-            elif action=='toggle' and parts[1]=='possible':self._update_pref(user['id'],'show_possible_needs',not user['show_possible_needs']);self._filters(self._user(actor['id']))
+            elif action=='toggle' and len(parts)==2 and parts[1]=='no_budget':self._update_pref(user['id'],'show_without_budget',not user['show_without_budget']);self._filters(self._user(actor['id']))
+            elif action=='toggle' and len(parts)==2 and parts[1]=='possible':self._update_pref(user['id'],'show_possible_needs',not user['show_possible_needs']);self._filters(self._user(actor['id']))
             elif action=='budget':self._update_pref(user['id'],'state',json.dumps({'await':'budget'}));self.say('Введите минимальный бюджет числом в рублях. /cancel — отменить.')
             elif action=='feedback' and len(parts)==3 and parts[1] in FEEDBACK and parts[2].isdigit():
+                row,_=self._lead(int(parts[2]))
+                if not row:self.say('Лид не найден.');return
                 with self.db:self.db.execute('''INSERT INTO lead_feedback(user_id,lead_id,label) VALUES(?,?,?)
                     ON CONFLICT(user_id,lead_id) DO UPDATE SET label=excluded.label,updated_at=now()''',(user['id'],int(parts[2]),parts[1]))
                 self.say('Оценка сохранена. Она попадёт в статистику качества и поможет улучшать правила отбора.')
@@ -219,21 +310,37 @@ class ProductController:
                 lid=parts[2];keys={'inline_keyboard':[[{'text':label,'callback_data':f'status:{key}:{lid}'}] for key,label in PIPELINE.items()]}
                 self.say('Выберите результат работы с лидом:',keys)
             elif action=='status' and len(parts)==3 and parts[1] in PIPELINE and parts[2].isdigit():
-                with self.db:self.db.execute('''UPDATE user_leads SET pipeline_status=?,updated_at=now()
-                    WHERE user_id=? AND lead_id=?''',(parts[1],user['id'],int(parts[2])))
+                row,_=self._lead(int(parts[2]))
+                if not row:self.say('Лид не найден.');return
+                with self.db:
+                    self.db.execute('''UPDATE user_leads SET pipeline_status=?,updated_at=now()
+                        WHERE user_id=? AND lead_id=?''',(parts[1],user['id'],int(parts[2])))
+                    self.db.execute("INSERT INTO lead_activity(user_id,lead_id,kind,detail) VALUES(?,?,'status',?)",
+                        (user['id'],int(parts[2]),PIPELINE[parts[1]]))
                 if parts[1]=='won':self._update_pref(user['id'],'state',json.dumps({'await':'deal_amount','lead_id':int(parts[2])}));self.say('Заказ отмечен полученным. Напишите сумму сделки в рублях или 0, если не хотите указывать.')
                 else:self.say('Статус сохранён: '+PIPELINE[parts[1]])
+            elif action=='remind' and len(parts)==2 and parts[1].isdigit():
+                from .reminders import schedule
+                from datetime import datetime,timedelta,timezone
+                try:
+                    schedule(self.db,user['id'],int(parts[1]),datetime.now(timezone.utc)+timedelta(hours=1))
+                    self.say('Напомню об этом лиде через час.')
+                except ValueError as exc:self.say(str(exc))
             elif action=='reply' and len(parts)==2 and parts[1].isdigit():
-                _,lead=self._lead(int(parts[1]));self.say('Черновик отклика:\n\n'+self._draft(user,lead) if lead else 'Лид не найден.')
+                lead_id=int(parts[1]);_,lead=self._lead(lead_id)
+                if lead:
+                    self.say('Готовлю персональные офферы…')
+                    self.say(self._draft(user,lead,lead_id))
+                else:self.say('Лид не найден.')
             elif action=='subscribe':
-                self.say('Оплата пока не подключена. Тестовая подписка остаётся активной; списаний не будет.')
+                self.say(self._subscription_text(user))
             return
         state=user['state'] if isinstance(user['state'],dict) else json.loads(user['state'])
         if text=='/cancel':self._update_pref(user['id'],'state',json.dumps({}));self.say('Ввод отменён.');return
-        if state.get('await')=='budget' and text.replace(' ','').isdigit():
-            value=int(text.replace(' ',''));self._update_pref(user['id'],'min_budget',value);self._update_pref(user['id'],'state',json.dumps({}));self.say(f'Минимальный бюджет: {value:,} ₽'.replace(',',' '));return
-        if state.get('await')=='deal_amount' and text.replace(' ','').isdigit():
-            value=int(text.replace(' ',''));
+        if state.get('await')=='budget' and amount(text,100000000) is not None:
+            value=amount(text,100000000);self._update_pref(user['id'],'min_budget',value);self._update_pref(user['id'],'state',json.dumps({}));self.say(f'Минимальный бюджет: {value:,} ₽'.replace(',',' '));return
+        if state.get('await')=='deal_amount' and amount(text,1000000000) is not None:
+            value=amount(text,1000000000);
             with self.db:self.db.execute('UPDATE user_leads SET deal_amount=?,updated_at=now() WHERE user_id=? AND lead_id=?',(value,user['id'],state['lead_id']))
             self._update_pref(user['id'],'state',json.dumps({}));self.say('Сумма сделки сохранена.');return
         if state.get('await')=='portfolio':self._update_pref(user['id'],'portfolio',text[:3000]);self._update_pref(user['id'],'state',json.dumps({}));self.say('Примеры работ сохранены.');return
@@ -255,7 +362,6 @@ class ProductController:
         elif text=='➕ Добавить чат':self._update_pref(user['id'],'state',json.dumps({'await':'chat'}));self.say('Отправьте публичную ссылку на группу или её @username.')
         elif text=='🔌 Аккаунт':self.say('Аккаунт приложения подключён через Telegram. Realtime-монитор пока использует общий серверный аккаунт. Не отправляйте боту пароль, код входа или облачный пароль Telegram. Свои публичные группы добавляйте через «Добавить чат».')
         elif text=='🧰 Портфолио':self._update_pref(user['id'],'state',json.dumps({'await':'portfolio'}));self.say('Отправьте краткое описание услуг и 1–3 примера работ. Они будут использованы в черновике отклика.')
-        elif text=='💳 Подписка':self.say('Тариф: тестовый. Статус: активен. Платёжный провайдер пока не подключён.',
-            {'inline_keyboard':[[{'text':'Купить подписку (заглушка)','callback_data':'subscribe:stub'}]]})
+        elif text=='💳 Подписка':self.say(self._subscription_text(user))
         elif text=='📥 Лиды':self.say('Новые подходящие лиды приходят автоматически. Используйте кнопки под карточками для оценки и изменения статуса.')
         else:self.say('Выберите действие в меню.')
