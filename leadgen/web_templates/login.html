@@ -7,8 +7,8 @@
 <p class="eyebrow">Вход и регистрация</p><h1>Вход в Сигналид</h1>
 {% if session.get('login_token') %}
 <ol class="auth-steps"><li>Запомните код ниже.</li><li>Откройте бота и выберите <strong>этот же код</strong> среди вариантов.</li><li>Вернитесь сюда и нажмите «Завершить вход».</li></ol>
-<p class="code" aria-label="Код входа">{{ session.login_code }}</p>
-<a class="button large" href="https://t.me/{{ bot }}?start=web_{{ session.login_token }}" target="_blank" rel="noopener noreferrer">Открыть бота в Telegram</a>
+<p class="code" aria-label="Код входа" data-goal-view="login_code">{{ session.login_code }}</p>
+<a class="button large" href="https://t.me/{{ bot }}?start=web_{{ session.login_token }}" target="_blank" rel="noopener noreferrer" data-goal="bot_open">Открыть бота в Telegram</a>
 <form method="post"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="action" value="finish"><button class="quiet">Завершить вход</button></form>
 <form method="post"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="action" value="begin"><input type="hidden" name="consent" value="1"><button class="link-button">Получить новый код</button></form>
 <p class="fine">Код действует 5 минут. Никому не сообщайте его и не подтверждайте вход, который начинали не вы.</p>

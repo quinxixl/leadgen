@@ -44,7 +44,7 @@
 {% else %}
 <header class="site-header {% block header_class %}{% endblock %}"><div class="bar">
 <a class="brand" href="/">{{ logo() }}<span>Сигналид<small>заказы в реальном времени</small></span></a>
-{% set links %}<a href="/#features">Возможности</a><a href="/#how">Как это работает</a><a href="/pricing">Тарифы</a><a href="/#faq">Вопросы</a>{% if user %}<a class="button" href="/app">Открыть кабинет</a>{% else %}<a class="button quiet" href="/login">Войти</a><a class="button" href="/login">Попробовать бесплатно</a>{% endif %}{% endset %}
+{% set links %}<a href="/#features">Возможности</a><a href="/#how">Как это работает</a><a href="/pricing">Тарифы</a><a href="/#faq">Вопросы</a>{% if user %}<a class="button" href="/app">Открыть кабинет</a>{% else %}<a class="button quiet" href="/login">Войти</a><a class="button" href="/login" data-goal="cta_trial">Попробовать бесплатно</a>{% endif %}{% endset %}
 <nav class="site-nav" aria-label="Основная навигация">{{ links }}</nav>
 <details class="menu"><summary aria-label="Меню"><span></span></summary><nav class="site-nav" aria-label="Меню">{{ links }}</nav></details>
 </div></header>
@@ -55,7 +55,7 @@
 <footer class="site-footer"><div class="inner">
 <div><a class="brand" href="/">{{ logo() }}<span>Сигналид</span></a><p class="muted">Находим запросы клиентов в Telegram-чатах и на биржах, пока они ещё актуальны.</p></div>
 <div><h3>Продукт</h3><ul><li><a href="/#features">Возможности</a></li><li><a href="/pricing">Тарифы</a></li><li><a href="/#faq">Вопросы и ответы</a></li><li><a href="/login">Вход в кабинет</a></li></ul></div>
-<div><h3>Документы и поддержка</h3><ul><li><a href="/terms">Публичная оферта</a></li><li><a href="/privacy">Политика конфиденциальности</a></li>{% if support %}<li><a href="https://t.me/{{ support }}" rel="noopener noreferrer">Поддержка в Telegram</a></li>{% endif %}</ul></div>
+<div><h3>Документы и поддержка</h3><ul><li><a href="/terms">Публичная оферта</a></li><li><a href="/privacy">Политика конфиденциальности</a></li>{% if support %}<li><a href="https://t.me/{{ support }}" rel="noopener noreferrer" data-goal="support_click">Поддержка в Telegram</a></li>{% endif %}</ul></div>
 <div class="legal"><span>© 2026 Сигналид{% if legal_entity %} · {{ legal_entity }}{% endif %}</span><span>Сервис не отправляет сообщения от вашего имени и не гарантирует заключение сделок.</span></div>
 </div></footer>
 {% endif %}

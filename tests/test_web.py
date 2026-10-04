@@ -63,7 +63,7 @@ class Metrika(unittest.TestCase):
         r=self.client.get('/')
         self.assertIn('data-id="113384418"',r.text);self.assertIn('mc.yandex.ru/watch/113384418',r.text)
         csp=r.headers['Content-Security-Policy']
-        self.assertIn("script-src 'self' https://mc.yandex.ru",csp);self.assertIn('metrika.yandex.ru',csp)
+        self.assertIn("script-src 'self' https://mc.yandex.ru",csp);self.assertIn("'unsafe-inline'",csp);self.assertIn('metrika.yandex.ru',csp)
         self.assertNotIn('X-Frame-Options',r.headers)
     def test_no_counter_or_framing_in_cabinet_paths(self):
         r=self.client.get('/app')
@@ -74,3 +74,13 @@ class Metrika(unittest.TestCase):
         with __import__('unittest.mock').mock.patch.dict(os.environ,{'YANDEX_METRIKA_ID':''}):
             r=self.client.get('/')
         self.assertNotIn('metrika.js',r.text);self.assertNotIn('mc.yandex',r.headers['Content-Security-Policy'])
+
+
+class Goals(unittest.TestCase):
+    def test_goal_markers_present(self):
+        from unittest.mock import patch
+        with patch.dict(os.environ,{'YANDEX_METRIKA_ID':'1'}):
+            client=create_app({'TESTING':True,'SECRET_KEY':'test-'*10,'BOT_USERNAME':'b','SESSION_COOKIE_SECURE':False}).test_client()
+            self.assertIn('data-goal="cta_trial"',client.get('/').text)
+            self.assertIn('data-goal-view="pricing_view"',client.get('/pricing').text)
+            self.assertIn("style-src 'self';",client.get('/app').headers['Content-Security-Policy'])

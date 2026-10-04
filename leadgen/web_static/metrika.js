@@ -11,4 +11,15 @@
   })(window, document, 'script', 'https://mc.yandex.ru/metrika/tag.js?id=' + id, 'ym');
   window.ym(id, 'init', {ssr: true, webvisor: true, clickmap: true, ecommerce: 'dataLayer',
     referrer: document.referrer, url: location.href, accurateTrackBounce: true, trackLinks: true});
+  // Goals: data-goal="name" fires on click, data-goal-view="name" fires when the page shows the element.
+  function goal(name) { if (name) window.ym(id, 'reachGoal', name); }
+  document.addEventListener('click', function (event) {
+    var el = event.target.closest && event.target.closest('[data-goal]');
+    if (el) goal(el.getAttribute('data-goal'));
+  }, true);
+  function views() {
+    var items = document.querySelectorAll('[data-goal-view]');
+    for (var n = 0; n < items.length; n++) goal(items[n].getAttribute('data-goal-view'));
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', views); else views();
 })();

@@ -114,8 +114,11 @@ def create_app(test_config=None):
         # Metrica's click map shows public pages in a frame on metrika.yandex.ru; everything else stays unframeable.
         ancestors="'self' https://metrika.yandex.ru https://metrika.yandex.by https://metrica.yandex.com https://*.webvisor.com" if public else "'none'"
         if not public:response.headers['X-Frame-Options']='DENY'
-        response.headers['Content-Security-Policy']=(f"default-src 'self'; style-src 'self'; img-src 'self' data:{yandex}; "
-            f"script-src 'self'{yandex}; connect-src 'self'{yandex}; frame-ancestors {ancestors}; base-uri 'self'; form-action 'self'")
+        # Metrica's element picker and click map draw overlays with inline styles and blob frames.
+        styles="'self' 'unsafe-inline'" if public else "'self'"
+        frames=f"; frame-src blob:{yandex}" if public else ''
+        response.headers['Content-Security-Policy']=(f"default-src 'self'; style-src {styles}; img-src 'self' data:{yandex}; "
+            f"script-src 'self'{yandex}; connect-src 'self'{yandex}{frames}; frame-ancestors {ancestors}; base-uri 'self'; form-action 'self'")
         if not request.path.startswith('/web_static/'):
             response.headers['Cache-Control']='no-store'
         return response
