@@ -70,6 +70,11 @@ class Metrika(unittest.TestCase):
         self.assertNotIn('mc.yandex.ru',r.headers['Content-Security-Policy'])
         self.assertIn("frame-ancestors 'none'",r.headers['Content-Security-Policy'])
         self.assertEqual(r.headers['X-Frame-Options'],'DENY')
+    def test_no_counter_on_login_page(self):
+        r=self.client.get('/login')
+        self.assertNotIn('metrika.js',r.text)
+        csp=r.headers['Content-Security-Policy']
+        self.assertNotIn('mc.yandex',csp);self.assertIn("frame-ancestors 'none'",csp)
     def test_disabled_without_id(self):
         with __import__('unittest.mock').mock.patch.dict(os.environ,{'YANDEX_METRIKA_ID':''}):
             r=self.client.get('/')

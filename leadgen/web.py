@@ -109,7 +109,7 @@ def create_app(test_config=None):
             response.headers['Strict-Transport-Security']='max-age=31536000; includeSubDomains'
         response.headers['Permissions-Policy']='camera=(), microphone=(), geolocation=(), payment=()'
         # Yandex Metrica runs on public pages only: the cabinet holds client data that must not reach analytics.
-        public=metrika_id() and not request.path.startswith(('/app','/admin','/api/'))
+        public=metrika_id() and not request.path.startswith(('/app','/admin','/api/','/login'))
         yandex=' https://mc.yandex.ru https://mc.yandex.com https://yastatic.net' if public else ''
         # Metrica's click map shows public pages in a frame on metrika.yandex.ru; everything else stays unframeable.
         ancestors="'self' https://metrika.yandex.ru https://metrika.yandex.by https://metrica.yandex.com https://*.webvisor.com" if public else "'none'"
