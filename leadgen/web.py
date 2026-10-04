@@ -25,6 +25,16 @@ def metrika_id():
     return value if value.isdigit() else ''
 
 
+def yandex_verification():
+    """Site-verification token for Яндекс.Вебмастер; empty disables the meta tag."""
+    return os.environ.get('YANDEX_VERIFICATION','').strip()
+
+
+def google_verification():
+    """Site-verification token for Google Search Console; empty disables the meta tag."""
+    return os.environ.get('GOOGLE_VERIFICATION','').strip()
+
+
 def platform_admin_ids():
     return {value.strip() for value in os.environ.get('WEB_ADMIN_TELEGRAM_IDS','').split(',') if value.strip()}
 
@@ -131,6 +141,7 @@ def create_app(test_config=None):
                     subscription=sub,subscription_ok=subscription_active(sub),plan_names=PLAN_NAMES,
                     trial_days_left=days_left(sub) if sub else None,support=support_contact(),plans=PLANS,
                     legal_entity=legal_entity(),metrika_id=metrika_id(),
+                    yandex_verification=yandex_verification(),google_verification=google_verification(),
                     workspaces=g.get('workspaces',[]),workspace=g.get('workspace'),role=g.get('role'),roles=ROLES,
                     platform_admin=is_platform_admin(g.get('user')))
 

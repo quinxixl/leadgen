@@ -3,6 +3,8 @@
 <title>{% block title %}Сигналид — заказы из Telegram и с бирж в реальном времени{% endblock %}</title>
 <meta name="description" content="{% block description %}Сигналид находит запросы на сайты, ботов, приложения и автоматизацию в Telegram-чатах и на биржах, оценивает их и присылает в Telegram за минуты.{% endblock %}">
 <meta name="theme-color" content="#0a0f1e">
+{% if yandex_verification %}<meta name="yandex-verification" content="{{ yandex_verification }}">{% endif %}
+{% if google_verification %}<meta name="google-site-verification" content="{{ google_verification }}">{% endif %}
 {% set site_root = request.url_root.rstrip('/') %}{% set canonical = site_root ~ request.path %}{% set og_image = site_root ~ url_for('static',filename='og.png') %}
 <link rel="canonical" href="{{ canonical }}">
 <meta property="og:site_name" content="Сигналид">

@@ -103,6 +103,23 @@ class Metrika(unittest.TestCase):
         self.assertNotIn('metrika.js',r.text);self.assertNotIn('mc.yandex',r.headers['Content-Security-Policy'])
 
 
+class SiteVerification(unittest.TestCase):
+    def _client(self):
+        return create_app({'TESTING':True,'SECRET_KEY':'test-'*10,'BOT_USERNAME':'test_bot',
+                           'SESSION_COOKIE_SECURE':False}).test_client()
+    def test_yandex_verification_present_when_set(self):
+        from unittest.mock import patch
+        with patch.dict(os.environ,{'YANDEX_VERIFICATION':'65d582a01b72026c'}):
+            r=self._client().get('/')
+        self.assertIn('name="yandex-verification"',r.text)
+        self.assertIn('content="65d582a01b72026c"',r.text)
+    def test_yandex_verification_absent_when_unset(self):
+        from unittest.mock import patch
+        with patch.dict(os.environ,{'YANDEX_VERIFICATION':''}):
+            r=self._client().get('/')
+        self.assertNotIn('name="yandex-verification"',r.text)
+
+
 class Goals(unittest.TestCase):
     def test_goal_markers_present(self):
         from unittest.mock import patch
