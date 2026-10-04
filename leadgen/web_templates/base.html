@@ -3,11 +3,22 @@
 <title>{% block title %}Сигналид — заказы из Telegram и с бирж в реальном времени{% endblock %}</title>
 <meta name="description" content="{% block description %}Сигналид находит запросы на сайты, ботов, приложения и автоматизацию в Telegram-чатах и на биржах, оценивает их и присылает в Telegram за минуты.{% endblock %}">
 <meta name="theme-color" content="#0a0f1e">
-<meta property="og:title" content="Сигналид — ловите заказы раньше конкурентов">
-<meta property="og:description" content="Заказы из Telegram-чатов и с бирж с оценкой и готовым откликом. 7 дней бесплатно.">
+{% set site_root = request.url_root.rstrip('/') %}{% set canonical = site_root ~ request.path %}{% set og_image = site_root ~ url_for('static',filename='og.png') %}
+<link rel="canonical" href="{{ canonical }}">
+<meta property="og:site_name" content="Сигналид">
+<meta property="og:title" content="{{ self.title() }}">
+<meta property="og:description" content="{{ self.description() }}">
+<meta property="og:url" content="{{ canonical }}">
 <meta property="og:type" content="website"><meta property="og:locale" content="ru_RU">
+<meta property="og:image" content="{{ og_image }}">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="{{ self.title() }}">
+<meta name="twitter:description" content="{{ self.description() }}">
+<meta name="twitter:image" content="{{ og_image }}">
 <link rel="icon" href="{{ url_for('static',filename='favicon.svg') }}" type="image/svg+xml">
 <link rel="stylesheet" href="{{ url_for('static',filename='app.css') }}">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"Organization","name":"Сигналид","url":"{{ site_root }}","logo":"{{ site_root ~ url_for('static',filename='favicon.svg') }}"{% if support %},"sameAs":["https://t.me/{{ support }}"]{% endif %}}</script>
+{% block head_extra %}{% endblock %}
 {% if metrika_id and not request.path.startswith(('/app','/admin','/login')) %}<script src="{{ url_for('static',filename='metrika.js') }}" data-id="{{ metrika_id }}" defer></script>{% endif %}</head>
 {% set app_mode = user and request.path.startswith(('/app','/admin')) %}
 {% macro nav_link(href,label,name,exact=False) -%}

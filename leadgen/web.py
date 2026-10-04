@@ -166,7 +166,18 @@ def create_app(test_config=None):
 
     @app.get('/robots.txt')
     def robots():
-        return Response('User-agent: *\nDisallow: /app\nDisallow: /admin\nDisallow: /login\n',mimetype='text/plain')
+        sitemap_url=request.url_root.rstrip('/')+'/sitemap.xml'
+        return Response('User-agent: *\nDisallow: /app\nDisallow: /admin\nDisallow: /login\n'
+            f'Sitemap: {sitemap_url}\n',mimetype='text/plain')
+
+    @app.get('/sitemap.xml')
+    def sitemap():
+        root=request.url_root.rstrip('/')
+        # Indexable public pages only; /login and /app are disallowed in robots.txt.
+        locs=''.join(f'<url><loc>{root}{path}</loc></url>' for path in ('/','/pricing','/privacy','/terms'))
+        xml=('<?xml version="1.0" encoding="UTF-8"?>\n'
+            f'<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">{locs}</urlset>')
+        return Response(xml,mimetype='application/xml')
 
     @app.get('/app/billing')
     def billing():

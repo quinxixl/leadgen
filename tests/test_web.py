@@ -25,6 +25,28 @@ class WebPublic(unittest.TestCase):
         self.assertIn('HttpOnly',r.headers['Set-Cookie'])
     def test_invalid_host(self):
         self.assertEqual(self.client.get('/',base_url='http://attacker.example').status_code,400)
+    def test_canonical_and_social_tags(self):
+        r=self.client.get('/pricing')
+        self.assertIn('<link rel="canonical" href="http://localhost/pricing">',r.text)
+        self.assertIn('property="og:url" content="http://localhost/pricing"',r.text)
+        self.assertIn('name="twitter:card"',r.text)
+        self.assertIn('/web_static/og.png',r.text)
+    def test_structured_data_on_landing(self):
+        r=self.client.get('/')
+        self.assertIn('application/ld+json',r.text)
+        self.assertIn('"@type":"Organization"',r.text)
+        self.assertIn('"@type":"FAQPage"',r.text)
+    def test_sitemap_and_robots(self):
+        s=self.client.get('/sitemap.xml')
+        self.assertEqual(s.status_code,200)
+        self.assertIn('xml',s.headers['Content-Type'])
+        self.assertIn('<loc>http://localhost/pricing</loc>',s.text)
+        self.assertNotIn('/login',s.text)
+        robots=self.client.get('/robots.txt')
+        self.assertIn('Sitemap: http://localhost/sitemap.xml',robots.text)
+    def test_static_og_image_served(self):
+        with self.client.get('/web_static/og.png') as response:
+            self.assertEqual(response.status_code,200)
     def test_platform_admin_ids_accept_multiple_values_and_spaces(self):
         with patch.dict(os.environ,{'WEB_ADMIN_TELEGRAM_IDS':'123, 5947200567, '}):
             self.assertEqual(platform_admin_ids(),{'123','5947200567'})
