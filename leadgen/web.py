@@ -19,6 +19,12 @@ from .billing import PLANS, PLAN_NAMES, days_left, legal_entity, subscription_ac
 from .rate_limit import RateLimited, hit, purge_expired
 
 
+def metrika_id():
+    """Yandex Metrica counter number; empty disables the counter."""
+    value=os.environ.get('YANDEX_METRIKA_ID','').strip()
+    return value if value.isdigit() else ''
+
+
 def platform_admin_ids():
     return {value.strip() for value in os.environ.get('WEB_ADMIN_TELEGRAM_IDS','').split(',') if value.strip()}
 
@@ -98,12 +104,18 @@ def create_app(test_config=None):
     @app.after_request
     def headers(response):
         response.headers['X-Content-Type-Options']='nosniff'
-        response.headers['X-Frame-Options']='DENY'
         response.headers['Referrer-Policy']='same-origin'
         if request.is_secure:
             response.headers['Strict-Transport-Security']='max-age=31536000; includeSubDomains'
         response.headers['Permissions-Policy']='camera=(), microphone=(), geolocation=(), payment=()'
-        response.headers['Content-Security-Policy']="default-src 'self'; style-src 'self'; img-src 'self' data:; script-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+        # Yandex Metrica runs on public pages only: the cabinet holds client data that must not reach analytics.
+        public=metrika_id() and not request.path.startswith(('/app','/admin','/api/'))
+        yandex=' https://mc.yandex.ru https://mc.yandex.com https://yastatic.net' if public else ''
+        # Metrica's click map shows public pages in a frame on metrika.yandex.ru; everything else stays unframeable.
+        ancestors="'self' https://metrika.yandex.ru https://metrika.yandex.by https://metrica.yandex.com https://*.webvisor.com" if public else "'none'"
+        if not public:response.headers['X-Frame-Options']='DENY'
+        response.headers['Content-Security-Policy']=(f"default-src 'self'; style-src 'self'; img-src 'self' data:{yandex}; "
+            f"script-src 'self'{yandex}; connect-src 'self'{yandex}; frame-ancestors {ancestors}; base-uri 'self'; form-action 'self'")
         if not request.path.startswith('/web_static/'):
             response.headers['Cache-Control']='no-store'
         return response
@@ -115,7 +127,7 @@ def create_app(test_config=None):
         return dict(csrf=session.get('csrf',''),user=g.get('user'),pipeline=PIPELINE,feedback=FEEDBACK,
                     subscription=sub,subscription_ok=subscription_active(sub),plan_names=PLAN_NAMES,
                     trial_days_left=days_left(sub) if sub else None,support=support_contact(),plans=PLANS,
-                    legal_entity=legal_entity(),
+                    legal_entity=legal_entity(),metrika_id=metrika_id(),
                     workspaces=g.get('workspaces',[]),workspace=g.get('workspace'),role=g.get('role'),roles=ROLES,
                     platform_admin=is_platform_admin(g.get('user')))
 

@@ -50,3 +50,27 @@ class Helpers(unittest.TestCase):
         from leadgen.integrations import resolve_public
         records=lambda *a,**k:[(socket.AF_INET6,socket.SOCK_STREAM,6,'',('::ffff:127.0.0.1',443,0,0))]
         with self.assertRaises(ValueError):resolve_public('evil.example',records)
+
+
+class Metrika(unittest.TestCase):
+    def setUp(self):
+        from unittest.mock import patch
+        self.env=patch.dict(os.environ,{'YANDEX_METRIKA_ID':'113384418'});self.env.start()
+        self.client=create_app({'TESTING':True,'SECRET_KEY':'test-'*10,'BOT_USERNAME':'test_bot',
+                                'SESSION_COOKIE_SECURE':False}).test_client()
+    def tearDown(self):self.env.stop()
+    def test_counter_on_public_pages_with_csp(self):
+        r=self.client.get('/')
+        self.assertIn('data-id="113384418"',r.text);self.assertIn('mc.yandex.ru/watch/113384418',r.text)
+        csp=r.headers['Content-Security-Policy']
+        self.assertIn("script-src 'self' https://mc.yandex.ru",csp);self.assertIn('metrika.yandex.ru',csp)
+        self.assertNotIn('X-Frame-Options',r.headers)
+    def test_no_counter_or_framing_in_cabinet_paths(self):
+        r=self.client.get('/app')
+        self.assertNotIn('mc.yandex.ru',r.headers['Content-Security-Policy'])
+        self.assertIn("frame-ancestors 'none'",r.headers['Content-Security-Policy'])
+        self.assertEqual(r.headers['X-Frame-Options'],'DENY')
+    def test_disabled_without_id(self):
+        with __import__('unittest.mock').mock.patch.dict(os.environ,{'YANDEX_METRIKA_ID':''}):
+            r=self.client.get('/')
+        self.assertNotIn('metrika.js',r.text);self.assertNotIn('mc.yandex',r.headers['Content-Security-Policy'])

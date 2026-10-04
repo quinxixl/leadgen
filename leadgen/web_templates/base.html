@@ -7,7 +7,8 @@
 <meta property="og:description" content="Заказы из Telegram-чатов и с бирж с оценкой и готовым откликом. 7 дней бесплатно.">
 <meta property="og:type" content="website"><meta property="og:locale" content="ru_RU">
 <link rel="icon" href="{{ url_for('static',filename='favicon.svg') }}" type="image/svg+xml">
-<link rel="stylesheet" href="{{ url_for('static',filename='app.css') }}"></head>
+<link rel="stylesheet" href="{{ url_for('static',filename='app.css') }}">
+{% if metrika_id and not request.path.startswith(('/app','/admin')) %}<script src="{{ url_for('static',filename='metrika.js') }}" data-id="{{ metrika_id }}" defer></script>{% endif %}</head>
 {% set app_mode = user and request.path.startswith(('/app','/admin')) %}
 {% macro nav_link(href,label,name,exact=False) -%}
 <a href="{{ href }}"{% if request.path==href or (not exact and request.path.startswith(href+'/')) %} aria-current="page"{% endif %}>{{ icon(name) }}<span>{{ label }}</span></a>
@@ -30,6 +31,7 @@
 </div>
 {%- endmacro %}
 <body{% block body_class %}{% endblock %}><a class="skip" href="#content">Перейти к содержимому</a>
+{% if metrika_id and not request.path.startswith(('/app','/admin')) %}<noscript><div><img class="offscreen" src="https://mc.yandex.ru/watch/{{ metrika_id }}" alt=""></div></noscript>{% endif %}
 {% if app_mode %}
 <div class="mobile-top on-night"><div class="bar"><a class="brand" href="/app">{{ logo() }}Сигналид</a><details><summary aria-label="Меню"><span></span></summary><div class="drawer">{{ app_nav() }}{{ workspace_switch() }}{{ side_foot() }}</div></details></div></div>
 <div class="app">
