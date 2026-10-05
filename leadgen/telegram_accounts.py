@@ -3,6 +3,7 @@ import asyncio
 import json
 import os
 import re
+import time
 from datetime import datetime, timedelta, timezone
 
 from cryptography.fernet import Fernet, InvalidToken
@@ -14,6 +15,42 @@ AUTH_TTL = timedelta(minutes=10)
 
 class TelegramAccountError(ValueError):
     pass
+
+
+def _delivery_label(value):
+    return {
+        'SentCodeTypeApp': 'в служебный чат «Telegram» на уже авторизованном устройстве',
+        'SentCodeTypeSms': 'по SMS',
+        'SentCodeTypeSmsPhrase': 'по SMS с кодовой фразой',
+        'SentCodeTypeSmsWord': 'по SMS с кодовым словом',
+        'SentCodeTypeCall': 'телефонным звонком',
+        'SentCodeTypeFlashCall': 'входящим звонком',
+        'SentCodeTypeMissedCall': 'пропущенным звонком',
+        'SentCodeTypeEmailCode': 'на привязанную электронную почту',
+        'SentCodeTypeSetUpEmailRequired': 'после настройки резервной электронной почты',
+        'SentCodeTypeFragmentSms': 'через Fragment',
+        'SentCodeTypeFirebaseSms': 'через системную доставку Telegram',
+        'CodeTypeSms': 'по SMS',
+        'CodeTypeCall': 'телефонным звонком',
+        'CodeTypeFlashCall': 'входящим звонком',
+        'CodeTypeMissedCall': 'пропущенным звонком',
+        'CodeTypeFragmentSms': 'через Fragment',
+    }.get(type(value).__name__, 'через Telegram') if value else ''
+
+
+def _telegram_code_error(exc):
+    messages = {
+        'ApiIdInvalidError': 'Telegram отклонил API ID или API Hash сервера.',
+        'AuthRestartError': 'Telegram попросил перезапустить авторизацию. Повторите попытку через минуту.',
+        'PhoneCodeExpiredError': 'Запрос кода истёк. Начните подключение заново.',
+        'PhoneNumberAppSignupForbiddenError': 'Этот номер нельзя зарегистрировать через подключение приложения.',
+        'PhoneNumberBannedError': 'Telegram заблокировал этот номер телефона.',
+        'PhoneNumberFloodError': 'Для этого номера запрошено слишком много кодов. Подождите перед новой попыткой.',
+        'PhoneNumberInvalidError': 'Telegram не распознал номер телефона. Проверьте код страны и формат.',
+        'SendCodeUnavailableError': 'Telegram временно не может отправить код этому аккаунту.',
+    }
+    return messages.get(type(exc).__name__,
+                        'Telegram отклонил запрос кода. Подождите несколько минут и повторите попытку один раз.')
 
 
 class SessionCipher:
@@ -75,31 +112,40 @@ class TelethonGateway:
             except FloodWaitError as exc:
                 raise TelegramAccountError(f'Telegram ограничил частоту. Повторите через {exc.seconds} секунд.') from None
             except RPCError as exc:
-                messages = {
-                    'ApiIdInvalidError': 'Telegram отклонил API ID или API Hash сервера.',
-                    'AuthRestartError': 'Telegram попросил перезапустить авторизацию. Повторите попытку через минуту.',
-                    'PhoneNumberAppSignupForbiddenError': 'Этот номер нельзя зарегистрировать через подключение приложения.',
-                    'PhoneNumberBannedError': 'Telegram заблокировал этот номер телефона.',
-                    'PhoneNumberFloodError': 'Для этого номера запрошено слишком много кодов. Подождите перед новой попыткой.',
-                    'PhoneNumberInvalidError': 'Telegram не распознал номер телефона. Проверьте код страны и формат.',
-                    'SendCodeUnavailableError': 'Telegram временно не может отправить код этому аккаунту.',
-                }
-                raise TelegramAccountError(messages.get(
-                    type(exc).__name__,
-                    'Telegram отклонил запрос кода. Подождите несколько минут и повторите попытку один раз.'
-                )) from None
-            delivery = {
-                'SentCodeTypeApp': 'в служебный чат «Telegram» на уже авторизованном устройстве',
-                'SentCodeTypeSms': 'по SMS',
-                'SentCodeTypeCall': 'телефонным звонком',
-                'SentCodeTypeFlashCall': 'входящим звонком',
-                'SentCodeTypeMissedCall': 'пропущенным звонком',
-                'SentCodeTypeEmailCode': 'на привязанную электронную почту',
-                'SentCodeTypeFragmentSms': 'через Fragment',
-                'SentCodeTypeFirebaseSms': 'через системную доставку Telegram',
-            }.get(type(sent.type).__name__, 'через Telegram')
+                raise TelegramAccountError(_telegram_code_error(exc)) from None
+            delivery = _delivery_label(sent.type)
+            next_delivery = _delivery_label(sent.next_type)
             return {'phone': phone, 'phone_code_hash': sent.phone_code_hash,
-                    'session': client.session.save(), 'delivery': delivery}
+                    'session': client.session.save(), 'delivery': delivery,
+                    'next_delivery': next_delivery,
+                    'resend_after': time.time() + max(1, sent.timeout or 60)}
+        finally:
+            await client.disconnect()
+
+    def resend(self, state):
+        return self._run(self._resend(state))
+
+    async def _resend(self, state):
+        from telethon import TelegramClient
+        from telethon.errors import FloodWaitError, RPCError
+        from telethon.sessions import StringSession
+        from telethon.tl.functions.auth import ResendCodeRequest
+        client = TelegramClient(StringSession(state['session']), self.api_id, self.api_hash)
+        try:
+            await client.connect()
+            try:
+                sent = await client(ResendCodeRequest(state['phone'], state['phone_code_hash']))
+            except FloodWaitError as exc:
+                raise TelegramAccountError(f'Telegram ограничил частоту. Повторите через {exc.seconds} секунд.') from None
+            except RPCError as exc:
+                raise TelegramAccountError(_telegram_code_error(exc)) from None
+            if not hasattr(sent, 'phone_code_hash'):
+                raise TelegramAccountError('Telegram не вернул новый код. Начните подключение заново.')
+            state.update(phone_code_hash=sent.phone_code_hash, session=client.session.save(),
+                         delivery=_delivery_label(sent.type),
+                         next_delivery=_delivery_label(sent.next_type),
+                         resend_after=time.time() + max(1, sent.timeout or 60))
+            return state
         finally:
             await client.disconnect()
 
@@ -215,6 +261,22 @@ def begin_connection(db, user_id, phone, cipher, gateway):
             VALUES(?,?,'pending',now()) ON CONFLICT(user_id) DO UPDATE SET
             phone_hint=excluded.phone_hint,status='pending',last_error='',updated_at=now()''',
             (user_id, masked_phone(phone)))
+    return state.get('delivery', 'через Telegram')
+
+
+def resend_connection(db, user_id, cipher, gateway):
+    row, state = auth_record(db, user_id, cipher)
+    if row['stage'] != 'code':
+        raise TelegramAccountError('Повторная отправка кода сейчас недоступна.')
+    if not state.get('next_delivery'):
+        raise TelegramAccountError('Telegram не предложил резервный способ доставки. Начните подключение позже.')
+    wait = int(state.get('resend_after', 0) - time.time())
+    if wait > 0:
+        raise TelegramAccountError(f'Резервный способ станет доступен через {wait} с.')
+    state = gateway.resend(state)
+    with db:
+        db.execute('''UPDATE telegram_connection_auth SET state_cipher=?,expires_at=?,updated_at=now()
+            WHERE user_id=?''', (cipher.encrypt(state), datetime.now(timezone.utc) + AUTH_TTL, user_id))
     return state.get('delivery', 'через Telegram')
 
 

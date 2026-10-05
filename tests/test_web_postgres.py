@@ -14,7 +14,10 @@ from cryptography.fernet import Fernet
 class FakeTelegramGateway:
     def begin(self,phone):
         return {'phone':phone,'phone_code_hash':'hash','session':'pending-session',
-                'delivery':'в служебный чат «Telegram» на уже авторизованном устройстве'}
+                'delivery':'в служебный чат «Telegram» на уже авторизованном устройстве',
+                'next_delivery':'по SMS','resend_after':0}
+    def resend(self,state):
+        return state|{'phone_code_hash':'sms-hash','delivery':'по SMS','next_delivery':'','resend_after':0}
     def verify_code(self,state,code):
         if code=='2222':return {'password_required':True,'state':state|{'session':'password-session'}}
         return {'password_required':False,'session':'active-session','telegram_user_id':9001,'display_name':'Тестовый аккаунт'}
@@ -288,6 +291,11 @@ class WebPostgres(unittest.TestCase):
         self.assertEqual(connection['phone_hint'],'+79••••••567')
         auth=self.db.execute('SELECT state_cipher FROM telegram_connection_auth WHERE user_id=?',(self.u,)).fetchone()
         self.assertNotIn('+79991234567',auth['state_cipher'])
+        response=self.client.post('/app/telegram/resend',data={'csrf':'test-csrf'})
+        self.assertEqual(response.status_code,302)
+        auth=self.db.execute('SELECT state_cipher FROM telegram_connection_auth WHERE user_id=?',(self.u,)).fetchone()
+        state=SessionCipher(self.app.config['TELEGRAM_CIPHER_KEY']).decrypt(auth['state_cipher'])
+        self.assertEqual((state['delivery'],state['phone_code_hash']),('по SMS','sms-hash'))
         response=self.client.post('/app/telegram/code',data={'csrf':'test-csrf','code':'1111'})
         self.assertEqual(response.status_code,302)
         connection=self.db.execute('SELECT * FROM telegram_connections WHERE user_id=?',(self.u,)).fetchone()

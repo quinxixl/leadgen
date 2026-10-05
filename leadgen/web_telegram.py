@@ -4,7 +4,7 @@ from flask import abort, current_app, flash, g, redirect, render_template, reque
 from .rate_limit import RateLimited, hit
 
 from .telegram_accounts import (SessionCipher, TelegramAccountError, TelethonGateway,
-                                begin_connection, disconnect, sync_dialogs,
+                                begin_connection, disconnect, resend_connection, sync_dialogs,
                                 verify_code, verify_password)
 
 
@@ -51,6 +51,16 @@ def register_telegram_routes(app, db):
                 flash('На аккаунте включена двухэтапная защита. Введите облачный пароль.')
             else:
                 flash(f'Аккаунт подключён. Найдено групп: {count}. Выберите нужные источники.')
+        except TelegramAccountError as exc:
+            flash(str(exc))
+        return redirect('/app/telegram')
+
+    @app.post('/app/telegram/resend')
+    def telegram_resend():
+        try:
+            cipher, gateway = services()
+            delivery = resend_connection(db(), g.user['id'], cipher, gateway)
+            flash(f'Новый код отправлен {delivery}. Используйте только последний полученный код.')
         except TelegramAccountError as exc:
             flash(str(exc))
         return redirect('/app/telegram')
