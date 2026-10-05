@@ -65,7 +65,8 @@ class Controller:
 
     def services(self):
         chosen=self.config()['topics']
-        keys=[[{'text':('✅ ' if name in chosen else '⬜️ ')+name,'callback_data':'topic:'+str(i)}] for i,name in enumerate(TOPICS)]
+        buttons=[{'text':('✅ ' if name in chosen else '⬜️ ')+name,'callback_data':'topic:'+str(i)} for i,name in enumerate(TOPICS)]
+        keys=[buttons[i:i+2] for i in range(0,len(buttons),2)]
         self.say('Выберите услуги. Можно включить несколько:',{'inline_keyboard':keys})
 
     def sources(self):

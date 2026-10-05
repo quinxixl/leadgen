@@ -1,7 +1,7 @@
 """Project settings and notes; authorization always comes from the session."""
 import json
 from flask import abort, flash, g, redirect, render_template, request
-from .core import TOPICS
+from .core import TOPICS, TOPIC_CATEGORIES
 
 
 def register_projects(app, db):
@@ -62,7 +62,7 @@ def register_projects(app, db):
                     int(reply_length),pid,g.owner_id))
                 db().execute("DELETE FROM user_leads WHERE user_id=? AND delivery_status='filtered'",(g.owner_id,))
             flash('Фильтры проекта сохранены. Они применяются при доставке лидов.');return redirect(request.path)
-        return render_template('project.html',project=project,topics=TOPICS)
+        return render_template('project.html',project=project,topics=TOPICS,topic_categories=TOPIC_CATEGORIES)
 
     @app.post('/app/leads/<int:lid>/notes')
     def add_note(lid):

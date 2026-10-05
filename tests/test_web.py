@@ -70,6 +70,7 @@ class Helpers(unittest.TestCase):
         self.assertEqual(chat_spheres('Фриланс: дизайн и монтаж'),
                          ['Фриланс и заказы','Дизайн','Видео и монтаж'])
         self.assertIn('Автоматизация и CRM',chat_spheres('Интеграции amoCRM и n8n'))
+        self.assertIn('Юриспруденция',chat_spheres('Чат юристов и заказчиков'))
         self.assertEqual(chat_spheres('Общий чат соседей'),['Другое'])
     def test_like_pattern_escapes_wildcards(self):
         from leadgen.web import like_pattern

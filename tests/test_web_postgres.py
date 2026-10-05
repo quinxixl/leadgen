@@ -68,6 +68,7 @@ class WebPostgres(unittest.TestCase):
         if not cls.db.execute("SELECT to_regclass('leadgen.telegram_connections') AS name").fetchone()['name']:
             cls.db.connection.execute(Path('supabase/migrations/20261001041250_personal_telegram_connections.sql').read_text(),prepare=False)
         cls.db.connection.execute(Path('supabase/migrations/20261005153000_telegram_qr_login.sql').read_text(),prepare=False)
+        cls.db.connection.execute(Path('supabase/migrations/20261005180000_expand_service_topics.sql').read_text(),prepare=False)
         if not cls.db.execute("SELECT to_regclass('leadgen.workspaces') AS name").fetchone()['name']:
             cls.db.connection.execute(Path('supabase/migrations/20261001061514_team_workspaces_and_assignments.sql').read_text(),prepare=False)
         if not cls.db.execute("SELECT to_regclass('leadgen.lead_tags') AS name").fetchone()['name']:

@@ -192,8 +192,9 @@ class ProductController:
 
     def _services(self,user):
         selected=user['topics'] if isinstance(user['topics'],list) else json.loads(user['topics'])
-        keys={'inline_keyboard':[[{'text':('✅ ' if name in selected else '⬜️ ')+name,
-            'callback_data':f'topic:{i}'}] for i,name in enumerate(TOPICS)]}
+        buttons=[{'text':('✅ ' if name in selected else '⬜️ ')+name,
+            'callback_data':f'topic:{i}'} for i,name in enumerate(TOPICS)]
+        keys={'inline_keyboard':[buttons[i:i+2] for i in range(0,len(buttons),2)]}
         self.say('Какие услуги вы оказываете?',keys)
 
     def _lead(self,lead_id):

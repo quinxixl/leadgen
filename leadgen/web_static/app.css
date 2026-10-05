@@ -126,6 +126,13 @@ td a{overflow-wrap:anywhere}
 .source-picker .check{padding:10px 0;border-bottom:1px solid var(--line);margin:0;align-items:flex-start}
 .source-picker .check span{display:block}.source-picker .check small{display:block;color:var(--muted);font-weight:500;margin-top:3px}
 .source-picker .check:last-child{border-bottom:0}
+.service-picker{margin-bottom:24px}.service-picker-controls{margin:8px 0 18px}
+.service-picker-controls>label{max-width:520px}.service-picker-actions{display:flex;gap:8px;flex-wrap:wrap}
+.service-picker-actions button{width:auto;margin:0;padding:9px 12px}.service-picker-controls .muted{margin:10px 0 0}
+.service-groups{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.service-groups section{border:1px solid var(--line);border-radius:var(--radius-sm);padding:14px;background:var(--surface-2)}
+.service-groups h3{font-size:15px;margin:0 0 8px}.service-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:2px 12px}
+.service-options .check{margin:0;padding:7px 0;align-items:flex-start}.form-tail{margin-top:24px}
 
 /* Metrics & bars */
 .metrics .panel span{display:block;font-size:13px;color:var(--muted);font-weight:500}
@@ -379,6 +386,8 @@ td a{overflow-wrap:anywhere}
   .filters button{width:100%}
   .source-controls{grid-template-columns:1fr}
   .source-actions button{width:100%}
+  .service-groups,.service-options{grid-template-columns:1fr}
+  .service-picker-actions button{width:100%}
   .daily{grid-template-columns:86px 1fr 32px}
   .code{font-size:32px;letter-spacing:6px}
   .table-wrap table{min-width:520px}

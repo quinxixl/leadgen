@@ -22,6 +22,12 @@ def lead(**changes):
     return Lead(**(values | changes))
 
 class Filters(unittest.TestCase):
+    def test_service_catalog_groups_every_topic_once(self):
+        from leadgen.core import TOPICS,TOPIC_CATEGORIES
+        grouped=[name for _,names in TOPIC_CATEGORIES for name in names]
+        self.assertEqual(grouped,list(TOPICS))
+        self.assertEqual(len(grouped),34)
+
     def test_budget_formats(self):
         for text,expected in [('5 000 ₽',5000),('5к',5000),('5 тыс. руб',5000),('20–70 тыс рублей',20000),
                               ('5.000 руб',5000),('5,5к',5500),('от 10000 рублей',10000),('Бюджет: 25000-35000 рублей',25000)]:
@@ -80,8 +86,30 @@ class Filters(unittest.TestCase):
     def test_hh_is_separate(self):
         self.assertEqual(classify(lead(kind='vacancy',budget_text='100000 ₽'))[0],'review')
 
-    def test_other_service(self):
-        self.assertEqual(classify(lead(title='Нужен дизайнер логотипа',text='Нарисовать логотип'))[0],'rejected')
+    def test_new_service_categories_and_user_selection(self):
+        from leadgen.app import classify_for_config
+        cases = [
+            ('Нужен дизайнер логотипа','Нарисовать логотип','Логотипы и брендинг'),
+            ('Ищу юриста','Нужно проверить договор с подрядчиком','Юридические услуги'),
+            ('Нужен монтаж','Смонтировать несколько reels','Видеомонтаж'),
+            ('Нужен бухгалтер','Подготовить налоговую отчётность','Бухгалтерия и налоги'),
+        ]
+        for title,text,topic in cases:
+            with self.subTest(topic=topic):
+                item=lead(title=title,text=text)
+                state,_,tags=classify(item)
+                self.assertEqual(state,'ready')
+                self.assertIn(topic,tags)
+                self.assertEqual(classify_for_config(item,CONFIG|{'topics':[topic]})[0],'ready')
+                self.assertEqual(classify_for_config(item,CONFIG|{'topics':['Боты']})[1],'направление выключено')
+
+    def test_new_service_seller_ads_are_rejected(self):
+        item=lead(title='Юридические услуги',text='Проконсультирую и составлю договор. Пишите в личку.')
+        self.assertEqual(classify(item)[0],'rejected')
+
+    def test_recruiter_request_is_not_mistaken_for_vacancy(self):
+        item=lead(title='Нужен рекрутер',text='Нужно закрыть три вакансии разработчиков')
+        self.assertEqual(classify(item)[0],'ready')
 
     def test_message_limit(self):
         self.assertLess(len(message(lead(text='<b>x</b>'*3000),'Причина')),4096)

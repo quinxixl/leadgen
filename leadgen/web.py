@@ -12,7 +12,7 @@ from flask import Flask, abort, current_app, flash, g, jsonify, redirect, render
 from werkzeug.middleware.proxy_fix import ProxyFix
 from .app import env_load
 from .database import db_open
-from .core import TOPICS, Lead, enrich
+from .core import TOPICS, TOPIC_CATEGORIES, Lead, enrich
 from .product import PIPELINE, FEEDBACK, ProductController
 from .web_auth import begin_login, consume_login
 from .billing import PLANS, PLAN_NAMES, days_left, legal_entity, subscription_active, support_contact
@@ -458,7 +458,7 @@ def create_app(test_config=None):
                 db().execute("DELETE FROM user_leads WHERE user_id=? AND delivery_status='filtered'",(g.owner_id,))
             flash('Настройки применены к уведомлениям.');return redirect(url_for('settings'))
         prefs=db().execute('SELECT * FROM user_preferences WHERE user_id=?',(g.owner_id,)).fetchone()
-        return render_template('settings.html',prefs=prefs,topics=TOPICS)
+        return render_template('settings.html',prefs=prefs,topics=TOPICS,topic_categories=TOPIC_CATEGORIES)
 
     @app.get('/app/sources')
     def sources():

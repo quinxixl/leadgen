@@ -1,4 +1,5 @@
 {% extends 'base.html' %}
+{% block head_extra %}<script src="{{ url_for('static',filename='service_picker.js') }}" defer></script>{% endblock %}
 {% block content %}
 <a href="/app/projects">← Все проекты</a>
 <h1>{{ project.name }}</h1>
@@ -11,7 +12,7 @@
         <h2>Отбор лидов</h2>
         <label>Название проекта<input name="name" required maxlength="100" value="{{ project.name }}"></label>
         <label>Описание проекта<textarea name="description" rows="4" maxlength="3000">{{ project.description }}</textarea><small>Внутренняя информация для команды.</small></label>
-        <fieldset><legend>Услуги</legend>{% for topic in topics %}<label class="check"><input type="checkbox" name="topics" value="{{ topic }}" {% if topic in project.topics %}checked{% endif %}>{{ topic }}</label>{% endfor %}</fieldset>
+        {% set selected_topics=project.topics %}{% include '_topic_picker.html' %}
         <label>Минимальный бюджет, ₽<input name="min_budget" type="number" min="0" max="100000000" required value="{{ project.min_budget }}"></label>
         <label>Минимальная оценка, 0–100<input name="min_score" type="number" min="0" max="100" required value="{{ project.min_score }}"></label>
         <label>Ключевые слова — по одному на строку<textarea name="keywords" rows="5">{{ project.keywords|join('\n') }}</textarea><small>Достаточно одного совпадения. Пустое поле не ограничивает поиск словами.</small></label>
