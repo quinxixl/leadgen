@@ -363,9 +363,12 @@ def qr_connection_state(db, user_id, cipher):
 
 
 def wait_qr_connection(db, user_id, cipher, gateway):
-    row, state = auth_record(db, user_id, cipher)
-    if row['stage'] != 'qr':
+    # An approved Telegram session remains valid after the visual QR token expires.
+    # Let the gateway check that durable authorization before rejecting an old token.
+    row = db.execute('SELECT * FROM telegram_connection_auth WHERE user_id=?', (user_id,)).fetchone()
+    if not row or row['stage'] != 'qr':
         raise TelegramAccountError('QR-подключение не запущено.')
+    state = cipher.decrypt(row['state_cipher'])
     result = gateway.wait_qr(state)
     if result.get('pending'):
         with db:
