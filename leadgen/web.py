@@ -8,7 +8,7 @@ import hmac
 from datetime import date, timedelta
 from urllib.parse import urlsplit
 
-from flask import Flask, abort, current_app, flash, g, jsonify, redirect, render_template, request, session, url_for, Response
+from flask import Flask, abort, current_app, flash, g, jsonify, redirect, render_template, request, send_from_directory, session, url_for, Response
 from werkzeug.middleware.proxy_fix import ProxyFix
 from .app import env_load
 from .database import db_open
@@ -174,6 +174,11 @@ def create_app(test_config=None):
 
     @app.get('/terms')
     def terms():return render_template('terms.html')
+
+    @app.get('/favicon.ico')
+    def favicon():
+        # Search engines (notably Yandex) fetch /favicon.ico from the site root.
+        return send_from_directory(app.static_folder, 'favicon.ico', mimetype='image/x-icon')
 
     @app.get('/robots.txt')
     def robots():

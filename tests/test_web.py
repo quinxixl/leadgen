@@ -47,6 +47,10 @@ class WebPublic(unittest.TestCase):
     def test_static_og_image_served(self):
         with self.client.get('/web_static/og.png') as response:
             self.assertEqual(response.status_code,200)
+    def test_favicon_ico_served_at_root(self):
+        with self.client.get('/favicon.ico') as response:
+            self.assertEqual(response.status_code,200)
+            self.assertTrue(response.headers['Content-Type'].startswith('image/'))
     def test_platform_admin_ids_accept_multiple_values_and_spaces(self):
         with patch.dict(os.environ,{'WEB_ADMIN_TELEGRAM_IDS':'123, 5947200567, '}):
             self.assertEqual(platform_admin_ids(),{'123','5947200567'})
