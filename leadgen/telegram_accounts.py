@@ -180,6 +180,12 @@ class TelethonGateway:
         client = TelegramClient(StringSession(state['session']), self.api_id, self.api_hash)
         try:
             await client.connect()
+            # QR approval authorizes the MTProto key on Telegram's side. The short-lived
+            # UpdateLoginToken event may be missed between two HTTP polling requests,
+            # so always check the durable authorization state before waiting for it.
+            if await client.is_user_authorized():
+                user = await client.get_me()
+                return self._authorized(client, user)
             expires = datetime.fromisoformat(state['expires'])
             remaining = (expires - datetime.now(timezone.utc)).total_seconds()
             if remaining <= 0:
@@ -189,6 +195,9 @@ class TelethonGateway:
             try:
                 user = await qr.wait(timeout=min(20, remaining))
             except TimeoutError:
+                if await client.is_user_authorized():
+                    user = await client.get_me()
+                    return self._authorized(client, user)
                 state['session'] = client.session.save()
                 return {'pending': True, 'state': state}
             except SessionPasswordNeededError:
