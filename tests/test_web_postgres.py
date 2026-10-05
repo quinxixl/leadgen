@@ -70,6 +70,8 @@ class WebPostgres(unittest.TestCase):
         if not cls.db.execute("SELECT to_regclass('leadgen.ai_offer_generations') AS name").fetchone()['name']:
             cls.db.connection.execute(Path('supabase/migrations/20261001094118_ai_offer_generations.sql').read_text(),prepare=False)
         cls.db.connection.execute(Path('supabase/migrations/20261003120000_subscription_trials.sql').read_text(),prepare=False)
+        if not cls.db.execute("SELECT to_regclass('leadgen.telegram_replies') AS name").fetchone()['name']:
+            cls.db.connection.execute(Path('supabase/migrations/20261005070330_telegram_replies.sql').read_text(),prepare=False)
         cls.db.commit()
         cls.app=create_app({'TESTING':True,'SECRET_KEY':'test-'*10,'BOT_USERNAME':'test_bot',
             'SESSION_COOKIE_SECURE':False,'DB_FACTORY':lambda:db_open(DSN),

@@ -35,7 +35,7 @@ def amount(text,maximum):
 
 
 def lead_buttons(lead_id,url):
-    return {'inline_keyboard':[
+    keys={'inline_keyboard':[
         [{'text':'Открыть оригинал','url':url},{'text':'Подготовить отклик','callback_data':f'reply:{lead_id}'}],
         [{'text':'✅ Подходит','callback_data':f'feedback:fit:{lead_id}'},
          {'text':'📢 Реклама','callback_data':f'feedback:ad:{lead_id}'}],
@@ -43,6 +43,11 @@ def lead_buttons(lead_id,url):
          {'text':'🚫 Не моя услуга','callback_data':f'feedback:not_service:{lead_id}'}],
         [{'text':'Изменить статус','callback_data':f'pipeline:menu:{lead_id}'},
          {'text':'Напомнить через час','callback_data':f'remind:{lead_id}'}]]}
+    from .telegram_replies import source_message
+    try:source_message(url)
+    except ValueError:pass
+    else:keys['inline_keyboard'].insert(1,[{'text':'✉️ Ответить через Telegram','callback_data':f'tgcompose:{lead_id}'}])
+    return keys
 
 
 def user_config(base,row):
@@ -229,6 +234,50 @@ class ProductController:
         tail=f'\n\nПродлить или сменить тариф — в веб-кабинете в разделе «Подписка» или у поддержки: @{contact}' if contact else '\n\nПродлить или сменить тариф можно в веб-кабинете, раздел «Подписка».'
         return line+tail
 
+    def _reply_services(self):
+        import os
+        from .telegram_replies import ReplyGateway
+        from .telegram_accounts import SessionCipher
+        return SessionCipher(os.environ.get('TELEGRAM_SESSION_ENCRYPTION_KEY','')),ReplyGateway()
+
+    def _reply_callback(self,user,parts):
+        from . import telegram_replies as replies
+        from .telegram_accounts import TelegramAccountError
+        action=parts[0]
+        if action not in ('tgcompose','tgmode','tgsend','tgcancel'):return False
+        try:
+            if action=='tgcompose' and len(parts)==2 and parts[1].isdigit():
+                lid=int(parts[1]);replies.authorized_lead(self.db,user['id'],user['id'],lid)
+                replies.connection(self.db,user['id'])
+                self.say('Куда отправить отклик с вашего Telegram-аккаунта?',{'inline_keyboard':[
+                    [{'text':label,'callback_data':f'tgmode:{mode}:{lid}'}] for mode,label in replies.MODES.items()]})
+            elif action=='tgmode' and len(parts)==3 and parts[1] in replies.MODES and parts[2].isdigit():
+                lid=int(parts[2]);replies.authorized_lead(self.db,user['id'],user['id'],lid)
+                self._update_pref(user['id'],'state',json.dumps({'await':'telegram_reply','lead_id':lid,'mode':parts[1]}))
+                self.say(replies.MODES[parts[1]]+'. Напишите текст отклика (до 3000 символов). Можно вставить подготовленный оффер. Сначала покажу подтверждение. /cancel — отменить.')
+            elif action in ('tgsend','tgcancel') and len(parts)==2:
+                if action=='tgcancel':row=replies.cancel(self.db,parts[1],user['id'],user['id'])
+                else:
+                    cipher,gateway=self._reply_services()
+                    row=replies.confirm(self.db,parts[1],user['id'],user['id'],cipher,gateway)
+                self._update_pref(user['id'],'state',json.dumps({}))
+                self.say(replies.STATUSES[row['status']]+('. '+row['error'] if row['error'] else ''))
+        except TelegramAccountError as exc:self.say(str(exc))
+        return True
+
+    def _reply_text(self,user,state,text):
+        from . import telegram_replies as replies
+        from .telegram_accounts import TelegramAccountError
+        try:
+            cipher,gateway=self._reply_services()
+            row=replies.prepare(self.db,user['id'],user['id'],state['lead_id'],state['mode'],text,cipher,gateway)
+            self._update_pref(user['id'],'state',json.dumps({'await':'telegram_reply_confirm','reply_id':row['id']}))
+            self.say('Проверьте отклик. Подтверждение действует 15 минут.\n\nОт: '+row['sender_label']+
+                '\n'+replies.MODES[row['mode']]+': '+row['recipient_label']+'\n\n'+row['body'],{'inline_keyboard':[
+                    [{'text':'Подтвердить и отправить','callback_data':'tgsend:'+row['id']}],
+                    [{'text':'Отменить','callback_data':'tgcancel:'+row['id']}]]})
+        except TelegramAccountError as exc:self.say(str(exc))
+
     def _stats(self,user_id):
         feedback={r['label']:r['total'] for r in self.db.execute(
             'SELECT label,count(*) AS total FROM lead_feedback WHERE user_id=? GROUP BY label',(user_id,))}
@@ -294,6 +343,7 @@ class ProductController:
         if callback:
             self.sender('answerCallbackQuery',{'callback_query_id':callback['id']})
             parts=callback.get('data','').split(':');action=parts[0]
+            if self._reply_callback(user,parts):return
             if action=='topic' and len(parts)==2 and parts[1].isdigit() and int(parts[1])<len(TOPICS):
                 selected=user['topics'] if isinstance(user['topics'],list) else json.loads(user['topics']);name=list(TOPICS)[int(parts[1])]
                 selected.remove(name) if name in selected else selected.append(name);self._update_pref(user['id'],'topics',json.dumps(selected));self._services(self._user(actor['id']))
@@ -331,12 +381,21 @@ class ProductController:
                 if lead:
                     self.say('Готовлю персональные офферы…')
                     self.say(self._draft(user,lead,lead_id))
+                    self.say('Можно отредактировать выбранный вариант и отправить его со своего аккаунта.',lead_buttons(lead_id,lead.url))
                 else:self.say('Лид не найден.')
             elif action=='subscribe':
                 self.say(self._subscription_text(user))
             return
         state=user['state'] if isinstance(user['state'],dict) else json.loads(user['state'])
-        if text=='/cancel':self._update_pref(user['id'],'state',json.dumps({}));self.say('Ввод отменён.');return
+        if text=='/cancel':
+            if state.get('await')=='telegram_reply_confirm':
+                from .telegram_replies import cancel
+                try:cancel(self.db,state['reply_id'],user['id'],user['id'])
+                except ValueError:pass
+            self._update_pref(user['id'],'state',json.dumps({}));self.say('Ввод отменён.');return
+        if state.get('await')=='telegram_reply':self._reply_text(user,state,text);return
+        if state.get('await')=='telegram_reply_confirm':
+            self.say('Нажмите «Подтвердить и отправить» под откликом или /cancel для отмены и редактирования.');return
         if state.get('await')=='budget' and amount(text,100000000) is not None:
             value=amount(text,100000000);self._update_pref(user['id'],'min_budget',value);self._update_pref(user['id'],'state',json.dumps({}));self.say(f'Минимальный бюджет: {value:,} ₽'.replace(',',' '));return
         if state.get('await')=='deal_amount' and amount(text,1000000000) is not None:
@@ -360,7 +419,7 @@ class ProductController:
         elif text=='📈 Статистика':self._stats(user['id'])
         elif text=='🗂 Воронка':self._stats(user['id'])
         elif text=='➕ Добавить чат':self._update_pref(user['id'],'state',json.dumps({'await':'chat'}));self.say('Отправьте публичную ссылку на группу или её @username.')
-        elif text=='🔌 Аккаунт':self.say('Аккаунт приложения подключён через Telegram. Realtime-монитор пока использует общий серверный аккаунт. Не отправляйте боту пароль, код входа или облачный пароль Telegram. Свои публичные группы добавляйте через «Добавить чат».')
+        elif text=='🔌 Аккаунт':self.say('Подключите свой Telegram-аккаунт в веб-кабинете, раздел «Telegram». После подключения можно отвечать на объявления с сайта и кнопкой «Ответить через Telegram» под лидом. Не отправляйте боту коды входа и пароли.')
         elif text=='🧰 Портфолио':self._update_pref(user['id'],'state',json.dumps({'await':'portfolio'}));self.say('Отправьте краткое описание услуг и 1–3 примера работ. Они будут использованы в черновике отклика.')
         elif text=='💳 Подписка':self.say(self._subscription_text(user))
         elif text=='📥 Лиды':self.say('Новые подходящие лиды приходят автоматически. Используйте кнопки под карточками для оценки и изменения статуса.')

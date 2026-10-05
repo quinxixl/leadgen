@@ -496,6 +496,8 @@ def create_app(test_config=None):
     register_routes(app,db)
     from .web_telegram import register_telegram_routes
     register_telegram_routes(app,db)
+    from .web_replies import register_reply_routes
+    register_reply_routes(app,db)
     from .teams import register_team_routes
     register_team_routes(app,db)
     from .lead_actions import register_lead_actions

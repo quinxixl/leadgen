@@ -1,0 +1,26 @@
+{% extends 'base.html' %}{% block content %}
+<a href="/app/leads/{{ lead_id }}">← Объявление</a>
+<h1>Ответить через Telegram</h1>
+{% if reply %}
+<section class="panel"><h2>{{ statuses[reply.status] }}</h2>
+<p>От: <strong>{{ reply.sender_label }}</strong></p>
+<p>{{ modes[reply.mode] }}: <strong>{{ reply.recipient_label }}</strong></p>
+<p class="original">{{ reply.body }}</p>
+{% if reply.error %}<p class="notice">{{ reply.error }}</p>{% endif %}
+{% if reply.status=='draft' %}
+<p>Сообщение будет отправлено с вашего личного аккаунта. Проверьте получателя и текст. Подтверждение действует 15 минут.</p>
+<form method="post"><input type="hidden" name="csrf" value="{{ csrf }}"><button name="action" value="send">Подтвердить и отправить</button><button class="quiet" name="action" value="cancel">Отменить</button></form>
+{% elif reply.status in ('sending','uncertain') %}<p>Проверьте переписку в Telegram. Повторная отправка этого отклика отключена, чтобы избежать дублей.</p>{% endif %}
+<p><a href="/app/leads/{{ lead_id }}/reply">Вернуться к редактору</a></p></section>
+{% else %}
+<section class="panel"><h2>{{ lead.title }}</h2>
+{% if error %}<p class="notice" role="alert">{{ error }}</p>{% endif %}
+{% if account %}<p>Отправитель: ваш аккаунт <strong>{{ account.display_name }}</strong>.</p>
+<form method="post"><input type="hidden" name="csrf" value="{{ csrf }}">
+<label>Куда отправить<select name="mode">{% for key,label in modes.items() %}<option value="{{ key }}" {% if key==mode %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+<label>Текст отклика<textarea name="body" rows="8" maxlength="3000" required>{{ body }}</textarea></label>
+<p>Можно вставить и отредактировать подготовленный AI-отклик. Личное сообщение адресуется автору исходного сообщения, а не контактам из его текста.</p>
+<button>Проверить перед отправкой</button></form>
+{% else %}<p>Для отправки <a href="/app/telegram">подключите свой Telegram-аккаунт</a>.</p>{% endif %}</section>
+{% if history %}<section class="panel"><h2>Ваши отклики на это объявление</h2>{% for item in history %}<p><a href="/app/replies/{{ item.id }}">{{ item.created_at|dt }} · {{ statuses[item.status] }}</a> · {{ modes[item.mode] }} · {{ item.recipient_label }}</p>{% endfor %}</section>{% endif %}
+{% endif %}{% endblock %}
