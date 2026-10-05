@@ -14,6 +14,12 @@ class WebPublic(unittest.TestCase):
             with self.client.get(path) as response:self.assertEqual(response.status_code,200,path)
         for path in ('/app','/app/leads','/app/settings','/app/sources','/admin'):
             self.assertEqual(self.client.get(path).status_code,302,path)
+    def test_legal_pages_filled_with_requisites(self):
+        for path in ('/terms','/privacy'):
+            r=self.client.get(path)
+            self.assertEqual(r.status_code,200,path)
+            self.assertIn('Маленюк',r.text,path)
+            self.assertNotIn('[',r.text.replace('[место хранения данных уточняется]',''),path)
     def test_csrf_required(self):
         self.client.get('/login')
         self.assertEqual(self.client.post('/login',data={'action':'begin'}).status_code,400)

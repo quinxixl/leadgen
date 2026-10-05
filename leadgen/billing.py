@@ -46,6 +46,12 @@ def support_contact():
     return os.environ.get('SUPPORT_TELEGRAM', '').strip().lstrip('@')
 
 
+DEFAULT_LEGAL_ENTITY = "ИП Маленюк Никита Романович, ОГРНИП 325911200139330, ИНН 910924258281"
+
+
 def legal_entity():
     """Seller details for the footer and documents, e.g. «ИП Иванов И. И., ИНН 000000000000»."""
-    return os.environ.get('LEGAL_ENTITY', '').strip()
+    value = os.environ.get('LEGAL_ENTITY', '').strip()
+    if not value or value == '0':
+        return DEFAULT_LEGAL_ENTITY
+    return value
