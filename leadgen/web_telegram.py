@@ -11,6 +11,29 @@ from .telegram_accounts import (SessionCipher, TelegramAccountError, TelethonGat
                                 verify_code, verify_password, wait_qr_connection)
 
 
+CHAT_SPHERES = (
+    ('Фриланс и заказы', ('фриланс', 'freelance', 'заказ', 'работа', 'ваканс', 'job', 'удален', 'исполнитель', 'подработ')),
+    ('Разработка', ('разработ', 'програм', 'frontend', 'backend', 'fullstack', 'python', 'javascript', 'php',
+                    'веб', 'web', 'сайт', 'tilda', 'wordpress', 'кодинг')),
+    ('Telegram и боты', ('telegram', 'телеграм', 'боты', 'чат-бот', 'chatbot')),
+    ('Автоматизация и CRM', ('автоматизац', 'интеграц', 'crm', 'срм', 'amo', 'битрикс', 'bitrix',
+                            'no-code', 'nocode', 'n8n', 'make.com')),
+    ('Мобильные приложения', ('мобильн', 'ios', 'android', 'flutter', 'react native', 'приложени')),
+    ('Дизайн', ('дизайн', 'design', 'figma', 'ux', 'ui', 'график', 'иллюстратор', 'брендинг')),
+    ('Видео и монтаж', ('монтаж', 'видео', 'video', 'reels', 'рилс', 'motion', 'youtube', 'ютуб')),
+    ('Маркетинг и продвижение', ('маркетинг', 'marketing', 'smm', 'таргет', 'seo', 'реклама',
+                                'трафик', 'контент', 'копирайт', 'продвиж')),
+    ('Бизнес', ('бизнес', 'предприним', 'стартап', 'startup', 'b2b', 'digital')),
+)
+
+
+def chat_spheres(title, username=''):
+    """Classify a dialog by public metadata only; keep every matching sphere."""
+    value = f'{title or ""} {username or ""}'.casefold()
+    matches = [name for name, words in CHAT_SPHERES if any(word in value for word in words)]
+    return matches or ['Другое']
+
+
 def register_telegram_routes(app, db):
     def services():
         key = current_app.config.get('TELEGRAM_CIPHER_KEY', '')
@@ -27,6 +50,10 @@ def register_telegram_routes(app, db):
                             (g.user['id'],)).fetchone()
         dialogs = db().execute('''SELECT * FROM user_telegram_dialogs WHERE user_id=?
             ORDER BY enabled DESC,title LIMIT 1000''', (g.user['id'],)).fetchall()
+        dialogs = [dict(row) | {'spheres': chat_spheres(row['title'], row['username'])} for row in dialogs]
+        present = {sphere for row in dialogs for sphere in row['spheres']}
+        sphere_order = [name for name, _ in CHAT_SPHERES] + ['Другое']
+        available_spheres = [name for name in sphere_order if name in present]
         configured = bool(current_app.config.get('TELEGRAM_CIPHER_KEY'))
         qr_url = ''
         if auth and auth['stage'] == 'qr' and configured:
@@ -35,7 +62,8 @@ def register_telegram_routes(app, db):
             except TelegramAccountError:
                 qr_url = ''
         return render_template('telegram_account.html', connection=connection, auth=auth,
-                               dialogs=dialogs, configured=configured, qr_url=qr_url)
+                               dialogs=dialogs, configured=configured, qr_url=qr_url,
+                               available_spheres=available_spheres)
 
     @app.post('/app/telegram/qr/start')
     def telegram_qr_start():
@@ -135,7 +163,7 @@ def register_telegram_routes(app, db):
         selected = request.form.getlist('groups')
         if len(selected) > 1000 or any(not value.lstrip('-').isdigit() for value in selected):
             abort(400)
-        selected = [int(value) for value in selected]
+        selected = list(dict.fromkeys(int(value) for value in selected))
         with db():
             db().execute('UPDATE user_telegram_dialogs SET enabled=false,updated_at=now() WHERE user_id=?',
                          (g.user['id'],))

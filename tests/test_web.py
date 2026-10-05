@@ -65,6 +65,12 @@ class WebPublic(unittest.TestCase):
 
 
 class Helpers(unittest.TestCase):
+    def test_chat_spheres_keep_all_matching_categories(self):
+        from leadgen.web_telegram import chat_spheres
+        self.assertEqual(chat_spheres('Фриланс: дизайн и монтаж'),
+                         ['Фриланс и заказы','Дизайн','Видео и монтаж'])
+        self.assertIn('Автоматизация и CRM',chat_spheres('Интеграции amoCRM и n8n'))
+        self.assertEqual(chat_spheres('Общий чат соседей'),['Другое'])
     def test_like_pattern_escapes_wildcards(self):
         from leadgen.web import like_pattern
         self.assertEqual(like_pattern('50%_'),'%50\\%\\_%')

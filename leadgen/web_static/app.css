@@ -119,8 +119,12 @@ td a{overflow-wrap:anywhere}
 .lead-list h2 a:hover{color:var(--brand-ink)}
 .pagination{display:flex;justify-content:center;gap:16px;align-items:center;margin:24px 0;font-size:14px}
 .source-picker{max-height:520px;overflow:auto;border:1px solid var(--line);border-radius:var(--radius-sm);padding:4px 16px}
+.source-controls{display:grid;grid-template-columns:minmax(220px,2fr) minmax(180px,1fr);gap:12px;margin:16px 0 10px}
+.source-controls label{margin:0}.source-actions{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+.source-actions button{width:auto;margin:0;padding:9px 12px}.source-summary{margin:8px 0}
 .qr-connect img{display:block;max-width:100%;height:auto;margin:16px auto;background:#fff;border-radius:16px;padding:10px}
-.source-picker .check{padding:10px 0;border-bottom:1px solid var(--line);margin:0}
+.source-picker .check{padding:10px 0;border-bottom:1px solid var(--line);margin:0;align-items:flex-start}
+.source-picker .check span{display:block}.source-picker .check small{display:block;color:var(--muted);font-weight:500;margin-top:3px}
 .source-picker .check:last-child{border-bottom:0}
 
 /* Metrics & bars */
@@ -373,6 +377,8 @@ td a{overflow-wrap:anywhere}
   .filters{align-items:stretch}
   .filters label{min-width:100%}
   .filters button{width:100%}
+  .source-controls{grid-template-columns:1fr}
+  .source-actions button{width:100%}
   .daily{grid-template-columns:86px 1fr 32px}
   .code{font-size:32px;letter-spacing:6px}
   .table-wrap table{min-width:520px}
