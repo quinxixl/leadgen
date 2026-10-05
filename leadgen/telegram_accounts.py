@@ -65,7 +65,7 @@ class TelethonGateway:
 
     async def _begin(self, phone):
         from telethon import TelegramClient
-        from telethon.errors import FloodWaitError
+        from telethon.errors import FloodWaitError, RPCError
         from telethon.sessions import StringSession
         client = TelegramClient(StringSession(), self.api_id, self.api_hash)
         try:
@@ -74,8 +74,32 @@ class TelethonGateway:
                 sent = await client.send_code_request(phone)
             except FloodWaitError as exc:
                 raise TelegramAccountError(f'Telegram ограничил частоту. Повторите через {exc.seconds} секунд.') from None
+            except RPCError as exc:
+                messages = {
+                    'ApiIdInvalidError': 'Telegram отклонил API ID или API Hash сервера.',
+                    'AuthRestartError': 'Telegram попросил перезапустить авторизацию. Повторите попытку через минуту.',
+                    'PhoneNumberAppSignupForbiddenError': 'Этот номер нельзя зарегистрировать через подключение приложения.',
+                    'PhoneNumberBannedError': 'Telegram заблокировал этот номер телефона.',
+                    'PhoneNumberFloodError': 'Для этого номера запрошено слишком много кодов. Подождите перед новой попыткой.',
+                    'PhoneNumberInvalidError': 'Telegram не распознал номер телефона. Проверьте код страны и формат.',
+                    'SendCodeUnavailableError': 'Telegram временно не может отправить код этому аккаунту.',
+                }
+                raise TelegramAccountError(messages.get(
+                    type(exc).__name__,
+                    'Telegram отклонил запрос кода. Подождите несколько минут и повторите попытку один раз.'
+                )) from None
+            delivery = {
+                'SentCodeTypeApp': 'в служебный чат «Telegram» на уже авторизованном устройстве',
+                'SentCodeTypeSms': 'по SMS',
+                'SentCodeTypeCall': 'телефонным звонком',
+                'SentCodeTypeFlashCall': 'входящим звонком',
+                'SentCodeTypeMissedCall': 'пропущенным звонком',
+                'SentCodeTypeEmailCode': 'на привязанную электронную почту',
+                'SentCodeTypeFragmentSms': 'через Fragment',
+                'SentCodeTypeFirebaseSms': 'через системную доставку Telegram',
+            }.get(type(sent.type).__name__, 'через Telegram')
             return {'phone': phone, 'phone_code_hash': sent.phone_code_hash,
-                    'session': client.session.save()}
+                    'session': client.session.save(), 'delivery': delivery}
         finally:
             await client.disconnect()
 
@@ -191,6 +215,7 @@ def begin_connection(db, user_id, phone, cipher, gateway):
             VALUES(?,?,'pending',now()) ON CONFLICT(user_id) DO UPDATE SET
             phone_hint=excluded.phone_hint,status='pending',last_error='',updated_at=now()''',
             (user_id, masked_phone(phone)))
+    return state.get('delivery', 'через Telegram')
 
 
 def _finish(db, user_id, result, cipher, gateway):

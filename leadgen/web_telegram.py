@@ -36,8 +36,8 @@ def register_telegram_routes(app, db):
             hit(db(), 'tg-code-user', g.user['id'], 3, 3600)
             hit(db(), 'tg-code-phone', phone, 3, 3600)
             cipher, gateway = services()
-            begin_connection(db(), g.user['id'], phone, cipher, gateway)
-            flash('Код отправлен приложением Telegram. Введите его ниже.')
+            delivery = begin_connection(db(), g.user['id'], phone, cipher, gateway)
+            flash(f'Код отправлен {delivery}. Введите его ниже. Не запрашивайте код повторно сразу.')
         except (TelegramAccountError, RateLimited) as exc:
             flash(str(exc))
         return redirect('/app/telegram')

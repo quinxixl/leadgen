@@ -13,7 +13,8 @@ from cryptography.fernet import Fernet
 
 class FakeTelegramGateway:
     def begin(self,phone):
-        return {'phone':phone,'phone_code_hash':'hash','session':'pending-session'}
+        return {'phone':phone,'phone_code_hash':'hash','session':'pending-session',
+                'delivery':'в служебный чат «Telegram» на уже авторизованном устройстве'}
     def verify_code(self,state,code):
         if code=='2222':return {'password_required':True,'state':state|{'session':'password-session'}}
         return {'password_required':False,'session':'active-session','telegram_user_id':9001,'display_name':'Тестовый аккаунт'}
