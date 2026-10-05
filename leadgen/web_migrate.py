@@ -31,7 +31,8 @@ def migrate():
                          '20261001064937_project_reply_profiles.sql',
                          '20261001094118_ai_offer_generations.sql',
                          '20261003120000_subscription_trials.sql',
-                         '20261005070330_telegram_replies.sql'):
+                         '20261005070330_telegram_replies.sql',
+                         '20261005153000_telegram_qr_login.sql'):
                 sql=(root/name).read_text();checksum=hashlib.sha256(sql.encode()).hexdigest()
                 old=db.execute('SELECT checksum FROM leadgen.web_schema_versions WHERE name=?',(name,)).fetchone()
                 if old:

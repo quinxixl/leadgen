@@ -1,5 +1,6 @@
 """Encrypted personal Telegram sessions and explicit group selection."""
 import asyncio
+import base64
 import json
 import os
 import re
@@ -42,6 +43,9 @@ def _telegram_code_error(exc):
     messages = {
         'ApiIdInvalidError': 'Telegram отклонил API ID или API Hash сервера.',
         'AuthRestartError': 'Telegram попросил перезапустить авторизацию. Повторите попытку через минуту.',
+        'AuthTokenAlreadyAcceptedError': 'QR-код уже был использован. Создайте новый.',
+        'AuthTokenExpiredError': 'QR-код истёк. Создайте новый.',
+        'AuthTokenInvalidError': 'Telegram отклонил QR-код. Создайте новый.',
         'PhoneCodeExpiredError': 'Запрос кода истёк. Начните подключение заново.',
         'PhoneNumberAppSignupForbiddenError': 'Этот номер нельзя зарегистрировать через подключение приложения.',
         'PhoneNumberBannedError': 'Telegram заблокировал этот номер телефона.',
@@ -146,6 +150,53 @@ class TelethonGateway:
                          next_delivery=_delivery_label(sent.next_type),
                          resend_after=time.time() + max(1, sent.timeout or 60))
             return state
+        finally:
+            await client.disconnect()
+
+    def begin_qr(self):
+        return self._run(self._begin_qr())
+
+    async def _begin_qr(self):
+        from telethon import TelegramClient
+        from telethon.sessions import StringSession
+        client = TelegramClient(StringSession(), self.api_id, self.api_hash)
+        try:
+            await client.connect()
+            qr = await client.qr_login()
+            return {'session': client.session.save(), 'token': base64.b64encode(qr.token).decode(),
+                    'url': qr.url, 'expires': qr.expires.isoformat()}
+        finally:
+            await client.disconnect()
+
+    def wait_qr(self, state):
+        return self._run(self._wait_qr(state))
+
+    async def _wait_qr(self, state):
+        from telethon import TelegramClient
+        from telethon.errors import RPCError, SessionPasswordNeededError
+        from telethon.sessions import StringSession
+        from telethon.tl import types
+        from telethon.tl.custom.qrlogin import QRLogin
+        client = TelegramClient(StringSession(state['session']), self.api_id, self.api_hash)
+        try:
+            await client.connect()
+            expires = datetime.fromisoformat(state['expires'])
+            remaining = (expires - datetime.now(timezone.utc)).total_seconds()
+            if remaining <= 0:
+                raise TelegramAccountError('QR-код истёк. Создайте новый.')
+            qr = QRLogin(client, [])
+            qr._resp = types.auth.LoginToken(expires=expires, token=base64.b64decode(state['token']))
+            try:
+                user = await qr.wait(timeout=min(20, remaining))
+            except TimeoutError:
+                state['session'] = client.session.save()
+                return {'pending': True, 'state': state}
+            except SessionPasswordNeededError:
+                state['session'] = client.session.save()
+                return {'password_required': True, 'state': state}
+            except RPCError as exc:
+                raise TelegramAccountError(_telegram_code_error(exc)) from None
+            return self._authorized(client, user)
         finally:
             await client.disconnect()
 
@@ -278,6 +329,47 @@ def resend_connection(db, user_id, cipher, gateway):
         db.execute('''UPDATE telegram_connection_auth SET state_cipher=?,expires_at=?,updated_at=now()
             WHERE user_id=?''', (cipher.encrypt(state), datetime.now(timezone.utc) + AUTH_TTL, user_id))
     return state.get('delivery', 'через Telegram')
+
+
+def begin_qr_connection(db, user_id, cipher, gateway):
+    state = gateway.begin_qr()
+    expires = datetime.fromisoformat(state['expires'])
+    with db:
+        db.execute('''INSERT INTO telegram_connection_auth(user_id,state_cipher,stage,attempts,expires_at,updated_at)
+            VALUES(?,?,'qr',0,?,now()) ON CONFLICT(user_id) DO UPDATE SET
+            state_cipher=excluded.state_cipher,stage='qr',attempts=0,
+            expires_at=excluded.expires_at,updated_at=now()''',
+            (user_id, cipher.encrypt(state), expires))
+        db.execute('''INSERT INTO telegram_connections(user_id,status,updated_at)
+            VALUES(?,'pending',now()) ON CONFLICT(user_id) DO UPDATE SET
+            status='pending',last_error='',updated_at=now()''', (user_id,))
+    return state
+
+
+def qr_connection_state(db, user_id, cipher):
+    row, state = auth_record(db, user_id, cipher)
+    if row['stage'] != 'qr':
+        raise TelegramAccountError('QR-подключение не запущено.')
+    return state
+
+
+def wait_qr_connection(db, user_id, cipher, gateway):
+    row, state = auth_record(db, user_id, cipher)
+    if row['stage'] != 'qr':
+        raise TelegramAccountError('QR-подключение не запущено.')
+    result = gateway.wait_qr(state)
+    if result.get('pending'):
+        with db:
+            db.execute('UPDATE telegram_connection_auth SET state_cipher=?,updated_at=now() WHERE user_id=?',
+                       (cipher.encrypt(result['state']), user_id))
+        return 'pending', 0
+    if result.get('password_required'):
+        with db:
+            db.execute("""UPDATE telegram_connection_auth SET state_cipher=?,stage='password',
+                attempts=0,expires_at=?,updated_at=now() WHERE user_id=?""",
+                       (cipher.encrypt(result['state']), datetime.now(timezone.utc) + AUTH_TTL, user_id))
+        return 'password', 0
+    return 'active', _finish(db, user_id, result, cipher, gateway)
 
 
 def _finish(db, user_id, result, cipher, gateway):

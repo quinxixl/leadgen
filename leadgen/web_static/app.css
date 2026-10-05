@@ -119,6 +119,7 @@ td a{overflow-wrap:anywhere}
 .lead-list h2 a:hover{color:var(--brand-ink)}
 .pagination{display:flex;justify-content:center;gap:16px;align-items:center;margin:24px 0;font-size:14px}
 .source-picker{max-height:520px;overflow:auto;border:1px solid var(--line);border-radius:var(--radius-sm);padding:4px 16px}
+.qr-connect img{display:block;max-width:100%;height:auto;margin:16px auto;background:#fff;border-radius:16px;padding:10px}
 .source-picker .check{padding:10px 0;border-bottom:1px solid var(--line);margin:0}
 .source-picker .check:last-child{border-bottom:0}
 

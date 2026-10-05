@@ -4,7 +4,7 @@ import os
 import unittest
 from unittest.mock import patch
 from pathlib import Path
-from datetime import datetime,timezone
+from datetime import datetime,timedelta,timezone
 from leadgen.database import db_open
 from leadgen.web import create_app
 from leadgen.web_auth import approve_login
@@ -18,6 +18,12 @@ class FakeTelegramGateway:
                 'next_delivery':'по SMS','resend_after':0}
     def resend(self,state):
         return state|{'phone_code_hash':'sms-hash','delivery':'по SMS','next_delivery':'','resend_after':0}
+    def begin_qr(self):
+        return {'session':'qr-session','token':'dGVzdA==','url':'tg://login?token=dGVzdA',
+                'expires':(datetime.now(timezone.utc)+timedelta(minutes=2)).isoformat()}
+    def wait_qr(self,state):
+        return {'password_required':False,'session':'active-qr-session',
+                'telegram_user_id':9001,'display_name':'QR аккаунт'}
     def verify_code(self,state,code):
         if code=='2222':return {'password_required':True,'state':state|{'session':'password-session'}}
         return {'password_required':False,'session':'active-session','telegram_user_id':9001,'display_name':'Тестовый аккаунт'}
@@ -61,6 +67,7 @@ class WebPostgres(unittest.TestCase):
             cls.db.connection.execute(Path('supabase/migrations/20260930193638_lead_reminders.sql').read_text(),prepare=False)
         if not cls.db.execute("SELECT to_regclass('leadgen.telegram_connections') AS name").fetchone()['name']:
             cls.db.connection.execute(Path('supabase/migrations/20261001041250_personal_telegram_connections.sql').read_text(),prepare=False)
+        cls.db.connection.execute(Path('supabase/migrations/20261005153000_telegram_qr_login.sql').read_text(),prepare=False)
         if not cls.db.execute("SELECT to_regclass('leadgen.workspaces') AS name").fetchone()['name']:
             cls.db.connection.execute(Path('supabase/migrations/20261001061514_team_workspaces_and_assignments.sql').read_text(),prepare=False)
         if not cls.db.execute("SELECT to_regclass('leadgen.lead_tags') AS name").fetchone()['name']:
@@ -320,6 +327,21 @@ class WebPostgres(unittest.TestCase):
         self.assertEqual(self.db.execute('SELECT status FROM telegram_connections WHERE user_id=?',(self.u,)).fetchone()['status'],'pending')
         self.client.post('/app/telegram/password',data={'csrf':'test-csrf','password':'correct'})
         self.assertEqual(self.db.execute('SELECT status FROM telegram_connections WHERE user_id=?',(self.u,)).fetchone()['status'],'active')
+
+    def test_personal_telegram_qr_connection(self):
+        response=self.client.post('/app/telegram/qr/start',data={'csrf':'test-csrf'})
+        self.assertEqual(response.status_code,302)
+        auth=self.db.execute('SELECT stage,state_cipher FROM telegram_connection_auth WHERE user_id=?',(self.u,)).fetchone()
+        self.assertEqual(auth['stage'],'qr')
+        self.assertNotIn('tg://login',auth['state_cipher'])
+        page=self.client.get('/app/telegram')
+        self.assertIn('Вход по QR-коду',page.text)
+        image=self.client.get('/app/telegram/qr.svg')
+        self.assertEqual((image.status_code,image.mimetype),(200,'image/svg+xml'))
+        result=self.client.post('/app/telegram/qr/wait',data={'csrf':'test-csrf'})
+        self.assertEqual(result.json['status'],'active')
+        connection=self.db.execute('SELECT status,display_name FROM telegram_connections WHERE user_id=?',(self.u,)).fetchone()
+        self.assertEqual((connection['status'],connection['display_name']),('active','QR аккаунт'))
 
     def test_private_origin_is_delivered_only_to_connection_owner(self):
         from leadgen.product import deliver_registered

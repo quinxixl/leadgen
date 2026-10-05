@@ -1,11 +1,14 @@
 """Web routes for a user's own Telegram connection."""
-from flask import abort, current_app, flash, g, redirect, render_template, request
+import io
+
+from flask import abort, current_app, flash, g, jsonify, redirect, render_template, request, Response
 
 from .rate_limit import RateLimited, hit
 
 from .telegram_accounts import (SessionCipher, TelegramAccountError, TelethonGateway,
-                                begin_connection, disconnect, resend_connection, sync_dialogs,
-                                verify_code, verify_password)
+                                begin_connection, begin_qr_connection, disconnect,
+                                qr_connection_state, resend_connection, sync_dialogs,
+                                verify_code, verify_password, wait_qr_connection)
 
 
 def register_telegram_routes(app, db):
@@ -20,13 +23,55 @@ def register_telegram_routes(app, db):
     def telegram_account():
         connection = db().execute('SELECT * FROM telegram_connections WHERE user_id=?',
                                   (g.user['id'],)).fetchone()
-        auth = db().execute('SELECT stage,attempts,expires_at FROM telegram_connection_auth WHERE user_id=?',
+        auth = db().execute('SELECT stage,attempts,expires_at,state_cipher FROM telegram_connection_auth WHERE user_id=?',
                             (g.user['id'],)).fetchone()
         dialogs = db().execute('''SELECT * FROM user_telegram_dialogs WHERE user_id=?
             ORDER BY enabled DESC,title LIMIT 1000''', (g.user['id'],)).fetchall()
         configured = bool(current_app.config.get('TELEGRAM_CIPHER_KEY'))
+        qr_url = ''
+        if auth and auth['stage'] == 'qr' and configured:
+            try:
+                qr_url = SessionCipher(current_app.config['TELEGRAM_CIPHER_KEY']).decrypt(auth['state_cipher']).get('url', '')
+            except TelegramAccountError:
+                qr_url = ''
         return render_template('telegram_account.html', connection=connection, auth=auth,
-                               dialogs=dialogs, configured=configured)
+                               dialogs=dialogs, configured=configured, qr_url=qr_url)
+
+    @app.post('/app/telegram/qr/start')
+    def telegram_qr_start():
+        try:
+            hit(db(), 'tg-qr-user', g.user['id'], 5, 3600)
+            cipher, gateway = services()
+            begin_qr_connection(db(), g.user['id'], cipher, gateway)
+            flash('QR-код создан. Отсканируйте его в Telegram через «Настройки → Устройства».')
+        except (TelegramAccountError, RateLimited) as exc:
+            flash(str(exc))
+        return redirect('/app/telegram')
+
+    @app.get('/app/telegram/qr.svg')
+    def telegram_qr_image():
+        try:
+            cipher, _ = services()
+            state = qr_connection_state(db(), g.user['id'], cipher)
+            import qrcode
+            import qrcode.image.svg
+            image = qrcode.make(state['url'], image_factory=qrcode.image.svg.SvgPathImage,
+                                box_size=8, border=3)
+            output = io.BytesIO()
+            image.save(output)
+            return Response(output.getvalue(), mimetype='image/svg+xml',
+                            headers={'Cache-Control': 'no-store'})
+        except TelegramAccountError as exc:
+            return Response(str(exc), status=410, mimetype='text/plain')
+
+    @app.post('/app/telegram/qr/wait')
+    def telegram_qr_wait():
+        try:
+            cipher, gateway = services()
+            stage, count = wait_qr_connection(db(), g.user['id'], cipher, gateway)
+            return jsonify(status=stage, count=count)
+        except TelegramAccountError as exc:
+            return jsonify(status='error', message=str(exc)), 409
 
     @app.post('/app/telegram/connect')
     def telegram_connect():
