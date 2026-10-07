@@ -1,0 +1,17 @@
+{% extends 'tg/base.html' %}{% block title %}Подписка — Сигналид{% endblock %}{% block page %}billing{% endblock %}{% block body_attrs %}{% if not active %} data-root="1"{% endif %}{% endblock %}
+{% block content %}
+<section class="tg-card">
+<p class="hint small">Текущий тариф</p>
+<h1>{{ plan_names.get(subscription.plan_code, subscription.plan_code) if subscription else 'Не подключён' }}</h1>
+{% if not active %}<p><span class="badge hot">Доступ приостановлен</span></p>
+<p class="hint">Пробный период или оплаченный срок закончился. Лиды и настройки сохранены — продлите подписку, чтобы снова получать заказы.</p>
+{% elif trial_days_left is not none %}<p><span class="badge {{ 'warm' if trial_days_left<=3 else 'ok' }}">Осталось дней: {{ trial_days_left }}</span></p>
+{% else %}<p><span class="badge ok">Активна</span></p>{% endif %}
+{% if workspace and workspace.owner_user_id!=user.id %}<p class="hint">Вы работаете в команде «{{ workspace.name }}». Подпиской управляет владелец.</p>{% endif %}
+</section>
+<section class="tg-section">
+<button type="button" class="btn wide" data-handoff="/app/billing">{{ 'Продлить на сайте' if not active else 'Тарифы и оплата на сайте' }}</button>
+{% if support %}<a class="btn quiet wide" href="https://t.me/{{ support }}" target="_blank" rel="noopener noreferrer">Написать в поддержку</a>{% endif %}
+<p class="hint small">Оплата и документы оформляются на сайте: откроем его в браузере, вход выполнится автоматически.</p>
+</section>
+{% endblock %}

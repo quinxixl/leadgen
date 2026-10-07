@@ -1,0 +1,21 @@
+{% extends 'tg/base.html' %}{% block title %}Настройки — Сигналид{% endblock %}{% block page %}settings{% endblock %}
+{% block head_extra %}<script src="{{ url_for('static',filename='service_picker.js') }}" defer></script>{% endblock %}
+{% block content %}
+<form method="post"{% if can_edit %} data-main-button="Сохранить"{% endif %}><input type="hidden" name="csrf" value="{{ csrf }}">
+<section class="tg-section">
+<label class="check toggle"><input type="checkbox" name="active" value="1"{% if prefs.monitoring_active %} checked{% endif %}><span>Мониторинг включён<small class="hint">Новые заказы приходят в бот</small></span></label>
+</section>
+<section class="tg-section">
+<h2>Бюджет</h2>
+<label class="field">Минимальный бюджет, ₽<input type="number" name="min_budget" min="0" max="100000000" inputmode="numeric" required value="{{ prefs.min_budget }}"></label>
+<div class="chips wrap" data-budget-presets>{% for value in presets %}<button type="button" class="chip" data-budget="{{ value }}">{{ 'Любой' if value==0 else (value|money) }}</button>{% endfor %}</div>
+<label class="check toggle"><input type="checkbox" name="no_budget" value="1"{% if prefs.show_without_budget %} checked{% endif %}><span>Заказы без бюджета</span></label>
+<label class="check toggle"><input type="checkbox" name="possible" value="1"{% if prefs.show_possible_needs %} checked{% endif %}><span>Возможные потребности<small class="hint">Косвенные запросы, когда услугу прямо не называют</small></span></label>
+</section>
+<section class="tg-section">
+{% set selected_topics=prefs.topics %}{% include '_topic_picker.html' %}
+</section>
+{% if can_edit %}<button class="btn wide" data-main-fallback>Сохранить</button>{% else %}<p class="hint">Настройки меняют владелец и администраторы команды.</p>{% endif %}
+</form>
+<p class="hint small center"><a href="#" data-handoff="/app/settings">Портфолио и проекты — на сайте</a></p>
+{% endblock %}

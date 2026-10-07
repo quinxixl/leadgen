@@ -64,6 +64,70 @@ class WebPublic(unittest.TestCase):
             self.assertFalse(is_platform_admin({'telegram_user_id':999}))
 
 
+class MiniAppPublic(unittest.TestCase):
+    def setUp(self):
+        self.app=create_app({'TESTING':True,'SECRET_KEY':'test-'*10,'BOT_USERNAME':'test_bot',
+                            'SESSION_COOKIE_SECURE':False,'TELEGRAM_BOT_TOKEN':'123456:'+'A'*35})
+        self.client=self.app.test_client()
+    def test_tg_csp_allows_telegram_only_and_framing_by_telegram_web(self):
+        r=self.client.get('/tg')
+        self.assertEqual(r.status_code,200)
+        csp=r.headers['Content-Security-Policy']
+        self.assertIn("script-src 'self' https://telegram.org;",csp)
+        self.assertIn('frame-ancestors https://web.telegram.org;',csp)
+        self.assertNotIn('mc.yandex',csp)
+        self.assertNotIn('X-Frame-Options',r.headers)
+        self.assertIn('https://telegram.org/js/telegram-web-app.js',r.text)
+        self.assertIn('/web_static/tg/tg.js',r.text)
+        self.assertNotIn('metrika',r.text)
+        self.assertNotIn('<script>',r.text)
+    def test_cabinet_csp_unchanged(self):
+        for path in ('/app','/login','/app/security'):
+            r=self.client.get(path)
+            csp=r.headers['Content-Security-Policy']
+            self.assertIn("script-src 'self';",csp,path)
+            self.assertNotIn('telegram.org',csp,path)
+            self.assertIn("frame-ancestors 'none'",csp,path)
+            self.assertEqual(r.headers['X-Frame-Options'],'DENY',path)
+    def test_tg_cookie_is_separate_partitioned_and_cross_site(self):
+        cookie=self.client.get('/tg').headers['Set-Cookie']
+        for part in ('signalid_tg=','Secure','HttpOnly','Path=/tg','SameSite=None','Partitioned'):
+            self.assertIn(part,cookie)
+        main=self.app.test_client().get('/login').headers['Set-Cookie']
+        self.assertIn('signalid_session=',main);self.assertIn('SameSite=Lax',main);self.assertNotIn('Partitioned',main)
+    def test_cabinet_session_lasts_30_days(self):
+        from datetime import timedelta
+        self.assertEqual(self.app.permanent_session_lifetime,timedelta(days=30))
+    def test_private_tg_pages_bootstrap_and_return(self):
+        for path,target in (('/tg/feed','/tg/feed'),('/tg/leads/5','/tg/leads/5'),('/tg/billing','/tg/billing'),
+                            ('/tg/start','/tg/start'),('/tg/settings','/tg/settings')):
+            r=self.client.get(path)
+            self.assertEqual(r.status_code,302,path)
+            self.assertTrue(r.location.startswith('/tg?next='),r.location)
+            page=self.client.get(r.location)
+            self.assertIn(f'data-target="{target}"',page.text)
+        self.assertEqual(self.client.post('/tg/handoff',data={}).status_code,400)
+    def test_boot_never_targets_itself_or_other_sites(self):
+        for value in ('/tg','/tg?x=1','https://evil.example/tg/feed','//evil.example','/tg/../app','/app','/tg/auth','/tgx'):
+            r=self.client.get('/tg',query_string={'next':value})
+            self.assertIn('data-target=""',r.text,value)
+    def test_auth_rejects_cross_origin_and_bad_init_data(self):
+        r=self.client.post('/tg/auth',data={'init_data':'x'},headers={'Origin':'https://evil.example'})
+        self.assertEqual(r.status_code,403);self.assertFalse(r.json['ok'])
+    def test_safe_next(self):
+        from leadgen.web import safe_next
+        self.assertEqual(safe_next('/app/billing','/app'),'/app/billing')
+        self.assertEqual(safe_next('/app','/app'),'/app')
+        self.assertEqual(safe_next('/app/leads?status=won','/app'),'/app/leads?status=won')
+        for bad in ('//evil.example','https://evil.example/app','/application','/app/../admin','/app\\x','/tg/feed','',None,'/app//x','/app/<script>'):
+            self.assertEqual(safe_next(bad,'/app'),'',bad)
+    def test_login_status_without_request(self):
+        self.assertEqual(self.client.get('/login/status').json,{'status':'none'})
+    def test_login_page_polls_only_while_code_shown(self):
+        self.assertNotIn('login.js',self.client.get('/login').text)
+        with self.client.get('/web_static/login.js') as response:self.assertEqual(response.status_code,200)
+
+
 class Helpers(unittest.TestCase):
     def test_chat_spheres_keep_all_matching_categories(self):
         from leadgen.web_telegram import chat_spheres

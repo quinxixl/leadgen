@@ -1,0 +1,44 @@
+{% extends 'tg/base.html' %}{% block title %}{{ lead.title|truncate(60) }} — Сигналид{% endblock %}{% block page %}lead{% endblock %}
+{% block content %}
+<article class="tg-card lead-card">
+<p class="lead-top"><span class="badge {{ {'горячий':'hot','тёплый':'warm'}.get(lead.temperature,'cold') }}">{{ lead.temperature|capitalize or 'Лид' }} · {{ lead.score }}/100</span><span class="lead-source">{{ lead.source }}</span></p>
+<h1>{{ lead.title }}</h1>
+<p class="lead-meta">{{ pipeline.get(row.pipeline_status,row.pipeline_status) }}{% if lead.budget_text %} · {{ lead.budget_text }}{% endif %}{% if lead.published %} · {{ lead.published|dt }}{% endif %}</p>
+<p class="lead-text">{{ lead.text|truncate(3000) }}</p>
+{% if lead.score_reason %}<p class="hint small">Почему такая оценка: {{ lead.score_reason }}</p>{% endif %}
+<div class="row">
+{% if lead.url|original_url != '#' %}<a class="btn quiet" href="{{ lead.url|original_url }}" target="_blank" rel="noopener noreferrer">Оригинал</a>{% endif %}
+{% if can_edit and replyable %}<a class="btn" href="/tg/leads/{{ row.id }}/reply">Ответить</a>{% endif %}
+</div>
+</article>
+{% if can_edit %}
+<section class="tg-section">
+<h2>Статус</h2>
+<form method="post" class="grid-buttons"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="action" value="status">
+{% for key in statuses %}<button class="chip-btn" name="status" value="{{ key }}"{% if row.pipeline_status==key %} aria-pressed="true"{% endif %}>{{ pipeline[key] }}</button>{% endfor %}
+</form>
+</section>
+<section class="tg-section">
+<h2>Подходит ли лид?</h2>
+<form method="post" class="feedback"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="action" value="feedback">
+<div class="row"><button class="chip-btn" name="feedback" value="fit"{% if row.feedback=='fit' %} aria-pressed="true"{% endif %}>👍 Подходит</button>
+{% if row.feedback %}<button class="chip-btn quiet" name="feedback" value="">Снять оценку</button>{% endif %}</div>
+<details{% if row.feedback and row.feedback!='fit' %} open{% endif %}><summary class="chip-btn">👎 Не подходит</summary>
+<div class="grid-buttons">{% for key,label in reasons.items() %}<button class="chip-btn" name="feedback" value="{{ key }}"{% if row.feedback==key %} aria-pressed="true"{% endif %}>{{ label }}</button>{% endfor %}</div>
+</details>
+</form>
+</section>
+<section class="tg-section">
+<h2>Напоминание</h2>
+{% if reminder and reminder.status in ('pending','sending') %}<p class="hint">Напомним {{ reminder.due_at|dt }}.</p>{% elif reminder and reminder.status=='uncertain' %}<p class="hint">Прошлое напоминание: доставка не подтверждена.</p>{% endif %}
+<form method="post"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="action" value="remind"><button class="btn quiet wide">⏰ Напомнить через час</button></form>
+</section>
+{% endif %}
+{% if activity %}
+<section class="tg-section">
+<h2>История</h2>
+<ul class="activity">{% for item in activity %}<li><span class="hint small">{{ item.created_at|dt }}</span> {{ item.detail|truncate(200) }}</li>{% endfor %}</ul>
+</section>
+{% endif %}
+<p class="hint small center"><a href="#" data-handoff="/app/leads/{{ row.id }}">Открыть лид на сайте</a></p>
+{% endblock %}

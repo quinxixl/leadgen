@@ -1,0 +1,129 @@
+/* Telegram Mini App: compact mobile layout on Telegram theme variables, with light/dark fallbacks. */
+:root {
+  --fb-bg: #ffffff; --fb-text: #15191f; --fb-hint: #7d8590; --fb-link: #2481cc;
+  --fb-button: #2481cc; --fb-button-text: #ffffff; --fb-card: #f1f3f6; --fb-danger: #d64545;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --fb-bg: #17212b; --fb-text: #f5f5f5; --fb-hint: #8394a6; --fb-link: #62bcf9;
+    --fb-button: #5288c1; --fb-card: #232e3c; --fb-danger: #ec6a6a; }
+}
+:root {
+  --bg: var(--tg-theme-bg-color, var(--fb-bg));
+  --text: var(--tg-theme-text-color, var(--fb-text));
+  --hint: var(--tg-theme-hint-color, var(--fb-hint));
+  --link: var(--tg-theme-link-color, var(--fb-link));
+  --button: var(--tg-theme-button-color, var(--fb-button));
+  --button-text: var(--tg-theme-button-text-color, var(--fb-button-text));
+  --card: var(--tg-theme-secondary-bg-color, var(--fb-card));
+  --danger: var(--tg-theme-destructive-text-color, var(--fb-danger));
+  --radius: 12px;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  padding: calc(8px + var(--tg-content-safe-area-inset-top, 0px)) calc(14px + env(safe-area-inset-right))
+    calc(20px + env(safe-area-inset-bottom)) calc(14px + env(safe-area-inset-left));
+  overflow-wrap: anywhere;
+}
+a { color: var(--link); text-decoration: none; }
+h1 { font-size: 19px; line-height: 1.3; margin: 0 0 8px; }
+h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--hint); font-weight: 600; margin: 0 0 8px; }
+h3 { font-size: 14px; margin: 12px 0 6px; }
+p { margin: 0 0 10px; }
+[hidden] { display: none !important; }
+.tg { max-width: 640px; margin: 0 auto; }
+.hint { color: var(--hint); }
+.small { font-size: 13px; }
+.center { text-align: center; }
+.sr, legend.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+
+.tg-nav { display: flex; gap: 4px; max-width: 640px; margin: 0 auto 10px; background: var(--card); border-radius: var(--radius); padding: 3px; }
+.tg-nav a { flex: 1; text-align: center; padding: 7px 4px; border-radius: 9px; color: var(--text); font-size: 14px; }
+.tg-nav a[aria-current="page"] { background: var(--bg); font-weight: 600; }
+
+.tg-card { background: var(--card); border-radius: var(--radius); padding: 14px; margin-bottom: 12px; }
+.tg-section { margin: 0 0 16px; }
+.tg-center { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 60vh; gap: 12px; }
+.tg-flash { background: var(--card); border-left: 3px solid var(--button); border-radius: 8px; padding: 9px 12px; font-size: 14px; }
+.tg-flash.error { border-color: var(--danger); }
+.tg-flash.warn { border-color: #e0a100; }
+.spinner { width: 28px; height: 28px; border: 3px solid var(--card); border-top-color: var(--button); border-radius: 50%; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.btn, button { font: inherit; cursor: pointer; }
+.btn { display: inline-block; text-align: center; border: 0; border-radius: 10px; padding: 11px 16px; background: var(--button); color: var(--button-text); font-weight: 600; }
+.btn.quiet { background: var(--card); color: var(--link); }
+.tg-card .btn.quiet { background: var(--bg); }
+.btn.wide { display: block; width: 100%; margin-top: 8px; }
+.in-tg [data-main-fallback] { display: none; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
+.row .btn { flex: 1; }
+
+.chips { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; margin-bottom: 10px; scrollbar-width: none; }
+.chips.wrap { flex-wrap: wrap; overflow: visible; }
+.chip, .chip-btn { display: inline-block; white-space: nowrap; border: 0; border-radius: 999px; padding: 7px 12px; background: var(--card); color: var(--text); font-size: 14px; }
+.chip[aria-current="page"], .chip-btn[aria-pressed="true"] { background: var(--button); color: var(--button-text); }
+.chip-btn.quiet { color: var(--hint); }
+.grid-buttons { display: flex; flex-wrap: wrap; gap: 6px; }
+.feedback details { margin-top: 8px; }
+.feedback summary { list-style: none; display: inline-block; cursor: pointer; }
+.feedback summary::-webkit-details-marker { display: none; }
+.feedback details .grid-buttons { margin-top: 8px; }
+
+.leads { list-style: none; margin: 0; padding: 0; }
+.leads li + li { margin-top: 8px; }
+.lead-item { display: block; background: var(--card); border-radius: var(--radius); padding: 11px 13px; color: var(--text); }
+.lead-item strong { display: block; font-weight: 600; margin: 4px 0; }
+.lead-top { display: flex; align-items: center; gap: 8px; margin: 0 0 6px; font-size: 13px; }
+.lead-source { color: var(--hint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.lead-meta { display: block; color: var(--hint); font-size: 13px; }
+.lead-text { white-space: pre-line; margin-top: 10px; }
+.lead-text.quote { border-left: 3px solid var(--button); padding-left: 10px; }
+.badge { display: inline-block; border-radius: 6px; padding: 1px 7px; font-size: 12px; font-weight: 700; background: var(--bg); color: var(--hint); white-space: nowrap; }
+.badge.hot { background: #e5484d; color: #fff; }
+.badge.warm { background: #f5a524; color: #1d1300; }
+.badge.ok { background: #30a46c; color: #fff; }
+.tag { font-size: 13px; }
+.activity { list-style: none; margin: 0; padding: 0; font-size: 14px; }
+.activity li { padding: 6px 0; border-bottom: 1px solid var(--card); }
+.facts { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 8px 0; font-size: 14px; }
+.facts dt { color: var(--hint); }
+.facts dd { margin: 0; }
+
+label.field { display: block; font-size: 14px; color: var(--hint); }
+input[type="number"], input[type="search"], textarea {
+  display: block; width: 100%; margin-top: 6px; font: inherit; color: var(--text); background: var(--card);
+  border: 1px solid transparent; border-radius: 10px; padding: 10px 12px;
+}
+input:focus, textarea:focus { outline: none; border-color: var(--button); }
+textarea { resize: vertical; min-height: 160px; }
+fieldset { border: 0; padding: 0; margin: 12px 0; min-width: 0; }
+legend { font-size: 13px; color: var(--hint); padding: 0; margin-bottom: 6px; }
+label.check { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; font-size: 15px; color: var(--text); }
+label.check input { width: 20px; height: 20px; margin: 1px 0 0; accent-color: var(--button); flex: none; }
+label.check small { display: block; font-size: 13px; }
+.presets { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.preset { position: relative; }
+.preset input { position: absolute; opacity: 0; }
+.preset span { display: block; text-align: center; padding: 11px 6px; border-radius: 10px; background: var(--card); }
+.preset input:checked + span { background: var(--button); color: var(--button-text); font-weight: 600; }
+.preset input:focus-visible + span { outline: 2px solid var(--link); }
+
+.steps { display: flex; gap: 6px; list-style: none; padding: 0; margin: 0 0 12px; counter-reset: step; }
+.steps li { flex: 1; font-size: 12px; color: var(--hint); border-top: 3px solid var(--card); padding-top: 5px; }
+.steps li.done, .steps li[aria-current="step"] { border-color: var(--button); }
+.steps li[aria-current="step"] { color: var(--text); font-weight: 600; }
+
+/* Shared service picker (_topic_picker.html) restyled for the Mini App. */
+.service-picker { margin: 8px 0; }
+.service-picker > legend { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; font-weight: 600; }
+.service-picker-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.service-picker-actions button { border: 0; border-radius: 999px; padding: 6px 10px; background: var(--card); color: var(--link); font-size: 13px; }
+.service-picker-controls label { font-size: 14px; color: var(--hint); }
+.service-picker-controls p { font-size: 13px; color: var(--hint); }
+.service-groups section { background: var(--card); border-radius: var(--radius); padding: 4px 12px 6px; margin-bottom: 8px; }
+.service-groups h3 { font-size: 14px; }
+.service-options label.check { padding: 6px 0; }

@@ -3,18 +3,21 @@ import csv
 import io
 import json
 import os
+import re
 import secrets
 import hmac
-from datetime import date, timedelta
-from urllib.parse import urlsplit
+from datetime import date, datetime, timedelta, timezone
+from urllib.parse import quote, urlsplit
 
-from flask import Flask, abort, current_app, flash, g, jsonify, redirect, render_template, request, send_from_directory, session, url_for, Response
+from flask import Flask, abort, current_app, flash, g, has_request_context, jsonify, redirect, render_template, request, send_from_directory, session, url_for, Response
+from flask.sessions import SecureCookieSessionInterface
+from itsdangerous import BadSignature
 from werkzeug.middleware.proxy_fix import ProxyFix
 from .app import env_load
 from .database import db_open
 from .core import TOPICS, TOPIC_CATEGORIES, Lead, enrich
 from .product import PIPELINE, FEEDBACK, ProductController
-from .web_auth import begin_login, consume_login
+from .web_auth import begin_login, consume_handoff, consume_login, login_status
 from .billing import PLANS, PLAN_NAMES, days_left, legal_entity, subscription_active, support_contact
 from .rate_limit import RateLimited, hit, purge_expired
 
@@ -44,7 +47,119 @@ def is_platform_admin(user):
 
 
 # Paths that stay open when the subscription has ended, so the user can pay or leave.
-BILLING_OPEN=('/app/billing','/app/workspace','/app/telegram/disconnect','/app/team/join/')
+BILLING_OPEN=('/app/billing','/app/workspace','/app/telegram/disconnect','/app/team/join/','/app/security',
+              '/tg/billing','/tg/handoff')
+# Mini App paths reachable without a session: the boot page and the initData exchange.
+TG_PUBLIC=('/tg','/tg/auth')
+TG_SESSION_LIFETIME=timedelta(hours=4)
+SAFE_PATH=re.compile(r'/[A-Za-z0-9_\-./]*(?:\?[A-Za-z0-9_\-.=&%]*)?')
+
+
+def is_tg_path(path):
+    return path=='/tg' or path.startswith('/tg/')
+
+
+def safe_next(value,prefix):
+    """A same-site path under prefix ('/app' or '/tg'), or '' for anything that could leave the site."""
+    value=value if isinstance(value,str) else ''
+    if (len(value)>300 or not SAFE_PATH.fullmatch(value) or '//' in value or '..' in value
+            or not value.startswith(prefix) or (len(value)>len(prefix) and value[len(prefix)] not in '/?')):
+        return ''
+    return value
+
+
+class _TgSigner(SecureCookieSessionInterface):
+    salt='signalid-tg-session'
+
+
+class SplitSessionInterface(SecureCookieSessionInterface):
+    """The Mini App (/tg) keeps its own cookie. Telegram Web embeds it in a cross-site iframe, so the
+    cookie must be SameSite=None and Partitioned (CHIPS); the cabinet cookie stays SameSite=Lax."""
+    tg_signer=_TgSigner()
+
+    @staticmethod
+    def _tg():
+        return has_request_context() and is_tg_path(request.path)
+
+    def get_signing_serializer(self,app):
+        return self.tg_signer.get_signing_serializer(app) if self._tg() else super().get_signing_serializer(app)
+
+    def get_cookie_name(self,app):
+        return 'signalid_tg' if self._tg() else super().get_cookie_name(app)
+
+    def get_cookie_path(self,app):
+        return '/tg' if self._tg() else super().get_cookie_path(app)
+
+    def get_cookie_samesite(self,app):
+        return 'None' if self._tg() else super().get_cookie_samesite(app)
+
+    def get_cookie_secure(self,app):
+        return True if self._tg() else super().get_cookie_secure(app)
+
+    def get_cookie_partitioned(self,app):
+        return True if self._tg() else super().get_cookie_partitioned(app)
+
+    def get_expiration_time(self,app,session):
+        if self._tg() and session.permanent:
+            return datetime.now(timezone.utc)+TG_SESSION_LIFETIME
+        return super().get_expiration_time(app,session)
+
+    def open_session(self,app,request):
+        if not is_tg_path(request.path):
+            return super().open_session(app,request)
+        signer=self.get_signing_serializer(app)
+        if signer is None:return None
+        value=request.cookies.get('signalid_tg')
+        if not value:return self.session_class()
+        try:return self.session_class(signer.loads(value,max_age=int(TG_SESSION_LIFETIME.total_seconds())))
+        except BadSignature:return self.session_class()
+
+
+def owner_lead(db,owner_id,lid):
+    """The owner's delivered lead with CRM state, or None."""
+    return db.execute('''SELECT l.*,ul.pipeline_status,ul.deal_amount,ul.filter_reason,
+        f.label AS feedback FROM user_leads ul JOIN leads l ON l.id=ul.lead_id
+        LEFT JOIN lead_feedback f ON f.user_id=ul.user_id AND f.lead_id=ul.lead_id
+        WHERE ul.user_id=? AND l.id=? AND ul.delivery_status<>'filtered' ''',(owner_id,lid)).fetchone()
+
+
+def update_lead(db,owner_id,lid,row,status,amount,label):
+    """Save status, deal amount (digits or '') and feedback with activity rows and a webhook event.
+
+    Shared by the cabinet and the Mini App; callers validate the values first."""
+    with db:
+        for kind,value,old in [('status',status,row['pipeline_status']),('amount',amount,str(row['deal_amount']) if row['deal_amount'] is not None else ''),('feedback',label,row['feedback'] or '')]:
+            if value!=old:
+                detail=PIPELINE.get(value,value) if kind=='status' else FEEDBACK.get(value,value) if kind=='feedback' else value or 'Сумма не указана'
+                db.execute('INSERT INTO lead_activity(user_id,lead_id,kind,detail) VALUES(?,?,?,?)',(owner_id,lid,kind,detail or 'Без оценки'))
+        db.execute('UPDATE user_leads SET pipeline_status=?,deal_amount=?,updated_at=now() WHERE user_id=? AND lead_id=?',
+            (status,int(amount) if amount else None,owner_id,lid))
+        if label:db.execute('''INSERT INTO lead_feedback(user_id,lead_id,label) VALUES(?,?,?)
+            ON CONFLICT(user_id,lead_id) DO UPDATE SET label=excluded.label,updated_at=now()''',(owner_id,lid,label))
+        else:db.execute('DELETE FROM lead_feedback WHERE user_id=? AND lead_id=?',(owner_id,lid))
+        from .integrations import enqueue_lead_event
+        enqueue_lead_event(db,owner_id,lid,'lead.updated')
+
+
+PREFERENCE_COLUMNS={'min_budget':'?','topics':'?::jsonb','show_without_budget':'?','show_possible_needs':'?',
+                    'monitoring_active':'?','portfolio':'?'}
+
+
+def save_preferences(db,owner_id,**values):
+    """Update the owner's lead filters; leads filtered out earlier are re-evaluated under the new rules."""
+    columns=','.join(f'{name}={PREFERENCE_COLUMNS[name]}' for name in values)
+    params=[json.dumps(value) if name=='topics' else value for name,value in values.items()]
+    with db:
+        db.execute(f'UPDATE user_preferences SET {columns},updated_at=now() WHERE user_id=?',params+[owner_id])
+        db.execute("DELETE FROM user_leads WHERE user_id=? AND delivery_status='filtered'",(owner_id,))
+
+
+def start_user_session(db,user_id,permanent=True):
+    """Replace the current cookie session with a signed-in one bound to the user's session_version."""
+    row=db.execute('SELECT session_version FROM app_users WHERE id=?',(user_id,)).fetchone()
+    session.clear()
+    session.update(user_id=user_id,sv=row['session_version'] if row else 0,csrf=secrets.token_urlsafe(32))
+    session.permanent=permanent
 
 
 def like_pattern(value):
@@ -69,11 +184,15 @@ def create_app(test_config=None):
     app = Flask(__name__, template_folder='web_templates', static_folder='web_static')
     # compose.web.yaml exposes this process only on loopback behind one HTTPS proxy.
     app.wsgi_app=ProxyFix(app.wsgi_app,x_for=1,x_proto=1,x_host=1)
+    app.session_interface=SplitSessionInterface()
     app.config.update(SECRET_KEY=os.environ.get('WEB_SECRET_KEY'),
         SESSION_COOKIE_NAME='signalid_session', SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SECURE=True, SESSION_COOKIE_SAMESITE='Lax',
-        PERMANENT_SESSION_LIFETIME=timedelta(hours=12), MAX_CONTENT_LENGTH=65536,
+        # Long-lived cabinet sessions; «Выйти на всех устройствах» revokes them via session_version.
+        PERMANENT_SESSION_LIFETIME=timedelta(days=30), MAX_CONTENT_LENGTH=65536,
         BOT_USERNAME=os.environ.get('TELEGRAM_BOT_USERNAME',''),
+        TELEGRAM_BOT_TOKEN=os.environ.get('TELEGRAM_BOT_TOKEN',''),
+        WEB_PUBLIC_URL=os.environ.get('WEB_PUBLIC_URL','').strip().rstrip('/'),
         TELEGRAM_CIPHER_KEY=os.environ.get('TELEGRAM_SESSION_ENCRYPTION_KEY',''),
         DB_FACTORY=db_open, TRUSTED_HOSTS=os.environ.get('WEB_ALLOWED_HOSTS','localhost,127.0.0.1').split(','))
     if test_config:app.config.update(test_config)
@@ -91,25 +210,47 @@ def create_app(test_config=None):
 
     @app.before_request
     def protect():
+        tg=is_tg_path(request.path)
         session.setdefault('csrf',secrets.token_urlsafe(32))
-        if request.method=='POST' and not request.path.startswith('/api/') and not hmac.compare_digest(session['csrf'].encode(),request.form.get('csrf','').encode()):
-            abort(400,description='Сессия формы истекла. Обновите страницу.')
+        if request.method=='POST' and not request.path.startswith('/api/'):
+            if request.path=='/tg/auth':
+                # Telegram signs initData, which replaces the form token; cross-site posts are still refused.
+                origin=request.headers.get('Origin')
+                if origin and origin!=request.host_url.rstrip('/'):abort(403)
+            elif not hmac.compare_digest(session['csrf'].encode(),request.form.get('csrf','').encode()):
+                abort(400,description='Сессия формы истекла. Обновите страницу.')
         g.user=None
         if session.get('user_id'):
-            g.user=db().execute('SELECT * FROM app_users WHERE id=? AND status=\'active\'',(session['user_id'],)).fetchone()
-            if not g.user:session.clear()
+            user=db().execute('SELECT * FROM app_users WHERE id=? AND status=\'active\'',(session['user_id'],)).fetchone()
+            # «Выйти на всех устройствах» bumps session_version; older cookies stop working at once.
+            if user and session.get('sv',0)==user['session_version']:g.user=user
+            else:
+                session.clear();session['csrf']=secrets.token_urlsafe(32)
         if request.path.startswith(('/app','/admin')) and not g.user:
             return redirect(url_for('login'))
         g.workspaces=[];g.workspace=None;g.role=None;g.owner_id=None
-        if g.user and request.path.startswith('/app'):
+        tg_private=tg and request.path not in TG_PUBLIC
+        if tg_private and not g.user:
+            # Opened as a Mini App URL without a cookie: the boot page signs in with initData and comes back.
+            # The browser keeps the #tgWebAppData fragment across this redirect.
+            if request.method=='GET':
+                return redirect('/tg?next='+quote(request.full_path.rstrip('?'),safe='/'))
+            return redirect('/tg')
+        if g.user and (request.path.startswith('/app') or tg_private):
             from .teams import load_workspace
             g.workspaces,g.workspace=load_workspace(db(),g.user,session.get('workspace_id'))
             session['workspace_id']=g.workspace['id'];g.role='owner' if is_platform_admin(g.user) else g.workspace['role'];g.owner_id=g.workspace['owner_user_id']
             # Team members work under the workspace owner's subscription.
             g.subscription=db().execute('SELECT status,plan_code,ends_at FROM subscriptions WHERE user_id=?',(g.owner_id,)).fetchone()
+            if tg and not g.user['terms_accepted_at']:
+                # Consent is the first onboarding step; nothing else in the Mini App opens before it.
+                if request.path!='/tg/start':
+                    target=request.full_path.rstrip('?') if request.method=='GET' and request.path!='/tg/feed' else ''
+                    return redirect('/tg/start'+('?next='+quote(target,safe='/') if target else ''))
+                return
             if (not subscription_active(g.subscription) and not is_platform_admin(g.user)
                     and not request.path.startswith(BILLING_OPEN)):
-                return redirect(url_for('billing'))
+                return redirect('/tg/billing' if tg else url_for('billing'))
 
     @app.after_request
     def headers(response):
@@ -118,6 +259,14 @@ def create_app(test_config=None):
         if request.is_secure:
             response.headers['Strict-Transport-Security']='max-age=31536000; includeSubDomains'
         response.headers['Permissions-Policy']='camera=(), microphone=(), geolocation=(), payment=()'
+        if is_tg_path(request.path):
+            # Mini App: Telegram's SDK script, embedding by Telegram Web only, no analytics. The SDK injects
+            # Telegram Web's iframe styles into a <style> element, hence inline styles here and only here.
+            response.headers['Content-Security-Policy']=("default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+                "script-src 'self' https://telegram.org; connect-src 'self'; frame-ancestors https://web.telegram.org; "
+                "base-uri 'self'; form-action 'self'")
+            response.headers['Cache-Control']='no-store'
+            return response
         # Yandex Metrica runs on public pages only: the cabinet holds client data that must not reach analytics.
         public=metrika_id() and not request.path.startswith(('/app','/admin','/api/','/login'))
         yandex=' https://mc.yandex.ru https://mc.yandex.com https://yastatic.net' if public else ''
@@ -212,7 +361,10 @@ def create_app(test_config=None):
                 try:
                     uid=consume_login(db(),session.get('login_token',''),session.get('login_browser',''))
                     if uid:
-                        session.clear();session['user_id']=uid;session.permanent=True
+                        # A login request can only be started with the consent checkbox ticked (checked above).
+                        from .accounts import accept_terms
+                        accept_terms(db(),uid)
+                        start_user_session(db(),uid)
                         return redirect(url_for('dashboard'))
                     flash('Сначала подтвердите вход в Telegram.')
                 except ValueError as exc:
@@ -230,14 +382,44 @@ def create_app(test_config=None):
                 session.update(login_token=token,login_browser=browser,login_code=code)
         return render_template('login.html',bot=app.config['BOT_USERNAME'])
 
+    @app.get('/login/status')
+    def login_poll():
+        """Lets the login page finish on its own once the bot approves the code."""
+        token=session.get('login_token','')
+        if g.user:return jsonify(status='signed_in')
+        if not token:return jsonify(status='none')
+        return jsonify(status=login_status(db(),token,session.get('login_browser','')))
+
+    @app.get('/login/handoff')
+    def login_handoff():
+        """One-time link from the Mini App: opens the cabinet in the external browser already signed in."""
+        target=safe_next(request.args.get('next','/app'),'/app') or '/app'
+        try:
+            uid,version=consume_handoff(db(),request.args.get('t',''))
+        except ValueError as exc:
+            flash(str(exc));return redirect(url_for('login'))
+        user=db().execute("SELECT id,session_version FROM app_users WHERE id=? AND status='active'",(uid,)).fetchone()
+        if not user or user['session_version']!=version:
+            flash('Ссылка входа устарела. Откройте сайт из Telegram ещё раз.');return redirect(url_for('login'))
+        start_user_session(db(),uid)
+        return redirect(target)
+
     @app.post('/logout')
     def logout():session.clear();return redirect(url_for('landing'))
 
+    @app.get('/app/security')
+    def security():
+        return render_template('security.html')
+
+    @app.post('/app/security/logout-all')
+    def logout_everywhere():
+        with db():db().execute('UPDATE app_users SET session_version=session_version+1 WHERE id=?',(g.user['id'],))
+        session.clear()
+        flash('Вы вышли на всех устройствах. Войдите снова.')
+        return redirect(url_for('login'))
+
     def user_lead(lid):
-        row=db().execute('''SELECT l.*,ul.pipeline_status,ul.deal_amount,ul.filter_reason,
-            f.label AS feedback FROM user_leads ul JOIN leads l ON l.id=ul.lead_id
-            LEFT JOIN lead_feedback f ON f.user_id=ul.user_id AND f.lead_id=ul.lead_id
-            WHERE ul.user_id=? AND l.id=? AND ul.delivery_status<>'filtered' ''',(g.owner_id,lid)).fetchone()
+        row=owner_lead(db(),g.owner_id,lid)
         if not row:abort(404)
         return row
 
@@ -378,18 +560,7 @@ def create_app(test_config=None):
             amount=request.form.get('amount','').strip()
             if amount and (not amount.isdigit() or int(amount)>1000000000):
                 abort(400,description='Укажите целую сумму от 0 до 1 000 000 000 ₽.')
-            with db():
-                for kind,value,old in [('status',status,row['pipeline_status']),('amount',amount,str(row['deal_amount']) if row['deal_amount'] is not None else ''),('feedback',label,row['feedback'] or '')]:
-                    if value!=old:
-                        detail=PIPELINE.get(value,value) if kind=='status' else FEEDBACK.get(value,value) if kind=='feedback' else value or 'Сумма не указана'
-                        db().execute('INSERT INTO lead_activity(user_id,lead_id,kind,detail) VALUES(?,?,?,?)',(g.owner_id,lid,kind,detail or 'Без оценки'))
-                db().execute('UPDATE user_leads SET pipeline_status=?,deal_amount=?,updated_at=now() WHERE user_id=? AND lead_id=?',
-                    (status,int(amount) if amount else None,g.owner_id,lid))
-                if label:db().execute('''INSERT INTO lead_feedback(user_id,lead_id,label) VALUES(?,?,?)
-                    ON CONFLICT(user_id,lead_id) DO UPDATE SET label=excluded.label,updated_at=now()''',(g.owner_id,lid,label))
-                else:db().execute('DELETE FROM lead_feedback WHERE user_id=? AND lead_id=?',(g.owner_id,lid))
-                from .integrations import enqueue_lead_event
-                enqueue_lead_event(db(),g.owner_id,lid,'lead.updated')
+            update_lead(db(),g.owner_id,lid,row,status,amount,label)
             flash('Изменения сохранены. Статус доступен и в Telegram.');return redirect(url_for('detail',lid=lid))
         activity=db().execute('SELECT kind,detail,created_at FROM lead_activity WHERE user_id=? AND lead_id=? ORDER BY id DESC LIMIT 100',(g.owner_id,lid)).fetchall()
         reminder=db().execute('SELECT * FROM lead_reminders WHERE user_id=? AND lead_id=?',(g.owner_id,lid)).fetchone()
@@ -450,12 +621,9 @@ def create_app(test_config=None):
             require_role(*EDIT_SETTINGS)
             budget=request.form.get('min_budget','');selected=request.form.getlist('topics')
             if not budget.isdigit() or int(budget)>100000000 or not set(selected)<=set(TOPICS):abort(400)
-            with db():
-                db().execute('''UPDATE user_preferences SET min_budget=?,topics=?::jsonb,
-                    show_without_budget=?,show_possible_needs=?,monitoring_active=?,portfolio=?,updated_at=now()
-                    WHERE user_id=?''',(int(budget),json.dumps(selected),bool(request.form.get('no_budget')),
-                    bool(request.form.get('possible')),bool(request.form.get('active')),request.form.get('portfolio','')[:3000],g.owner_id))
-                db().execute("DELETE FROM user_leads WHERE user_id=? AND delivery_status='filtered'",(g.owner_id,))
+            save_preferences(db(),g.owner_id,min_budget=int(budget),topics=selected,
+                show_without_budget=bool(request.form.get('no_budget')),show_possible_needs=bool(request.form.get('possible')),
+                monitoring_active=bool(request.form.get('active')),portfolio=request.form.get('portfolio','')[:3000])
             flash('Настройки применены к уведомлениям.');return redirect(url_for('settings'))
         prefs=db().execute('SELECT * FROM user_preferences WHERE user_id=?',(g.owner_id,)).fetchone()
         return render_template('settings.html',prefs=prefs,topics=TOPICS,topic_categories=TOPIC_CATEGORIES)
@@ -488,6 +656,10 @@ def create_app(test_config=None):
             404:'Страница или лид не найдены.',413:'Слишком большой запрос.',500:'Не удалось обработать запрос. Попробуйте позже.'}
         if request.path.startswith('/api/'):
             return jsonify({'error':messages.get(exc.code,'Ошибка запроса.'),'status':exc.code}),exc.code
+        if request.path=='/tg/auth':
+            return jsonify({'ok':False,'error':messages.get(exc.code,'Ошибка запроса.')}),exc.code
+        if is_tg_path(request.path):
+            return render_template('tg/error.html',message=messages.get(exc.code,'Ошибка запроса.')),exc.code
         return render_template('error.html',message=messages.get(exc.code,'Ошибка запроса.')),exc.code
 
     from .web_projects import register_projects
@@ -506,4 +678,6 @@ def create_app(test_config=None):
     register_integrations(app,db)
     from .demand import register_demand
     register_demand(app,db)
+    from .web_tg import register_tg_routes
+    register_tg_routes(app,db)
     return app
