@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="robots" content="noindex,nofollow">
+<meta name="format-detection" content="telephone=no">
+<title>{% block title %}Сигналид{% endblock %}</title>
+{# Telegram ships this SDK at an unversioned URL and updates it in place, so it cannot carry an SRI hash. #}
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<link rel="stylesheet" href="{{ url_for('static',filename='tg/tg.css') }}">
+<script src="{{ url_for('static',filename='tg/tg.js') }}" defer></script>
+{% block head_extra %}{% endblock %}
+</head>
+<body data-page="{% block page %}page{% endblock %}" data-csrf="{{ csrf }}"{% if user %} data-tg-user="{{ user.telegram_user_id }}"{% endif %}{% block body_attrs %}{% endblock %}>
+{% block nav %}{% if user and user.terms_accepted_at %}
+<nav class="tg-nav" aria-label="Разделы">
+<a href="/tg/feed"{% if request.path.startswith('/tg/feed') or request.path.startswith('/tg/leads') or request.path.startswith('/tg/replies') %} aria-current="page"{% endif %}>Лиды</a>
+<a href="/tg/settings"{% if request.path=='/tg/settings' %} aria-current="page"{% endif %}>Настройки</a>
+<a href="/tg/billing"{% if request.path=='/tg/billing' %} aria-current="page"{% endif %}>Подписка</a>
+</nav>
+{% endif %}{% endblock %}
+<main class="tg">
+{% for category,message in get_flashed_messages(with_categories=true) %}<p class="tg-flash {{ category }}" role="status"{% if category in ('success','error') %} data-haptic="{{ category }}"{% endif %}>{{ message }}</p>{% endfor %}
+{% block content %}{% endblock %}
+</main>
+</body></html>

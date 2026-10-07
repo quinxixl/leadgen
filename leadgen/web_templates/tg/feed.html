@@ -1,0 +1,23 @@
+{% extends 'tg/base.html' %}{% block title %}Лиды — Сигналид{% endblock %}{% block page %}feed{% endblock %}{% block body_attrs %} data-root="1"{% endblock %}
+{% macro temp_badge(lead) -%}<span class="badge {{ {'горячий':'hot','тёплый':'warm'}.get(lead.temperature,'cold') }}">{{ lead.score }}</span>{%- endmacro %}
+{% block content %}
+<div class="chips" role="tablist" aria-label="Фильтр">
+<a class="chip" href="/tg/feed"{% if not kind %} aria-current="page"{% endif %}>Все</a>
+{% for key,label in filters.items() %}<a class="chip" href="/tg/feed?f={{ key }}"{% if kind==key %} aria-current="page"{% endif %}>{{ label }}</a>{% endfor %}
+</div>
+{% if subscription and subscription_ok and trial_days_left is not none and trial_days_left<=3 %}<p class="tg-flash warn">Пробный период заканчивается через {{ trial_days_left }} дн. <a href="/tg/billing">Подписка</a></p>{% endif %}
+{% if items %}
+<ul class="leads">
+{% for item in items %}<li><a class="lead-item" href="/tg/leads/{{ item.id }}">
+<span class="lead-top">{{ temp_badge(item.lead) }}<span class="lead-source">{{ item.lead.source }}</span>{% if item.feedback=='fit' %}<span class="tag">👍</span>{% endif %}</span>
+<strong>{{ item.lead.title|truncate(120) }}</strong>
+<span class="lead-meta">{{ pipeline.get(item.pipeline_status,item.pipeline_status) }}{% if item.lead.budget_text %} · {{ item.lead.budget_text }}{% endif %}{% if item.lead.published %} · {{ item.lead.published|dt }}{% endif %}</span>
+</a></li>{% endfor %}
+</ul>
+{% if next_before %}<a class="btn quiet wide" href="/tg/feed?{% if kind %}f={{ kind }}&amp;{% endif %}before={{ next_before }}">Показать ещё</a>{% endif %}
+{% else %}
+<section class="tg-card"><h1>{% if before %}Больше лидов нет{% elif kind %}Здесь пока пусто{% else %}Лидов пока нет{% endif %}</h1>
+<p class="hint">{% if before or kind %}Попробуйте другой фильтр.{% else %}Как только появится подходящий заказ, он придёт в бот и появится здесь. Проверьте услуги и бюджет в настройках.{% endif %}</p>
+{% if before or kind %}<a class="btn quiet" href="/tg/feed">Все лиды</a>{% else %}<a class="btn quiet" href="/tg/settings">Настройки</a>{% endif %}</section>
+{% endif %}
+{% endblock %}

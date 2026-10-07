@@ -85,3 +85,48 @@ def consume_login(db, token, browser):
             return None
         db.execute('DELETE FROM settings WHERE key=?', (challenge_key(token),))
         return record['user_id']
+
+
+def login_status(db, token, browser):
+    """'pending', 'approved' or 'expired' for the browser's own login request; never consumes it."""
+    try:
+        record = login_record(db, token)
+    except ValueError:
+        return 'expired'
+    if not hmac.compare_digest(record['browser'], digest(browser)):
+        return 'expired'
+    return 'pending' if record['user_id'] is None else 'approved'
+
+
+HANDOFF_TTL = 60
+
+
+def handoff_key(token):
+    if not re.fullmatch(r'[A-Za-z0-9_-]{43}', token or ''):
+        raise ValueError('Ссылка входа недействительна')
+    return 'web_handoff:' + digest(token)
+
+
+def begin_handoff(db, user_id, session_version=0):
+    """Single-use, 60-second token that signs the Mini App user into the website."""
+    token = secrets.token_urlsafe(32)
+    record = {'user_id': user_id, 'sv': session_version, 'expires': time.time() + HANDOFF_TTL}
+    with db:
+        db.execute('INSERT INTO settings(key,value) VALUES(?,?)', (handoff_key(token), json.dumps(record)))
+    return token
+
+
+def consume_handoff(db, token):
+    """Return the user id once; a second use, an expired token or a revoked session fails."""
+    key = handoff_key(token)
+    with db:
+        row = db.execute('DELETE FROM settings WHERE key=? RETURNING value', (key,)).fetchone()
+        if db.backend == 'postgres':
+            db.execute("""DELETE FROM settings WHERE key LIKE 'web_handoff:%%'
+                AND (value::jsonb->>'expires')::float8 < ?""", (time.time(),))
+    if not row:
+        raise ValueError('Ссылка входа уже использована или устарела')
+    record = json.loads(row['value'])
+    if record['expires'] <= time.time():
+        raise ValueError('Ссылка входа устарела. Откройте сайт из Telegram ещё раз')
+    return record['user_id'], record.get('sv', 0)

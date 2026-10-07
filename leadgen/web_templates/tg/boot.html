@@ -1,0 +1,20 @@
+{% extends 'tg/base.html' %}{% block page %}boot{% endblock %}{% block body_attrs %} data-target="{{ target }}"{% endblock %}{% block nav %}{% endblock %}
+{% block content %}
+<section class="tg-center" data-boot="loading"><span class="spinner" aria-hidden="true"></span><p class="hint">Входим через Telegram…</p></section>
+<section class="tg-card" data-boot="outside" hidden>
+<h1>Откройте Сигналид в Telegram</h1>
+<p class="hint">Эта страница работает как мини-приложение внутри Telegram. Откройте её кнопкой в боте{% if bot %} <a href="https://t.me/{{ bot }}">@{{ bot }}</a>{% endif %} или войдите на сайте.</p>
+<a class="btn" href="/login">Войти на сайте</a>
+</section>
+<section class="tg-card" data-boot="fallback" hidden>
+<h1>Откройте в мобильном приложении Telegram</h1>
+<p class="hint">Этот браузер не сохраняет вход внутри Telegram. Откройте Сигналид в приложении Telegram на телефоне или продолжите на сайте.</p>
+<button type="button" class="btn" data-boot-handoff>Открыть сайт</button>
+<p class="hint small" data-boot-message></p>
+</section>
+<section class="tg-card" data-boot="error" hidden>
+<h1>Не получилось войти</h1>
+<p class="hint" data-boot-error></p>
+<button type="button" class="btn" data-boot-retry>Повторить</button>
+</section>
+{% endblock %}

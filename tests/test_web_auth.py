@@ -38,6 +38,40 @@ class WebLogin(unittest.TestCase):
         with patch('leadgen.web_auth.time.time',return_value=100):token,_,_=begin_login(self.db)
         with patch('leadgen.web_auth.time.time',return_value=401):
             with self.assertRaises(ValueError):login_record(self.db,token)
+    def test_status_is_browser_bound_and_does_not_consume(self):
+        from leadgen.web_auth import login_status
+        token,browser,code=begin_login(self.db)
+        self.assertEqual(login_status(self.db,token,browser),'pending')
+        self.assertEqual(login_status(self.db,token,'other-browser'),'expired')
+        approve_login(self.db,token,12,code)
+        self.assertEqual(login_status(self.db,token,browser),'approved')
+        self.assertEqual(login_status(self.db,token,browser),'approved')
+        self.assertEqual(consume_login(self.db,token,browser),12)
+        self.assertEqual(login_status(self.db,token,browser),'expired')
+        self.assertEqual(login_status(self.db,'not-a-token',browser),'expired')
+
+
+class Handoff(unittest.TestCase):
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory();self.db=db_open(Path(self.tmp.name)/'test.sqlite')
+    def tearDown(self):self.db.close();self.tmp.cleanup()
+    def test_single_use(self):
+        from leadgen.web_auth import begin_handoff,consume_handoff
+        token=begin_handoff(self.db,7,3)
+        stored=self.db.execute("SELECT key,value FROM settings WHERE key LIKE 'web_handoff:%'").fetchone()
+        self.assertNotIn(token,stored['key']+stored['value'])
+        self.assertEqual(consume_handoff(self.db,token),(7,3))
+        with self.assertRaises(ValueError):consume_handoff(self.db,token)
+    def test_expires_after_a_minute(self):
+        from leadgen.web_auth import begin_handoff,consume_handoff
+        with patch('leadgen.web_auth.time.time',return_value=1000):token=begin_handoff(self.db,7)
+        with patch('leadgen.web_auth.time.time',return_value=1061):
+            with self.assertRaises(ValueError):consume_handoff(self.db,token)
+        with self.assertRaises(ValueError):consume_handoff(self.db,token)
+    def test_malformed_token(self):
+        from leadgen.web_auth import consume_handoff
+        for token in ('','x',None,'a'*44,"'; DROP TABLE settings; --"):
+            with self.assertRaises(ValueError):consume_handoff(self.db,token)
 
 
 class RateLimit(unittest.TestCase):
