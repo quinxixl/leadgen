@@ -21,7 +21,11 @@ def deliver_assignments(db,sender,limit=5):
         lead=json.loads(row['payload'])
         text=(f"Вам назначен лид в команде «{row['workspace_name']}».\n\n"
               f"{lead['title']}\n{lead['source']}\n\n{lead['url']}")[:3900]
-        try:sender('sendMessage',{'chat_id':str(row['telegram_chat_id']),'text':text,'disable_web_page_preview':True})
+        payload={'chat_id':str(row['telegram_chat_id']),'text':text,'disable_web_page_preview':True}
+        from .product import lead_link
+        button=lead_link(row['lead_id'])
+        if button:payload['reply_markup']={'inline_keyboard':[[button]]}
+        try:sender('sendMessage',payload)
         except Exception as exc:
             with db:db.execute("""UPDATE lead_assignments SET notification_status='uncertain',
                 notification_error=?,notification_updated_at=now() WHERE workspace_id=? AND lead_id=?""",

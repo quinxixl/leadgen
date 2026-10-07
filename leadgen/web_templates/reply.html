@@ -16,6 +16,7 @@
 <section class="panel"><h2>{{ lead.title }}</h2>
 {% if error %}<p class="notice" role="alert">{{ error }}</p>{% endif %}
 {% if account %}<p>Отправитель: ваш аккаунт <strong>{{ account.display_name }}</strong>.</p>
+{% if draft_name %}<p class="notice" role="status">Текст подставлен: {{ draft_name }}. Отредактируйте его перед отправкой.</p>{% endif %}
 <form method="post"><input type="hidden" name="csrf" value="{{ csrf }}">
 <label>Куда отправить<select name="mode">{% for key,label in modes.items() %}<option value="{{ key }}" {% if key==mode %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
 <label>Текст отклика<textarea name="body" rows="8" maxlength="3000" required>{{ body }}</textarea></label>

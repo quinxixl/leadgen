@@ -42,8 +42,12 @@ def deliver_due(db,sender,limit=5):
             db.execute("UPDATE lead_reminders SET status='sending',updated_at=now() WHERE user_id=? AND lead_id=?",(row['user_id'],row['lead_id']))
         lead=json.loads(row['payload'])
         text='Напоминание по лиду\n\n'+lead['title'][:500]+'\n'+row['note']+'\n\n'+lead['url']
+        payload={'chat_id':row['telegram_chat_id'],'text':text[:3900],'disable_web_page_preview':True}
+        from .product import lead_link
+        button=lead_link(row['lead_id'])
+        if button:payload['reply_markup']={'inline_keyboard':[[button]]}
         try:
-            sender('sendMessage',{'chat_id':row['telegram_chat_id'],'text':text[:3900],'disable_web_page_preview':True})
+            sender('sendMessage',payload)
         except Exception:
             with db:db.execute("UPDATE lead_reminders SET status='uncertain',updated_at=now() WHERE user_id=? AND lead_id=?",(row['user_id'],row['lead_id']))
         else:

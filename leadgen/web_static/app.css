@@ -393,3 +393,27 @@ td a{overflow-wrap:anywhere}
   .table-wrap table{min-width:520px}
 }
 @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+/* Collapsible sections: sidebar «Ещё», lead filters, lead card panels */
+.side-nav .nav-more summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:10px;width:auto;height:auto;padding:9px 10px;border:0;border-radius:9px;color:var(--night-text);font-size:14.5px;font-weight:520}
+.side-nav .nav-more summary::-webkit-details-marker{display:none}
+.side-nav .nav-more summary:hover{background:var(--night-2);color:#fff}
+.side-nav .nav-more summary svg{width:18px;height:18px;flex:none;opacity:.75}
+.side-nav .nav-more summary span{display:inline;width:auto;height:auto;background:none;position:static;border-radius:0}
+.side-nav .nav-more summary span:before,.side-nav .nav-more summary span:after{content:none}
+.side-nav .nav-more summary:after{content:"";margin-left:auto;width:7px;height:7px;border-right:1.6px solid currentColor;border-bottom:1.6px solid currentColor;transform:rotate(45deg);opacity:.6}
+.side-nav .nav-more[open] summary:after{transform:rotate(225deg)}
+.side-nav .nav-more a{padding-left:20px}
+details.fold>summary{list-style:none;cursor:pointer;font-weight:650;display:flex;align-items:center;gap:8px}
+details.fold>summary::-webkit-details-marker{display:none}
+details.fold>summary:before{content:"";width:7px;height:7px;border-right:1.6px solid var(--muted);border-bottom:1.6px solid var(--muted);transform:rotate(-45deg);transition:transform .15s}
+details.fold[open]>summary:before{transform:rotate(45deg)}
+details.fold[open]>summary{margin-bottom:12px}
+details.fold:not(.panel){margin:12px 0}
+details.panel.fold>summary{font-size:18px}
+.quick-links{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0 4px}
+.quick-links a{padding:6px 14px;border:1px solid var(--line-2);border-radius:999px;background:var(--surface);color:var(--ink-2);text-decoration:none;font-size:14px;font-weight:600}
+.quick-links a:hover{border-color:var(--brand);color:var(--brand-ink)}
+.quick-links a[aria-current=page]{background:var(--brand-soft);border-color:var(--brand);color:var(--brand-ink)}
+.lead-actions{display:flex;flex-wrap:wrap;gap:10px}
+.export-links{margin-top:16px}

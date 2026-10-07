@@ -24,7 +24,6 @@
       rows.forEach((row) => {
         const checkbox = row.querySelector('input');
         if (button.dataset.serviceAction === 'visible' && !row.hidden) checkbox.checked = true;
-        if (button.dataset.serviceAction === 'all') checkbox.checked = true;
         if (button.dataset.serviceAction === 'clear') checkbox.checked = false;
       });
       updateSummary();

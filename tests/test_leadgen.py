@@ -173,10 +173,36 @@ class Filters(unittest.TestCase):
         prefs['show_without_budget']=True
         self.assertTrue(eligible_for_user(item,CONFIG,prefs)[0])
 
-    def test_product_card_has_feedback_pipeline_and_reply_actions(self):
-        markup=json.dumps(lead_buttons(42,'https://example.org/lead'),ensure_ascii=False)
-        for value in ('feedback:fit:42','feedback:ad:42','pipeline:menu:42','reply:42'):
-            self.assertIn(value,markup)
+    def test_product_card_is_compact_with_two_way_rating(self):
+        from leadgen.product import miss_buttons
+        with patch.dict(os.environ,{'WEB_PUBLIC_URL':'','MINIAPP_ENABLED':''}):
+            rows=lead_buttons(42,'https://example.org/lead')['inline_keyboard']
+        self.assertEqual(rows[0],[{'text':'Оригинал','url':'https://example.org/lead'}])
+        self.assertEqual([b['callback_data'] for b in rows[1]],['feedback:fit:42','miss:42'])
+        self.assertEqual(len(rows),2)
+        with patch.dict(os.environ,{'WEB_PUBLIC_URL':'https://signalid.test/','MINIAPP_ENABLED':'0'}):
+            rows=lead_buttons(42,'https://t.me/business_chat/7','ad')['inline_keyboard']
+        self.assertEqual(rows[0][0],{'text':'Открыть','url':'https://signalid.test/app/leads/42'})
+        self.assertEqual(rows[1][1]['text'],'✓ 👎 Реклама')
+        self.assertEqual(rows[2],[{'text':'✉️ Ответить','callback_data':'tgcompose:42'}])
+        with patch.dict(os.environ,{'WEB_PUBLIC_URL':'https://signalid.test','MINIAPP_ENABLED':'1'}):
+            rows=lead_buttons(42,'https://example.org/lead','fit')['inline_keyboard']
+        self.assertEqual(rows[0][0],{'text':'Открыть','web_app':{'url':'https://signalid.test/tg/leads/42'}})
+        self.assertEqual(rows[1][0]['text'],'✓ 👍 Подходит')
+        reasons=[b['callback_data'] for row in miss_buttons(42)['inline_keyboard'] for b in row]
+        self.assertIn('feedback:ad:42',reasons);self.assertNotIn('feedback:fit:42',reasons)
+        self.assertEqual(reasons[-1],'card:42')
+        self.assertLessEqual(max(len(data.encode()) for data in reasons),64)
+
+    def test_onboarding_callbacks_fit_telegram_limit(self):
+        from leadgen.core import TOPIC_GROUPS
+        from leadgen.product import wizard_budget,wizard_directions,wizard_launch,wizard_services
+        user={'min_budget':0,'show_without_budget':False}
+        views=[wizard_directions(['Сайты']),wizard_budget(user),wizard_launch(user,['Сайты'])]
+        views+=[wizard_services(i,[]) for i in range(len(TOPIC_GROUPS))]
+        data=[b['callback_data'] for _,markup in views for row in markup['inline_keyboard'] for b in row if 'callback_data' in b]
+        self.assertLessEqual(max(len(item.encode()) for item in data),64)
+        self.assertEqual(len(wizard_directions([])[1]['inline_keyboard']),len(TOPIC_GROUPS))
 
 class TelegramDiagnostics(unittest.TestCase):
     def test_errors_hide_token_and_distinguish_setup(self):

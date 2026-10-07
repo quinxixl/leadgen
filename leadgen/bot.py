@@ -224,7 +224,7 @@ def run_bot(db,config):
         print('Менеджер личных Telegram-подключений запущен.', flush=True)
     elif product_mode:
         print('Личные Telegram-подключения отключены: добавьте API-параметры и ключ шифрования.', flush=True)
-    future=None;next_scan=0;telegram_retry_delay=2
+    future=None;next_scan=0;telegram_retry_delay=2;next_subscription_check=0;next_first_run_check=0
     with ThreadPoolExecutor(max_workers=1) as pool:
         while True:
             try:
@@ -258,7 +258,8 @@ def run_bot(db,config):
                     if ui.manual or ui.get('active',False):
                         ui.drain=True
                         failures=sum(bool(e) for _,_,e in batch)
-                        if ui.manual:
+                        # Product users get leads as cards; the owner-only summary refers to the legacy menu.
+                        if ui.manual and not product_mode:
                             ui.say(f'Проверка завершена: прочитано {sum(len(x) for _,x,_ in batch)} записей. Ошибок источников: {failures}. Результаты — «Объявления».')
                     ui.manual=False
                     next_scan=time.monotonic()+config['poll_seconds']
@@ -272,6 +273,25 @@ def run_bot(db,config):
                         deliver_webhooks(db,os.environ['TELEGRAM_SESSION_ENCRYPTION_KEY'],limit=2)
                     from .team_notifications import deliver_assignments
                     deliver_assignments(db,telegram,limit=2)
+                    if time.monotonic()>=next_subscription_check:
+                        next_subscription_check=time.monotonic()+300
+                        try:
+                            from .product import notify_subscriptions
+                            notify_subscriptions(db,telegram)
+                        except Exception as exc:
+                            # Trial reminders are optional; only RuntimeError is survivable in this loop.
+                            print('Напоминания о подписке: '+type(exc).__name__,flush=True)
+                            db.connection.rollback()
+                    if time.monotonic()>=next_first_run_check:
+                        # Before the live stream: monitoring enabled on the site gets the welcome batch too.
+                        next_first_run_check=time.monotonic()+10
+                        try:
+                            from .product import backfill_pending
+                            backfill_pending(db,config,telegram)
+                        except RuntimeError:raise
+                        except Exception as exc:
+                            print('Первые лиды: '+type(exc).__name__,flush=True)
+                            db.connection.rollback()
                 if ui.get('active',False) or ui.drain:
                     if product_mode:
                         from .product import deliver_registered
