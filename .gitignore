@@ -10,3 +10,4 @@ leadgen/data/
 outputs/
 supabase/.temp/
 .leadfinder-deployed-sha
+.claude/worktrees/

@@ -32,7 +32,7 @@
 {% macro app_nav() -%}
 <nav class="side-nav" aria-label="Разделы кабинета">
 {{ nav_link('/app','Обзор','home',True) }}{{ nav_link('/app/leads','Лиды','leads') }}{{ nav_link('/app/projects','Проекты','projects') }}{{ nav_link('/app/telegram','Мой Telegram','telegram') }}
-<span class="group">Аккаунт</span>{{ nav_link('/app/settings','Настройки','settings') }}{{ nav_link('/app/billing','Подписка','billing') }}{% if platform_admin %}{{ nav_link('/admin','Админка','admin') }}{% endif %}
+<span class="group">Аккаунт</span>{{ nav_link('/app/settings','Настройки','settings') }}{{ nav_link('/app/security','Безопасность','admin') }}{{ nav_link('/app/billing','Подписка','billing') }}{% if platform_admin %}{{ nav_link('/admin','Админка','admin') }}{% endif %}
 <details class="nav-more"{% if request.path.startswith(('/app/demand','/app/sources','/app/team','/app/integrations')) %} open{% endif %}><summary><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg><span>Ещё</span></summary>
 {{ nav_link('/app/demand','Спрос','demand') }}{{ nav_link('/app/sources','Каталог чатов','sources') }}{{ nav_link('/app/team','Команда','team') }}{% if role in ('owner','admin') %}{{ nav_link('/app/integrations','API и webhook','integrations') }}{% endif %}
 </details>
