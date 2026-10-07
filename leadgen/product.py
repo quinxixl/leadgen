@@ -3,6 +3,7 @@ import copy
 import json
 import re
 
+from . import accounts
 from .app import classify_for_config
 from .core import TOPICS, Lead, message, topics, budget
 from .billing import PLAN_NAMES, days_left, subscription_active, support_contact
@@ -167,14 +168,7 @@ class ProductController:
             JOIN subscriptions s ON s.user_id=u.id WHERE u.telegram_user_id=?''',(telegram_id,)).fetchone()
 
     def _register(self,actor,chat_id):
-        name=' '.join(x for x in (actor.get('first_name',''),actor.get('last_name','')) if x).strip()
-        with self.db:
-            row=self.db.execute('''INSERT INTO app_users(telegram_user_id,telegram_chat_id,username,display_name)
-                VALUES(?,?,?,?) ON CONFLICT(telegram_user_id) DO UPDATE SET telegram_chat_id=excluded.telegram_chat_id,
-                username=excluded.username,display_name=excluded.display_name,last_seen_at=now() RETURNING id''',
-                (actor['id'],chat_id,actor.get('username'),name)).fetchone()
-            self.db.execute("INSERT INTO subscriptions(user_id) VALUES(?) ON CONFLICT(user_id) DO NOTHING",(row['id'],))
-            self.db.execute("INSERT INTO user_preferences(user_id) VALUES(?) ON CONFLICT(user_id) DO NOTHING",(row['id'],))
+        accounts.register_user(self.db,actor,chat_id)
         return self._user(actor['id'])
 
     def _update_pref(self,user_id,column,value):

@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import patch
 from pathlib import Path
 from datetime import datetime,timedelta,timezone
+from leadgen.core import TOPICS
 from leadgen.database import db_open
 from leadgen.web import create_app
 from leadgen.web_auth import approve_login
@@ -85,6 +86,7 @@ class WebPostgres(unittest.TestCase):
         cls.db.connection.execute(Path('supabase/migrations/20261003120000_subscription_trials.sql').read_text(),prepare=False)
         if not cls.db.execute("SELECT to_regclass('leadgen.telegram_replies') AS name").fetchone()['name']:
             cls.db.connection.execute(Path('supabase/migrations/20261005070330_telegram_replies.sql').read_text(),prepare=False)
+        cls.db.connection.execute(Path('supabase/migrations/20261007120000_onboarding_foundation.sql').read_text(),prepare=False)
         cls.db.commit()
         cls.app=create_app({'TESTING':True,'SECRET_KEY':'test-'*10,'BOT_USERNAME':'test_bot',
             'SESSION_COOKIE_SECURE':False,'DB_FACTORY':lambda:db_open(DSN),
@@ -104,7 +106,7 @@ class WebPostgres(unittest.TestCase):
             self.u=self.db.execute("INSERT INTO app_users(telegram_user_id,telegram_chat_id,display_name) VALUES(1,1,'Первый') RETURNING id").fetchone()['id']
             self.other=self.db.execute("INSERT INTO app_users(telegram_user_id,telegram_chat_id,display_name) VALUES(2,2,'Второй') RETURNING id").fetchone()['id']
             for uid in (self.u,self.other):
-                self.db.execute('INSERT INTO user_preferences(user_id) VALUES(?)',(uid,))
+                self.db.execute('INSERT INTO user_preferences(user_id,topics) VALUES(?,?::jsonb)',(uid,json.dumps(list(TOPICS),ensure_ascii=False)))
                 self.db.execute('INSERT INTO subscriptions(user_id) VALUES(?)',(uid,))
                 workspace=self.db.execute("INSERT INTO workspaces(owner_user_id,name) VALUES(?,?) RETURNING id",
                                           (uid,'Команда '+str(uid))).fetchone()['id']
