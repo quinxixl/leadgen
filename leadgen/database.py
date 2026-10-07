@@ -11,7 +11,8 @@ PRAGMA journal_mode=WAL;
 CREATE TABLE IF NOT EXISTS leads (
     url TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, payload TEXT NOT NULL,
     status TEXT NOT NULL, reason TEXT NOT NULL, first_seen TEXT NOT NULL,
-    sent_at TEXT, attempts INTEGER NOT NULL DEFAULT 0, next_attempt REAL NOT NULL DEFAULT 0
+    sent_at TEXT, attempts INTEGER NOT NULL DEFAULT 0, next_attempt REAL NOT NULL DEFAULT 0,
+    origin_user_id INTEGER
 );
 CREATE INDEX IF NOT EXISTS leads_fp ON leads(fingerprint);
 CREATE TABLE IF NOT EXISTS health (

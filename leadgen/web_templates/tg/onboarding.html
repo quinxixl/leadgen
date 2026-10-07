@@ -1,0 +1,43 @@
+{% extends 'tg/base.html' %}{% block title %}Начало работы — Сигналид{% endblock %}{% block page %}start{% endblock %}{% block body_attrs %}{% if step<=2 %} data-root="1"{% endif %}{% endblock %}
+{% block head_extra %}{% if step==2 %}<script src="{{ url_for('static',filename='service_picker.js') }}" defer></script>{% endif %}{% endblock %}
+{% block nav %}{% endblock %}
+{% block content %}
+<ol class="steps" aria-label="Шаги">{% for name in ('Согласие','Услуги','Бюджет','Запуск') %}<li{% if loop.index==step %} aria-current="step"{% elif loop.index<step %} class="done"{% endif %}>{{ name }}</li>{% endfor %}</ol>
+{% if step==1 %}
+<section class="tg-card">
+<h1>Сигналид находит заказы в Telegram</h1>
+<p class="hint">Мы следим за чатами и биржами, отбираем запросы на ваши услуги и присылаем их в бот за минуты. 7 дней — бесплатно.</p>
+</section>
+<form method="post" class="tg-section" data-main-button="Продолжить"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="action" value="consent"><input type="hidden" name="next" value="{{ target }}">
+<label class="check"><input type="checkbox" name="consent" value="1" required><span>Я принимаю <a href="/terms" target="_blank" rel="noopener">условия оферты</a> и даю согласие на обработку персональных данных в соответствии с <a href="/privacy" target="_blank" rel="noopener">политикой конфиденциальности</a></span></label>
+<button class="btn wide" data-main-fallback>Продолжить</button>
+</form>
+{% elif step==2 %}
+<form method="post" class="tg-section" data-main-button="Дальше"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="action" value="services"><input type="hidden" name="next" value="{{ target }}">
+<h1>Какие заказы искать?</h1>
+<p class="hint">Отметьте свои услуги — их можно поменять в настройках.</p>
+{% set selected_topics=prefs.topics %}{% include '_topic_picker.html' %}
+<button class="btn wide" data-main-fallback>Дальше</button>
+</form>
+{% elif step==3 %}
+<form method="post" class="tg-section" data-main-button="Дальше"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="action" value="budget"><input type="hidden" name="next" value="{{ target }}">
+<h1>Минимальный бюджет</h1>
+<p class="hint">Заказы с меньшим бюджетом мы не пришлём.</p>
+<fieldset class="options presets"><legend class="sr">Бюджет</legend>
+{% for value in presets %}<label class="preset"><input type="radio" name="min_budget" value="{{ value }}"{% if prefs.min_budget==value or (prefs.min_budget not in presets and value==5000) %} checked{% endif %}><span>{{ 'Любой' if value==0 else 'от ' ~ (value|money) ~ ' ₽' }}</span></label>{% endfor %}
+</fieldset>
+<label class="check toggle"><input type="checkbox" name="no_budget" value="1"{% if prefs.show_without_budget %} checked{% endif %}><span>Присылать заказы без бюджета<small class="hint">Многие заказчики не пишут сумму сразу</small></span></label>
+<button class="btn wide" data-main-fallback>Дальше</button>
+</form>
+{% else %}
+<section class="tg-card">
+<h1>Всё готово</h1>
+<p class="hint">Услуг выбрано: {{ prefs.topics|length }}. Бюджет: {{ 'любой' if prefs.min_budget==0 else 'от ' ~ (prefs.min_budget|money) ~ ' ₽' }}{% if prefs.show_without_budget %}, плюс заказы без бюджета{% endif %}.</p>
+<p class="hint">Новые заказы будут приходить в бот. Здесь — список лидов, статусы и ответы заказчикам.</p>
+</section>
+<form method="post" class="tg-section" data-main-button="Запустить"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="action" value="launch"><input type="hidden" name="next" value="{{ target }}">
+<button class="btn wide" data-main-fallback>Запустить</button>
+</form>
+<p class="center"><a class="hint small" href="/tg/start?step=2{% if target!='/tg/feed' %}&amp;next={{ target|urlencode }}{% endif %}">Изменить услуги</a></p>
+{% endif %}
+{% endblock %}

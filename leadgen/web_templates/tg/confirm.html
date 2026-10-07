@@ -1,0 +1,19 @@
+{% extends 'tg/base.html' %}{% block title %}Подтверждение — Сигналид{% endblock %}{% block page %}confirm{% endblock %}
+{% block content %}
+<section class="tg-card">
+<p class="hint small">{{ modes[reply.mode] }}</p>
+<h1>{% if reply.status=='draft' %}Отправить отклик?{% else %}{{ statuses[reply.status] }}{% endif %}</h1>
+<dl class="facts"><dt>От</dt><dd>{{ reply.sender_label }}</dd><dt>Кому</dt><dd>{{ reply.recipient_label }}</dd></dl>
+<p class="lead-text quote">{{ reply.body }}</p>
+{% if reply.error %}<p class="tg-flash error">{{ reply.error }}</p>{% endif %}
+</section>
+{% if reply.status=='draft' %}
+<form method="post" class="tg-section" data-main-button="Отправить"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="action" value="send">
+<p class="hint small">Сообщение уйдёт от вашего имени. Подтверждение действует 15 минут.</p>
+<button class="btn wide" data-main-fallback>Отправить</button>
+</form>
+<form method="post" class="tg-section"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="action" value="cancel"><button class="btn quiet wide">Отменить</button></form>
+{% else %}
+<div class="row"><a class="btn quiet" href="/tg/leads/{{ reply.lead_id }}">К лиду</a><a class="btn quiet" href="/tg/feed">К лидам</a></div>
+{% endif %}
+{% endblock %}

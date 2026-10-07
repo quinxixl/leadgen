@@ -1,0 +1,13 @@
+{% macro plans_grid(plans, mode='public', current=None, support='') -%}
+<div class="plans">{% for plan in plans %}
+<article class="plan{% if plan.featured %} featured{% endif %}{% if current==plan.code %} current{% endif %}">
+{% if plan.featured %}<span class="tag">Популярный</span>{% endif %}
+<h3>{{ plan.name }}</h3><p class="tagline">{{ plan.tagline }}</p>
+<p class="price">{{ '{:,}'.format(plan.price).replace(',', ' ') }} ₽<span> / месяц</span></p>
+<ul>{% for item in plan.features %}<li>{{ item }}</li>{% endfor %}</ul>
+{% if mode=='public' %}<a class="button{% if not plan.featured %} quiet{% endif %}" href="/login" data-goal="plan_trial" data-plan="{{ plan.code }}">Начать 7 дней бесплатно</a>
+{% elif current==plan.code %}<span class="button quiet disabled">Ваш тариф</span>
+{% elif support %}<a class="button{% if not plan.featured %} quiet{% endif %}" href="https://t.me/{{ support }}" rel="noopener noreferrer">Подключить «{{ plan.name }}»</a>
+{% else %}<span class="button quiet disabled">Оплата скоро</span>{% endif %}
+</article>{% endfor %}</div>
+{%- endmacro %}

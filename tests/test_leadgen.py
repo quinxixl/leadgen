@@ -22,6 +22,44 @@ def lead(**changes):
     return Lead(**(values | changes))
 
 class Filters(unittest.TestCase):
+    def test_expanded_topics_avoid_common_false_positives(self):
+        from leadgen.core import topics
+        expected={
+            'Нужен скрипт продаж для отдела продаж':['Лидогенерация и продажи'],
+            'Нужен python скрипт для выгрузки данных':['Программирование и ПО'],
+            'Нужно перевести сайт на новый хостинг':['Сайты'],
+            'Нужен перевод сайта на английский':['Сайты','Переводы и локализация'],
+            'Нужен монтаж видеонаблюдения на складе':[],
+            'Нужно смонтировать кухню':[],
+            'Нужно смонтировать видео для ютуба':['Видеомонтаж'],
+            'Пришлите фотографии объекта, нужен сайт':['Сайты'],
+            'Нужен фотограф на мероприятие':['Фото и ретушь'],
+            'Нужна разработка по ТЗ сайта':['Сайты'],
+            'Нужна разработка ПО для склада':['Программирование и ПО'],
+            'Нужен креативный подход к сайту':['Сайты'],
+            'Нужны креативы для таргета':['Графический дизайн'],
+            'Нужен дизайнер интерьера квартиры':[],
+            'Нужен ландшафтный дизайнер':[],
+            'Нужен иллюстратор для детской книги':['Графический дизайн'],
+            'Нужно доработать модуль 1С':['Программирование и ПО'],
+        }
+        for text,names in expected.items():
+            with self.subTest(text=text):self.assertEqual(topics(text),names)
+
+    def test_topic_callbacks_and_legacy_topics_stay_valid(self):
+        from leadgen.core import TOPICS
+        names=list(TOPICS)
+        self.assertEqual(len(names),34)
+        self.assertEqual(names[:3],['Сайты','Боты','Мобильные приложения'])
+        for legacy in ('Сайты','Боты','Мобильные приложения','Автоматизации','CRM'):
+            self.assertIn(legacy,TOPICS)
+
+    def test_service_catalog_groups_every_topic_once(self):
+        from leadgen.core import TOPICS,TOPIC_CATEGORIES
+        grouped=[name for _,names in TOPIC_CATEGORIES for name in names]
+        self.assertEqual(grouped,list(TOPICS))
+        self.assertEqual(len(grouped),34)
+
     def test_budget_formats(self):
         for text,expected in [('5 000 ₽',5000),('5к',5000),('5 тыс. руб',5000),('20–70 тыс рублей',20000),
                               ('5.000 руб',5000),('5,5к',5500),('от 10000 рублей',10000),('Бюджет: 25000-35000 рублей',25000)]:
@@ -80,8 +118,30 @@ class Filters(unittest.TestCase):
     def test_hh_is_separate(self):
         self.assertEqual(classify(lead(kind='vacancy',budget_text='100000 ₽'))[0],'review')
 
-    def test_other_service(self):
-        self.assertEqual(classify(lead(title='Нужен дизайнер логотипа',text='Нарисовать логотип'))[0],'rejected')
+    def test_new_service_categories_and_user_selection(self):
+        from leadgen.app import classify_for_config
+        cases = [
+            ('Нужен дизайнер логотипа','Нарисовать логотип','Логотипы и брендинг'),
+            ('Ищу юриста','Нужно проверить договор с подрядчиком','Юридические услуги'),
+            ('Нужен монтаж','Смонтировать несколько reels','Видеомонтаж'),
+            ('Нужен бухгалтер','Подготовить налоговую отчётность','Бухгалтерия и налоги'),
+        ]
+        for title,text,topic in cases:
+            with self.subTest(topic=topic):
+                item=lead(title=title,text=text)
+                state,_,tags=classify(item)
+                self.assertEqual(state,'ready')
+                self.assertIn(topic,tags)
+                self.assertEqual(classify_for_config(item,CONFIG|{'topics':[topic]})[0],'ready')
+                self.assertEqual(classify_for_config(item,CONFIG|{'topics':['Боты']})[1],'направление выключено')
+
+    def test_new_service_seller_ads_are_rejected(self):
+        item=lead(title='Юридические услуги',text='Проконсультирую и составлю договор. Пишите в личку.')
+        self.assertEqual(classify(item)[0],'rejected')
+
+    def test_recruiter_request_is_not_mistaken_for_vacancy(self):
+        item=lead(title='Нужен рекрутер',text='Нужно закрыть три вакансии разработчиков')
+        self.assertEqual(classify(item)[0],'ready')
 
     def test_message_limit(self):
         self.assertLess(len(message(lead(text='<b>x</b>'*3000),'Причина')),4096)
@@ -113,10 +173,36 @@ class Filters(unittest.TestCase):
         prefs['show_without_budget']=True
         self.assertTrue(eligible_for_user(item,CONFIG,prefs)[0])
 
-    def test_product_card_has_feedback_pipeline_and_reply_actions(self):
-        markup=json.dumps(lead_buttons(42,'https://example.org/lead'),ensure_ascii=False)
-        for value in ('feedback:fit:42','feedback:ad:42','pipeline:menu:42','reply:42'):
-            self.assertIn(value,markup)
+    def test_product_card_is_compact_with_two_way_rating(self):
+        from leadgen.product import miss_buttons
+        with patch.dict(os.environ,{'WEB_PUBLIC_URL':'','MINIAPP_ENABLED':''}):
+            rows=lead_buttons(42,'https://example.org/lead')['inline_keyboard']
+        self.assertEqual(rows[0],[{'text':'Оригинал','url':'https://example.org/lead'}])
+        self.assertEqual([b['callback_data'] for b in rows[1]],['feedback:fit:42','miss:42'])
+        self.assertEqual(len(rows),2)
+        with patch.dict(os.environ,{'WEB_PUBLIC_URL':'https://signalid.test/','MINIAPP_ENABLED':'0'}):
+            rows=lead_buttons(42,'https://t.me/business_chat/7','ad')['inline_keyboard']
+        self.assertEqual(rows[0][0],{'text':'Открыть','url':'https://signalid.test/app/leads/42'})
+        self.assertEqual(rows[1][1]['text'],'✓ 👎 Реклама')
+        self.assertEqual(rows[2],[{'text':'✉️ Ответить','callback_data':'tgcompose:42'}])
+        with patch.dict(os.environ,{'WEB_PUBLIC_URL':'https://signalid.test','MINIAPP_ENABLED':'1'}):
+            rows=lead_buttons(42,'https://example.org/lead','fit')['inline_keyboard']
+        self.assertEqual(rows[0][0],{'text':'Открыть','web_app':{'url':'https://signalid.test/tg/leads/42'}})
+        self.assertEqual(rows[1][0]['text'],'✓ 👍 Подходит')
+        reasons=[b['callback_data'] for row in miss_buttons(42)['inline_keyboard'] for b in row]
+        self.assertIn('feedback:ad:42',reasons);self.assertNotIn('feedback:fit:42',reasons)
+        self.assertEqual(reasons[-1],'card:42')
+        self.assertLessEqual(max(len(data.encode()) for data in reasons),64)
+
+    def test_onboarding_callbacks_fit_telegram_limit(self):
+        from leadgen.core import TOPIC_GROUPS
+        from leadgen.product import wizard_budget,wizard_directions,wizard_launch,wizard_services
+        user={'min_budget':0,'show_without_budget':False}
+        views=[wizard_directions(['Сайты']),wizard_budget(user),wizard_launch(user,['Сайты'])]
+        views+=[wizard_services(i,[]) for i in range(len(TOPIC_GROUPS))]
+        data=[b['callback_data'] for _,markup in views for row in markup['inline_keyboard'] for b in row if 'callback_data' in b]
+        self.assertLessEqual(max(len(item.encode()) for item in data),64)
+        self.assertEqual(len(wizard_directions([])[1]['inline_keyboard']),len(TOPIC_GROUPS))
 
 class TelegramDiagnostics(unittest.TestCase):
     def test_errors_hide_token_and_distinguish_setup(self):

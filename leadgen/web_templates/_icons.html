@@ -1,0 +1,26 @@
+{% macro icon(name) -%}
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+{%- if name=='home' %}<path d="M3 11.5 12 4l9 7.5"/><path d="M5 10v10h14V10"/>
+{%- elif name=='leads' %}<path d="M4 5h16v11H8l-4 4z"/><path d="M8 9h8M8 12h5"/>
+{%- elif name=='demand' %}<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>
+{%- elif name=='projects' %}<path d="M3 7h7l2 2h9v10H3z"/>
+{%- elif name=='sources' %}<circle cx="12" cy="12" r="2"/><path d="M8.5 8.5a5 5 0 0 0 0 7M15.5 8.5a5 5 0 0 1 0 7M5.6 5.6a9 9 0 0 0 0 12.8M18.4 5.6a9 9 0 0 1 0 12.8"/>
+{%- elif name=='telegram' %}<path d="m21 4-18 7 6 2 2 6 3-4 5 4z"/><path d="m9 13 8-6"/>
+{%- elif name=='team' %}<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18 14a6.5 6.5 0 0 1 3.5 6"/>
+{%- elif name=='integrations' %}<path d="M9 7V3M15 7V3M7 7h10v4a5 5 0 0 1-10 0zM12 16v5"/>
+{%- elif name=='settings' %}<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>
+{%- elif name=='billing' %}<rect x="2.5" y="5" width="19" height="14" rx="2.5"/><path d="M2.5 10h19M6.5 15h4"/>
+{%- elif name=='admin' %}<path d="M12 3 4 6v6c0 4.5 3.4 8 8 9 4.6-1 8-4.5 8-9V6z"/>
+{%- elif name=='filter' %}<path d="M3 5h18l-7 8v6l-4-2v-4z"/>
+{%- elif name=='score' %}<path d="M12 3v3M12 18v3M3 12h3M18 12h3"/><circle cx="12" cy="12" r="5"/>
+{%- elif name=='spark' %}<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 17l.8 2.2L22 20l-2.2.8L19 23l-.8-2.2L16 20l2.2-.8z"/>
+{%- elif name=='funnel' %}<path d="M3 4h18M6 9h12M9 14h6M11 19h2"/>
+{%- elif name=='webhook' %}<path d="M10 14a4 4 0 1 1-4-6.9"/><path d="M14 8a4 4 0 1 1 6 3.5"/><path d="M12 20a4 4 0 1 1 3.5-6"/><path d="m6 17 4-7 4 7"/>
+{%- elif name=='bell' %}<path d="M6 8a6 6 0 1 1 12 0c0 7 3 8 3 8H3s3-1 3-8"/><path d="M10 20a2 2 0 0 0 4 0"/>
+{%- endif %}
+</svg>
+{%- endmacro %}
+{% macro logo() -%}
+<svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="9" fill="#3654f5"/><circle cx="12" cy="20" r="3" fill="#fff"/><path d="M12 12.5a7.5 7.5 0 0 1 7.5 7.5" fill="none" stroke="#fff" stroke-width="2.6" stroke-linecap="round"/><path d="M12 6.5A13.5 13.5 0 0 1 25.5 20" fill="none" stroke="#ff5a2c" stroke-width="2.6" stroke-linecap="round"/></svg>
+{%- endmacro %}
+{% macro temp_class(value) -%}{{ {'горячий':'hot','тёплый':'warm','холодный':'cold'}.get(value,'') }}{%- endmacro %}

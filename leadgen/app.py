@@ -57,23 +57,28 @@ def telegram(method, payload):
         raise RuntimeError('Telegram rejected request')
     return data['result']
 
-def ingest(db, lead, config):
+def ingest(db, lead, config, origin_user_id=None):
     status,reason = classify_for_config(lead,config)
     fp = fingerprint(lead)
     existing = db.execute('SELECT status FROM leads WHERE url=?',(lead.url,)).fetchone()
     if existing and existing['status'] in ('sent','uncertain','sending'):
         return
-    duplicate = db.execute("SELECT url FROM leads WHERE fingerprint=? AND url<>? AND status IN ('ready','sent','sending','uncertain') LIMIT 1",(fp,lead.url)).fetchone()
+    duplicate = db.execute("""SELECT url FROM leads WHERE fingerprint=? AND url<>?
+        AND status IN ('ready','sent','sending','uncertain')
+        AND (origin_user_id=? OR (origin_user_id IS NULL AND CAST(? AS BIGINT) IS NULL)) LIMIT 1""",
+        (fp,lead.url,origin_user_id,origin_user_id)).fetchone()
     if duplicate:
         status,reason = 'duplicate','совпадает с '+duplicate['url']
-    db.execute('''INSERT INTO leads(url,fingerprint,payload,status,reason,first_seen)
-                  VALUES(?,?,?,?,?,?) ON CONFLICT(url) DO UPDATE SET
+    db.execute('''INSERT INTO leads(url,fingerprint,payload,status,reason,first_seen,origin_user_id)
+                  VALUES(?,?,?,?,?,?,?) ON CONFLICT(url) DO UPDATE SET
                   fingerprint=excluded.fingerprint,payload=excluded.payload,
                   status=excluded.status,reason=excluded.reason''',
-               (lead.url,fp,json.dumps(lead.data(),ensure_ascii=False),status,reason,datetime.now(UTC).isoformat()))
+               (lead.url,fp,json.dumps(lead.data(),ensure_ascii=False),status,reason,
+                datetime.now(UTC).isoformat(),origin_user_id))
 
 def classify_for_config(lead,config):
-    enrich(lead,config['min_budget'])
+    # The score is shared across projects; their budget floors only gate delivery.
+    enrich(lead)
     status, reason, _ = classify(lead,config['min_budget'],config['max_age_hours'])
     if (config.get('notify_without_budget') and status == 'review' and
             reason in ('бюджет не указан','указан только потолок бюджета') and lead.score >= 45):
@@ -108,8 +113,8 @@ def scan(db, config, fixtures=False):
             print(f"{source['name']}: ошибка {type(exc).__name__}; см. status",flush=True)
 
 def apply_preferences(lead, config, status, reason):
-    from .core import topics
-    if 'topics' in config and not set(topics(lead.title+' '+lead.text)).intersection(config['topics']):
+    from .core import topics, possible_need_topics
+    if 'topics' in config and not set(topics(lead.title+' '+lead.text)+possible_need_topics(lead.title+' '+lead.text)).intersection(config['topics']):
         return 'rejected', 'направление выключено'
     known = {s['name'] for s in config.get('sources',[])}
     enabled = {s['name'] for s in config.get('sources',[]) if s['enabled']}
