@@ -161,6 +161,40 @@ class ReplyPostgres(unittest.TestCase):
         callback(f'tgcompose:{self.ids[1]}')
         self.assertIn('недоступен',sent[-1][1]['text'])
 
+    def test_killed_send_is_recovered_as_uncertain_not_resent(self):
+        row=self.prepare()
+        with self.db:
+            self.db.execute("UPDATE telegram_replies SET status='sending',updated_at=now()-interval '1 minute' WHERE id=?",(row['id'],))
+        self.assertEqual(replies.get_reply(self.db,row['id'],self.u,self.u)['status'],'sending')
+        with self.db:
+            self.db.execute("UPDATE telegram_replies SET updated_at=now()-interval '6 minutes' WHERE id=?",(row['id'],))
+        result=replies.confirm(self.db,row['id'],self.u,self.u,self.cipher,self.gateway)
+        self.assertEqual(result['status'],'uncertain');self.assertTrue(result['error'])
+        self.assertFalse(self.gateway.sent)
+
+    def test_bot_menu_button_leaves_reply_flow_and_errors_do_not_escape(self):
+        sent=[];controller=ProductController(self.db,{},lambda method,data:sent.append((method,data)))
+        controller._reply_services=lambda:(self.cipher,self.gateway)
+        def callback(data):controller.handle({'callback_query':{'id':'click','from':{'id':1},'data':data,
+            'message':{'chat':{'id':1,'type':'private'}}}})
+        def text(value):controller.handle({'message':{'from':{'id':1},'chat':{'id':1,'type':'private'},'text':value}})
+        callback(f'tgmode:dm:{self.ids[0]}');text('📈 Статистика')
+        self.assertFalse(self.gateway.previews)
+        self.assertEqual(self.db.execute('SELECT count(*) AS n FROM telegram_replies').fetchone()['n'],0)
+        callback(f'tgmode:dm:{self.ids[0]}');text('Текст отклика')
+        reply_id=sent[-1][1]['reply_markup']['inline_keyboard'][0][0]['callback_data'].split(':')[1]
+        text('📥 Лиды')
+        self.assertEqual(self.db.execute('SELECT status FROM telegram_replies WHERE id=?',(reply_id,)).fetchone()['status'],'cancelled')
+        text('🧰 Портфолио');text('🎯 Услуги')
+        self.assertNotEqual(self.db.execute('SELECT portfolio FROM user_preferences WHERE user_id=?',(self.u,)).fetchone()['portfolio'],'🎯 Услуги')
+        self.assertIn('услуги',sent[-1][1]['text'].lower())
+        text('➕ Добавить чат');text('💳 Подписка')
+        self.assertNotIn('публичная ссылка',sent[-1][1]['text'])
+        def broken():raise KeyError('boom')
+        controller._reply_services=broken
+        callback(f'tgmode:dm:{self.ids[0]}');text('Ещё текст')
+        self.assertIn('Не удалось',sent[-1][1]['text'])
+
     def test_table_private_and_no_regression_of_advanced_pipeline(self):
         table=self.db.execute("SELECT relrowsecurity FROM pg_class WHERE oid='leadgen.telegram_replies'::regclass").fetchone()
         self.assertTrue(table['relrowsecurity'])

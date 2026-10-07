@@ -1,5 +1,6 @@
 """Web routes for a user's own Telegram connection."""
 import io
+from datetime import datetime, timezone
 
 from flask import abort, current_app, flash, g, jsonify, redirect, render_template, request, Response
 
@@ -52,6 +53,9 @@ def register_telegram_routes(app, db):
                                   (g.user['id'],)).fetchone()
         auth = db().execute('SELECT stage,attempts,expires_at,state_cipher FROM telegram_connection_auth WHERE user_id=?',
                             (g.user['id'],)).fetchone()
+        if auth and auth['expires_at'] <= datetime.now(timezone.utc):
+            # A stale QR/code flow must not keep rendering a dead QR image and polling.
+            auth = None
         dialogs = db().execute('''SELECT * FROM user_telegram_dialogs WHERE user_id=?
             ORDER BY enabled DESC,title LIMIT 1000''', (g.user['id'],)).fetchall()
         dialogs = [dict(row) | {'spheres': chat_spheres(row['title'], row['username'])} for row in dialogs]
@@ -99,8 +103,15 @@ def register_telegram_routes(app, db):
     @app.post('/app/telegram/qr/wait')
     def telegram_qr_wait():
         try:
+            # Every poll opens an MTProto connection; the page polls every ~1.5 s.
+            hit(db(), 'tg-qr-wait', g.user['id'], 60, 60)
+        except RateLimited:
+            return jsonify(status='retry'), 429
+        try:
             cipher, gateway = services()
             stage, count = wait_qr_connection(db(), g.user['id'], cipher, gateway)
+            if stage == 'refreshed':
+                return jsonify(status=stage, url=qr_connection_state(db(), g.user['id'], cipher).get('url', ''))
             return jsonify(status=stage, count=count)
         except TelegramAccountError as exc:
             return jsonify(status='error', message=str(exc)), 409

@@ -17,6 +17,7 @@ MENU={'keyboard':[
     [{'text':'💳 Подписка'}]],
     'resize_keyboard':True,'is_persistent':True}
 
+MENU_TEXTS={button['text'] for row in MENU['keyboard'] for button in row}
 REGISTER={'inline_keyboard':[[{'text':'Зарегистрироваться','callback_data':'register:confirm'}]]}
 PUBLIC_CHAT=re.compile(r'^(?:https?://t\.me/|@)?([A-Za-z][A-Za-z0-9_]{3,})/?$')
 PIPELINE={'saved':'Новый / сохранён','viewed':'Просмотрен','working':'В работе','contacted':'Написали',
@@ -85,7 +86,8 @@ def deliver_registered(db,base,sender,limit_per_user=1):
     delivered=0
     for prefs in users:
         config=user_config(base,prefs);processed=0
-        projects=db.execute('SELECT * FROM projects WHERE user_id=? ORDER BY id',(prefs['id'],)).fetchall()
+        # Projects are created disabled; only enabled ones replace the general preferences.
+        projects=db.execute('SELECT * FROM projects WHERE user_id=? AND enabled=true ORDER BY id',(prefs['id'],)).fetchall()
         rows=db.execute('''SELECT l.id,l.payload FROM leads l
             WHERE l.status<>'duplicate' AND (l.origin_user_id IS NULL OR l.origin_user_id=?)
               AND NOT EXISTS (SELECT 1 FROM user_leads ul WHERE ul.user_id=? AND ul.lead_id=l.id)
@@ -264,6 +266,12 @@ class ProductController:
                 self._update_pref(user['id'],'state',json.dumps({}))
                 self.say(replies.STATUSES[row['status']]+('. '+row['error'] if row['error'] else ''))
         except TelegramAccountError as exc:self.say(str(exc))
+        except RuntimeError:raise
+        except Exception as exc:
+            # The bot loop only survives RuntimeError; an unexpected error here must not
+            # restart the bot. A claimed send stays 'sending' and is later shown as uncertain.
+            print('Telegram-отклик: '+type(exc).__name__,flush=True)
+            self.say('Не удалось обработать отклик. Проверьте его статус на сайте перед повтором.')
         return True
 
     def _reply_text(self,user,state,text):
@@ -278,6 +286,11 @@ class ProductController:
                     [{'text':'Подтвердить и отправить','callback_data':'tgsend:'+row['id']}],
                     [{'text':'Отменить','callback_data':'tgcancel:'+row['id']}]]})
         except TelegramAccountError as exc:self.say(str(exc))
+        except RuntimeError:raise
+        except Exception as exc:
+            print('Telegram-отклик: '+type(exc).__name__,flush=True)
+            self._update_pref(user['id'],'state',json.dumps({}))
+            self.say('Не удалось подготовить отклик. Попробуйте ещё раз кнопкой под лидом.')
 
     def _stats(self,user_id):
         feedback={r['label']:r['total'] for r in self.db.execute(
@@ -391,10 +404,19 @@ class ProductController:
         if text=='/cancel':
             if state.get('await')=='telegram_reply_confirm':
                 from .telegram_replies import cancel
-                try:cancel(self.db,state['reply_id'],user['id'],user['id'])
+                try:cancel(self.db,state.get('reply_id',''),user['id'],user['id'])
                 except ValueError:pass
             self._update_pref(user['id'],'state',json.dumps({}));self.say('Ввод отменён.');return
-        if state.get('await')=='telegram_reply':self._reply_text(user,state,text);return
+        if state.get('await') and (text in MENU_TEXTS or text.startswith('/')):
+            # Menu buttons and commands leave any text-input mode instead of becoming its value.
+            if state.get('await')=='telegram_reply_confirm':
+                from .telegram_replies import cancel
+                try:cancel(self.db,state.get('reply_id',''),user['id'],user['id'])
+                except ValueError:pass
+            self._update_pref(user['id'],'state',json.dumps({}));state={}
+        if state.get('await')=='telegram_reply':
+            if not text:self.say('Отправьте текст отклика сообщением или /cancel.');return
+            self._reply_text(user,state,text);return
         if state.get('await')=='telegram_reply_confirm':
             self.say('Нажмите «Подтвердить и отправить» под откликом или /cancel для отмены и редактирования.');return
         if state.get('await')=='budget' and amount(text,100000000) is not None:

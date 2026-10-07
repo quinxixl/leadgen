@@ -30,6 +30,7 @@ def register_reply_routes(app, db):
                 error = str(exc)
         account = db().execute("SELECT display_name FROM telegram_connections WHERE user_id=? AND status='active'",
                                (g.user['id'],)).fetchone()
+        replies.recover_stuck(db())
         history = db().execute('''SELECT * FROM telegram_replies WHERE actor_id=? AND owner_id=? AND lead_id=?
             ORDER BY created_at DESC LIMIT 10''', (g.user['id'], g.owner_id, lead_id)).fetchall()
         return render_template('reply.html', lead=lead, lead_id=lead_id, body=text, mode=mode,

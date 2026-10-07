@@ -1,7 +1,7 @@
 {% from '_icons.html' import icon, logo %}<!doctype html>
 <html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{% block title %}Сигналид — заказы из Telegram и с бирж в реальном времени{% endblock %}</title>
-<meta name="description" content="{% block description %}Сигналид находит запросы на сайты, ботов, приложения и автоматизацию в Telegram-чатах и на биржах, оценивает их и присылает в Telegram за минуты.{% endblock %}">
+<title>{% block title %}Сигналид — заказы на ваши услуги из Telegram и с бирж{% endblock %}</title>
+<meta name="description" content="{% block description %}Сигналид находит заказы на разработку, дизайн, маркетинг и бизнес-услуги в Telegram-чатах и на биржах фриланса, оценивает их и присылает в Telegram за минуты.{% endblock %}">
 <meta name="theme-color" content="#0a0f1e">
 {% if yandex_verification %}<meta name="yandex-verification" content="{{ yandex_verification }}">{% endif %}
 {% if google_verification %}<meta name="google-site-verification" content="{{ google_verification }}">{% endif %}
@@ -72,7 +72,7 @@
 <div><a class="brand" href="/">{{ logo() }}<span>Сигналид</span></a><p class="muted">Находим запросы клиентов в Telegram-чатах и на биржах, пока они ещё актуальны.</p></div>
 <div><h3>Продукт</h3><ul><li><a href="/#features">Возможности</a></li><li><a href="/pricing">Тарифы</a></li><li><a href="/#faq">Вопросы и ответы</a></li><li><a href="/login">Вход в кабинет</a></li></ul></div>
 <div><h3>Документы и поддержка</h3><ul><li><a href="/terms">Публичная оферта</a></li><li><a href="/privacy">Политика конфиденциальности</a></li>{% if support %}<li><a href="https://t.me/{{ support }}" rel="noopener noreferrer" data-goal="support_click">Поддержка в Telegram</a></li>{% endif %}</ul></div>
-<div class="legal"><span>© 2026 Сигналид{% if legal_entity %} · {{ legal_entity }}{% endif %}</span><span>Сервис не отправляет сообщения от вашего имени и не гарантирует заключение сделок.</span></div>
+<div class="legal"><span>© 2026 Сигналид{% if legal_entity %} · {{ legal_entity }}{% endif %}</span><span>Сообщения от вашего имени отправляются только через ваш Telegram и только после вашего подтверждения. Сервис не делает рассылок и не гарантирует заключение сделок.</span></div>
 </div></footer>
 {% endif %}
 </body></html>

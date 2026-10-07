@@ -8,6 +8,7 @@ from datetime import datetime,timedelta,timezone
 from leadgen.database import db_open
 from leadgen.web import create_app
 from leadgen.web_auth import approve_login
+from leadgen.telegram_accounts import SessionCipher
 from cryptography.fernet import Fernet
 
 
@@ -212,6 +213,20 @@ class WebPostgres(unittest.TestCase):
         count=self.db.execute('SELECT count(*) AS n FROM project_leads WHERE user_id=?',(self.u,)).fetchone()['n']
         self.assertEqual(count,2)
 
+    def test_disabled_project_does_not_block_general_delivery(self):
+        from leadgen.product import deliver_registered
+        with self.db:
+            self.db.execute('DELETE FROM user_leads WHERE user_id=?',(self.u,))
+            self.db.execute('UPDATE user_preferences SET monitoring_active=true,show_without_budget=true WHERE user_id=?',(self.u,))
+            self.db.execute("UPDATE leads SET first_seen=(now()+interval '1 second')::text")
+        # Projects created from the web start disabled.
+        self.client.post('/app/projects',data={'csrf':'test-csrf','name':'Черновик проекта'})
+        self.assertFalse(self.db.execute('SELECT enabled FROM projects WHERE user_id=?',(self.u,)).fetchone()['enabled'])
+        calls=[]
+        delivered=deliver_registered(self.db,{'sources':[],'max_age_hours':72,'min_budget':5000},lambda *args:calls.append(args))
+        self.assertGreaterEqual(delivered,1);self.assertTrue(calls)
+        self.assertFalse(self.db.execute("SELECT 1 FROM user_leads WHERE user_id=? AND filter_reason='не соответствует фильтрам проектов'",(self.u,)).fetchone())
+
     def test_export_excel_and_filters_are_owner_scoped(self):
         import io
         from openpyxl import load_workbook
@@ -343,6 +358,39 @@ class WebPostgres(unittest.TestCase):
         self.assertEqual(result.json['status'],'active')
         connection=self.db.execute('SELECT status,display_name FROM telegram_connections WHERE user_id=?',(self.u,)).fetchone()
         self.assertEqual((connection['status'],connection['display_name']),('active','QR аккаунт'))
+
+    def test_qr_refresh_and_overlapping_polls(self):
+        from leadgen.telegram_accounts import wait_qr_connection
+        cipher=SessionCipher(self.app.config['TELEGRAM_CIPHER_KEY'])
+        self.client.post('/app/telegram/qr/start',data={'csrf':'test-csrf'})
+        auth=self.db.execute('SELECT expires_at FROM telegram_connection_auth WHERE user_id=?',(self.u,)).fetchone()
+        # The auth row lives for the whole QR flow, not just one ~30 s token.
+        self.assertGreater(auth['expires_at'],datetime.now(timezone.utc)+timedelta(minutes=9))
+        class Refreshing(FakeTelegramGateway):
+            def wait_qr(self,state):
+                return {'pending':True,'refreshed':True,'state':state|{'url':'tg://login?token=bmV3','token':'bmV3'}}
+        self.app.config['TELEGRAM_GATEWAY_FACTORY']=Refreshing
+        try:
+            result=self.client.post('/app/telegram/qr/wait',data={'csrf':'test-csrf'})
+            self.assertEqual((result.json['status'],result.json['url']),('refreshed','tg://login?token=bmV3'))
+            # A poll that started before another poll moved the flow to 'password' must not clobber it.
+            class Stale(FakeTelegramGateway):
+                def wait_qr(inner,state):
+                    with self.db:self.db.execute("UPDATE telegram_connection_auth SET stage='password' WHERE user_id=?",(self.u,))
+                    return {'pending':True,'state':state|{'session':'stale'}}
+            wait_qr_connection(self.db,self.u,cipher,Stale())
+            auth=self.db.execute('SELECT stage,state_cipher FROM telegram_connection_auth WHERE user_id=?',(self.u,)).fetchone()
+            self.assertEqual(auth['stage'],'password')
+            self.assertNotEqual(cipher.decrypt(auth['state_cipher'])['session'],'stale')
+        finally:
+            self.app.config['TELEGRAM_GATEWAY_FACTORY']=FakeTelegramGateway
+
+    def test_expired_qr_flow_is_not_rendered(self):
+        self.client.post('/app/telegram/qr/start',data={'csrf':'test-csrf'})
+        with self.db:self.db.execute("UPDATE telegram_connection_auth SET expires_at=now()-interval '1 second' WHERE user_id=?",(self.u,))
+        page=self.client.get('/app/telegram')
+        self.assertNotIn('Вход по QR-коду',page.text)
+        self.assertNotIn('telegram_qr.js',page.text)
 
     def test_private_origin_is_delivered_only_to_connection_owner(self):
         from leadgen.product import deliver_registered

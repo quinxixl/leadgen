@@ -22,6 +22,38 @@ def lead(**changes):
     return Lead(**(values | changes))
 
 class Filters(unittest.TestCase):
+    def test_expanded_topics_avoid_common_false_positives(self):
+        from leadgen.core import topics
+        expected={
+            'Нужен скрипт продаж для отдела продаж':['Лидогенерация и продажи'],
+            'Нужен python скрипт для выгрузки данных':['Программирование и ПО'],
+            'Нужно перевести сайт на новый хостинг':['Сайты'],
+            'Нужен перевод сайта на английский':['Сайты','Переводы и локализация'],
+            'Нужен монтаж видеонаблюдения на складе':[],
+            'Нужно смонтировать кухню':[],
+            'Нужно смонтировать видео для ютуба':['Видеомонтаж'],
+            'Пришлите фотографии объекта, нужен сайт':['Сайты'],
+            'Нужен фотограф на мероприятие':['Фото и ретушь'],
+            'Нужна разработка по ТЗ сайта':['Сайты'],
+            'Нужна разработка ПО для склада':['Программирование и ПО'],
+            'Нужен креативный подход к сайту':['Сайты'],
+            'Нужны креативы для таргета':['Графический дизайн'],
+            'Нужен дизайнер интерьера квартиры':[],
+            'Нужен ландшафтный дизайнер':[],
+            'Нужен иллюстратор для детской книги':['Графический дизайн'],
+            'Нужно доработать модуль 1С':['Программирование и ПО'],
+        }
+        for text,names in expected.items():
+            with self.subTest(text=text):self.assertEqual(topics(text),names)
+
+    def test_topic_callbacks_and_legacy_topics_stay_valid(self):
+        from leadgen.core import TOPICS
+        names=list(TOPICS)
+        self.assertEqual(len(names),34)
+        self.assertEqual(names[:3],['Сайты','Боты','Мобильные приложения'])
+        for legacy in ('Сайты','Боты','Мобильные приложения','Автоматизации','CRM'):
+            self.assertIn(legacy,TOPICS)
+
     def test_service_catalog_groups_every_topic_once(self):
         from leadgen.core import TOPICS,TOPIC_CATEGORIES
         grouped=[name for _,names in TOPIC_CATEGORIES for name in names]

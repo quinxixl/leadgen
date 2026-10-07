@@ -12,6 +12,14 @@ from cryptography.fernet import Fernet, InvalidToken
 
 PHONE = re.compile(r'^\+[1-9]\d{7,14}$')
 AUTH_TTL = timedelta(minutes=10)
+# gunicorn kills a worker after 30 s (compose.web.yaml). Every Telegram call made
+# while serving one HTTP request shares this budget so the request always returns
+# (and records its outcome) before the worker can be killed mid-operation.
+REQUEST_BUDGET = 24
+CALL_TIMEOUT = 20
+# QR polling is a short poll: a request must never hold one of the few gunicorn
+# threads for long. The browser simply asks again.
+QR_POLL_SECONDS = 3
 
 
 class TelegramAccountError(ValueError):
@@ -94,12 +102,23 @@ class TelethonGateway:
     """Small boundary around Telethon so auth flows can be tested without Telegram."""
     def __init__(self):
         self.api_id, self.api_hash = telegram_credentials()
+        self.deadline = time.monotonic() + REQUEST_BUDGET
+
+    def _timeout(self, awaitable=None, limit=CALL_TIMEOUT):
+        deadline = getattr(self, 'deadline', None)
+        remaining = limit if deadline is None else min(limit, deadline - time.monotonic())
+        if remaining < 2:
+            if awaitable is not None:
+                awaitable.close()
+            raise TelegramAccountError('Telegram отвечает слишком долго. Повторите попытку.')
+        return remaining
 
     def _run(self, awaitable):
+        timeout = self._timeout(awaitable)
         try:
-            return asyncio.run(asyncio.wait_for(awaitable, timeout=30))
+            return asyncio.run(asyncio.wait_for(awaitable, timeout=timeout))
         except TimeoutError:
-            raise TelegramAccountError('Telegram не ответил за 30 секунд. Повторите попытку.') from None
+            raise TelegramAccountError('Telegram не ответил вовремя. Повторите попытку.') from None
 
     def begin(self, phone):
         return self._run(self._begin(phone))
@@ -164,7 +183,8 @@ class TelethonGateway:
             await client.connect()
             qr = await client.qr_login()
             return {'session': client.session.save(), 'token': base64.b64encode(qr.token).decode(),
-                    'url': qr.url, 'expires': qr.expires.isoformat()}
+                    'url': qr.url, 'expires': qr.expires.isoformat(),
+                    'deadline': (datetime.now(timezone.utc) + AUTH_TTL).isoformat()}
         finally:
             await client.disconnect()
 
@@ -177,6 +197,7 @@ class TelethonGateway:
         from telethon.sessions import StringSession
         from telethon.tl import types
         from telethon.tl.custom.qrlogin import QRLogin
+        from telethon.tl.functions.auth import ImportLoginTokenRequest
         client = TelegramClient(StringSession(state['session']), self.api_id, self.api_hash)
         try:
             await client.connect()
@@ -187,13 +208,38 @@ class TelethonGateway:
                 user = await client.get_me()
                 return self._authorized(client, user)
             expires = datetime.fromisoformat(state['expires'])
-            remaining = (expires - datetime.now(timezone.utc)).total_seconds()
-            if remaining <= 0:
-                raise TelegramAccountError('QR-код истёк. Создайте новый.')
+            now = datetime.now(timezone.utc)
+            remaining = (expires - now).total_seconds()
             qr = QRLogin(client, [])
+            if remaining <= 1:
+                # Telegram QR tokens live ~30 s. Re-exporting is also how a scan that
+                # happened between two polls is completed (success or DC migration).
+                deadline = state.get('deadline')
+                if not deadline or datetime.fromisoformat(deadline) <= now:
+                    raise TelegramAccountError('QR-код истёк. Создайте новый.')
+                try:
+                    await qr.recreate()
+                    resp = qr._resp
+                    if isinstance(resp, types.auth.LoginTokenMigrateTo):
+                        await client._switch_dc(resp.dc_id)
+                        resp = await client(ImportLoginTokenRequest(resp.token))
+                except SessionPasswordNeededError:
+                    state['session'] = client.session.save()
+                    return {'password_required': True, 'state': state}
+                except RPCError as exc:
+                    raise TelegramAccountError(_telegram_code_error(exc)) from None
+                if isinstance(resp, types.auth.LoginTokenSuccess):
+                    user = resp.authorization.user
+                    await client._on_login(user)
+                    return self._authorized(client, user)
+                if not isinstance(resp, types.auth.LoginToken):
+                    raise TelegramAccountError('Telegram вернул неожиданный ответ. Создайте новый QR-код.')
+                state.update(session=client.session.save(), token=base64.b64encode(resp.token).decode(),
+                             url=qr.url, expires=resp.expires.isoformat())
+                return {'pending': True, 'refreshed': True, 'state': state}
             qr._resp = types.auth.LoginToken(expires=expires, token=base64.b64decode(state['token']))
             try:
-                user = await qr.wait(timeout=min(20, remaining))
+                user = await qr.wait(timeout=min(QR_POLL_SECONDS, remaining))
             except TimeoutError:
                 if await client.is_user_authorized():
                     user = await client.get_me()
@@ -342,7 +388,8 @@ def resend_connection(db, user_id, cipher, gateway):
 
 def begin_qr_connection(db, user_id, cipher, gateway):
     state = gateway.begin_qr()
-    expires = datetime.fromisoformat(state['expires'])
+    state.setdefault('deadline', (datetime.now(timezone.utc) + AUTH_TTL).isoformat())
+    expires = datetime.fromisoformat(state['deadline'])
     with db:
         db.execute('''INSERT INTO telegram_connection_auth(user_id,state_cipher,stage,attempts,expires_at,updated_at)
             VALUES(?,?,'qr',0,?,now()) ON CONFLICT(user_id) DO UPDATE SET
@@ -370,15 +417,18 @@ def wait_qr_connection(db, user_id, cipher, gateway):
         raise TelegramAccountError('QR-подключение не запущено.')
     state = cipher.decrypt(row['state_cipher'])
     result = gateway.wait_qr(state)
+    # Polls may overlap (two tabs, retries): never let a stale 'pending' overwrite a
+    # row that another poll already moved to 'password' or replaced with a new flow.
     if result.get('pending'):
         with db:
-            db.execute('UPDATE telegram_connection_auth SET state_cipher=?,updated_at=now() WHERE user_id=?',
-                       (cipher.encrypt(result['state']), user_id))
-        return 'pending', 0
+            db.execute("""UPDATE telegram_connection_auth SET state_cipher=?,updated_at=now()
+                WHERE user_id=? AND stage='qr' AND state_cipher=?""",
+                       (cipher.encrypt(result['state']), user_id, row['state_cipher']))
+        return ('refreshed' if result.get('refreshed') else 'pending'), 0
     if result.get('password_required'):
         with db:
             db.execute("""UPDATE telegram_connection_auth SET state_cipher=?,stage='password',
-                attempts=0,expires_at=?,updated_at=now() WHERE user_id=?""",
+                attempts=0,expires_at=?,updated_at=now() WHERE user_id=? AND stage='qr'""",
                        (cipher.encrypt(result['state']), datetime.now(timezone.utc) + AUTH_TTL, user_id))
         return 'password', 0
     return 'active', _finish(db, user_id, result, cipher, gateway)

@@ -88,9 +88,10 @@ class ReplyGateway(TelethonGateway):
             await client.disconnect()
 
     def send(self, session, url, mode, text, expected, random_id):
-        # A timeout here is deliberately not translated into "try again".
-        return asyncio.run(asyncio.wait_for(
-            self._send(session, url, mode, text, expected, random_id), timeout=30))
+        # A timeout here is deliberately not translated into "try again". The budget
+        # stays below gunicorn's 30 s worker timeout so the outcome is always recorded.
+        awaitable = self._send(session, url, mode, text, expected, random_id)
+        return asyncio.run(asyncio.wait_for(awaitable, timeout=self._timeout(awaitable)))
 
     async def _send(self, session, url, mode, text, expected, random_id):
         from telethon.errors import FloodWaitError, RPCError, ServerError
@@ -168,7 +169,18 @@ def prepare(db, actor_id, owner_id, lead_id, mode, text, cipher, gateway):
     return row
 
 
+STUCK_ERROR = 'Отправка была прервана. Проверьте переписку в Telegram перед новым откликом. Автоматического повтора не будет.'
+
+
+def recover_stuck(db):
+    """A process killed mid-send leaves 'sending'; surface it as 'uncertain', never resend."""
+    with db:
+        db.execute("""UPDATE telegram_replies SET status='uncertain',error=?,updated_at=now()
+            WHERE status='sending' AND updated_at<now()-interval '5 minutes'""", (STUCK_ERROR,))
+
+
 def get_reply(db, token, actor_id, owner_id):
+    recover_stuck(db)
     row = db.execute('SELECT * FROM telegram_replies WHERE id=? AND actor_id=? AND owner_id=?',
                      (token, actor_id, owner_id)).fetchone()
     if not row:

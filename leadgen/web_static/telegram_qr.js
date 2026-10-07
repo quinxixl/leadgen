@@ -2,7 +2,18 @@
   const panel = document.querySelector('[data-qr-wait]');
   if (!panel) return;
   const status = panel.querySelector('[data-qr-status]');
+  const image = panel.querySelector('img');
+  const link = panel.querySelector('a[href^="tg:"]');
+  // The server answers within a few seconds (short poll); keep the pause between
+  // polls so a single tab never occupies the small pool of web workers.
+  const POLL_DELAY = 1500;
+  const MAX_FAILURES = 8;
   let stopped = false;
+  let failures = 0;
+
+  function again(delay) {
+    if (!stopped) setTimeout(waitForLogin, delay);
+  }
 
   async function waitForLogin() {
     if (stopped) return;
@@ -13,9 +24,18 @@
         headers: {'Content-Type': 'application/x-www-form-urlencoded'}
       });
       const result = await response.json();
-      if (result.status === 'pending') {
+      failures = 0;
+      if (result.status === 'pending' || result.status === 'refreshed') {
+        if (result.status === 'refreshed' && image) {
+          image.src = `/app/telegram/qr.svg?t=${Date.now()}`;
+        }
+        if (result.status === 'refreshed' && link && result.url) link.href = result.url;
         status.textContent = 'QR-код активен. Ожидаем подтверждение в Telegram…';
-        setTimeout(waitForLogin, 250);
+        again(POLL_DELAY);
+        return;
+      }
+      if (result.status === 'retry') {
+        again(POLL_DELAY * 4);
         return;
       }
       if (result.status === 'active') {
@@ -32,7 +52,13 @@
       stopped = true;
       status.textContent = result.message || 'Не удалось подтвердить QR-код.';
     } catch (_error) {
-      if (!stopped) setTimeout(waitForLogin, 1500);
+      failures += 1;
+      if (failures >= MAX_FAILURES) {
+        stopped = true;
+        status.textContent = 'Нет связи с сервером. Обновите страницу.';
+        return;
+      }
+      again(POLL_DELAY * 2);
     }
   }
 

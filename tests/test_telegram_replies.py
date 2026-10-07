@@ -67,3 +67,19 @@ class ReplyTargets(unittest.TestCase):
         with self.assertRaises(TelegramAccountError):
             asyncio.run(gateway._send('session','url','dm','Привет',dict(info,recipient_id=9),124))
         self.assertEqual(len(client.requests),1)
+
+
+class RequestBudget(unittest.TestCase):
+    def test_calls_stay_below_gunicorn_timeout(self):
+        import time
+        from leadgen import telegram_accounts as accounts
+        gateway=object.__new__(ReplyGateway)
+        gateway.deadline=time.monotonic()+5
+        self.assertLessEqual(gateway._timeout(),5)
+        self.assertLess(accounts.REQUEST_BUDGET,30)
+        gateway.deadline=time.monotonic()+1
+        async def never():raise AssertionError('must not start')
+        with self.assertRaises(TelegramAccountError):gateway._run(never())
+        # An exhausted budget fails before any network write: nothing was sent.
+        gateway._send=lambda *args:never()
+        with self.assertRaises(TelegramAccountError):gateway.send('s','u','dm','t',{},1)
