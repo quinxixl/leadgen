@@ -258,13 +258,14 @@ def fingerprint(lead):
     text = normalize(lead.title + ' ' + lead.text + ' ' + lead.budget_text)
     return hashlib.sha256(text.encode()).hexdigest()
 
-def message(lead, reason):
+def message(lead, reason, ai=''):
+    """ai: optional pre-rendered AI assessment lines (see ai_scoring.card_lines)."""
     lead = enrich(lead)
     label = {'горячий':'🔥','тёплый':'🌤','холодный':'❄️'}.get(lead.temperature,'')
     intent = '\nСигнал: возможная потребность, готовый заказ не подтверждён.' if lead.intent=='possible' else ''
     # Plain text avoids HTML injection from untrusted listings.
     return (f'{label} {lead.temperature.capitalize()} лид · {lead.score}/100\n'
-            f'{lead.source}{intent}\n\n{lead.summary}\n\n'
+            f'{lead.source}{intent}\n' + (f'{ai}\n' if ai else '') + f'\n{lead.summary}\n\n'
             f'Почему такая оценка: {lead.score_reason}\n'
             f'Фильтр: {reason}\nОпубликован: {lead.published or "не указано"}\n\n'
             f'Открыть заявку: {lead.url}')[:3900]

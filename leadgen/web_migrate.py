@@ -36,6 +36,7 @@ def migrate():
                          '20261005180000_expand_service_topics.sql',
                          '20261007120000_onboarding_foundation.sql',
                          '20261010120000_mini_crm_pipeline.sql',
+                         '20261010130000_ai_lead_scores.sql',
                          '20261010140000_free_tier_and_founder_price.sql'):
                 sql=(root/name).read_text();checksum=hashlib.sha256(sql.encode()).hexdigest()
                 old=db.execute('SELECT checksum FROM leadgen.web_schema_versions WHERE name=?',(name,)).fetchone()

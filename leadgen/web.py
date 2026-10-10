@@ -148,7 +148,7 @@ def update_lead(db,owner_id,lid,row,status,amount,label,note=None):
 
 
 PREFERENCE_COLUMNS={'min_budget':'?','topics':'?::jsonb','show_without_budget':'?','show_possible_needs':'?',
-                    'monitoring_active':'?','portfolio':'?'}
+                    'monitoring_active':'?','portfolio':'?','ai_hide_noise':'?','ai_min_score':'?'}
 
 
 def save_preferences(db,owner_id,**values):
@@ -286,6 +286,9 @@ def create_app(test_config=None):
         if not request.path.startswith('/web_static/'):
             response.headers['Cache-Control']='no-store'
         return response
+
+    from .ai_scoring import CATEGORY_LABELS,URGENCY_LABELS,format_budget
+    app.jinja_env.globals.update(ai_category=CATEGORY_LABELS,ai_urgency=URGENCY_LABELS,ai_budget=format_budget)
 
     @app.context_processor
     def context():
@@ -534,8 +537,9 @@ def create_app(test_config=None):
         members=db().execute('''SELECT m.user_id,u.display_name FROM workspace_members m JOIN app_users u ON u.id=m.user_id
             WHERE m.workspace_id=? ORDER BY u.display_name''',(g.workspace['id'],)).fetchall()
         filters={k:request.args.get(k,'') for k in ('q','status','project','source','feedback','from','to')}
+        from .ai_scoring import fetch_scores
         return render_template('leads.html',rows=rows,count=count,page=page,projects=projects,sources=sources,
-                               members=members,filters=filters)
+                               members=members,filters=filters,scores=fetch_scores(db(),[r['id'] for r in rows]))
 
     @app.get('/app/leads/export')
     def export():
@@ -603,7 +607,8 @@ def create_app(test_config=None):
         drafts=reply_drafts(lead,profile['profile_services'],profile['portfolio'],dict(draft_project) if draft_project else None)
         ai_offer=latest_for_lead(db(),g.owner_id,lid,draft_project['id'] if draft_project else None)
         tags=db().execute('SELECT tag FROM lead_tags WHERE user_id=? AND lead_id=? ORDER BY tag',(g.owner_id,lid)).fetchall()
-        return render_template('detail.html',row=row,lead=lead,activity=activity,reminder=reminder,
+        from .ai_scoring import fetch_scores
+        return render_template('detail.html',row=row,lead=lead,activity=activity,reminder=reminder,ai=fetch_scores(db(),[lid]).get(lid),
                                members=members,assignment=assignment,drafts=drafts,tags=tags,
                                draft_projects=draft_projects,draft_project=draft_project,
                                ai_offer=ai_offer,ai_configured=ai_enabled())
@@ -639,8 +644,11 @@ def create_app(test_config=None):
         if request.method=='POST':
             require_role(*EDIT_SETTINGS)
             budget=request.form.get('min_budget','');selected=request.form.getlist('topics')
+            ai_min=request.form.get('ai_min_score','0')
             if not budget.isdigit() or int(budget)>100000000 or not set(selected)<=set(TOPICS):abort(400)
+            if not ai_min.isdigit() or int(ai_min)>10:abort(400)
             save_preferences(db(),g.owner_id,min_budget=int(budget),topics=selected,
+                ai_hide_noise=bool(request.form.get('ai_noise')),ai_min_score=int(ai_min),
                 show_without_budget=bool(request.form.get('no_budget')),show_possible_needs=bool(request.form.get('possible')),
                 monitoring_active=bool(request.form.get('active')),portfolio=request.form.get('portfolio','')[:3000])
             flash('Настройки применены к уведомлениям.');return redirect(url_for('settings'))
