@@ -67,6 +67,14 @@ def register_routes(app,db):
         if not owner:abort(404)
         if request.form.get('action')=='cancel':
             flash('Напоминание отменено.' if cancel(db(),g.owner_id,lid) else 'Напоминание уже отправлено или отправляется.')
+        elif request.form.get('in_days'):
+            from .crm import REMIND_DAYS
+            days=request.form['in_days']
+            if days not in [str(item) for item in REMIND_DAYS]:abort(400)
+            try:
+                schedule(db(),g.owner_id,lid,datetime.now(timezone.utc)+timedelta(days=int(days)),request.form.get('note','').strip())
+                flash(f'Напомним в Telegram через {days} {"день" if days=="1" else "дня"}.')
+            except ValueError as exc:flash(str(exc))
         else:
             try:
                 due=datetime.fromisoformat(request.form.get('due',''))

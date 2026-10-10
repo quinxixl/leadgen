@@ -65,7 +65,7 @@ class ReplyPostgres(unittest.TestCase):
             self.assertEqual(self.gateway.sent[-1][2],mode)
             self.assertIn('Отправлено',self.client.get(location).text)
         self.assertEqual(self.db.execute('SELECT pipeline_status FROM user_leads WHERE user_id=? AND lead_id=?',
-            (self.u,self.ids[0])).fetchone()['pipeline_status'],'contacted')
+            (self.u,self.ids[0])).fetchone()['pipeline_status'],'replied')
 
     def test_cancel_expiry_missing_account_and_invalid_text(self):
         row=self.prepare();replies.cancel(self.db,row['id'],self.u,self.u)
@@ -99,7 +99,7 @@ class ReplyPostgres(unittest.TestCase):
             replies.confirm(self.db,row['id'],self.u,self.u,self.cipher,self.gateway)
             self.assertEqual(len(self.gateway.sent),before)
         self.assertEqual(self.db.execute('SELECT pipeline_status FROM user_leads WHERE user_id=? AND lead_id=?',
-            (self.u,self.ids[0])).fetchone()['pipeline_status'],'saved')
+            (self.u,self.ids[0])).fetchone()['pipeline_status'],'new')
 
     def test_claim_is_committed_before_send_for_other_workers(self):
         row=self.prepare();other_db=db_open(fixtures.DSN)

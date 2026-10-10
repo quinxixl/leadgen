@@ -235,7 +235,10 @@ def register_integrations(app,db):
         data=request.get_json(silent=True)
         if not isinstance(data,dict) or set(data)-{'status','feedback','deal_amount'}:abort(400)
         status=data.get('status');feedback=data.get('feedback');amount=data.get('deal_amount')
-        if status is not None and status not in PIPELINE:abort(400)
+        if status is not None:
+            from .crm import normalize
+            status=normalize(status) if isinstance(status,str) else None
+            if status is None:abort(400)
         if feedback is not None and feedback not in FEEDBACK:abort(400)
         if amount is not None and (not isinstance(amount,int) or isinstance(amount,bool) or not 0<=amount<=1000000000):abort(400)
         owner=identity['owner_user_id'];row=db().execute("SELECT * FROM user_leads WHERE user_id=? AND lead_id=? AND delivery_status<>'filtered'",(owner,lead_id)).fetchone()

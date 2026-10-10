@@ -179,7 +179,7 @@ class Filters(unittest.TestCase):
             rows=lead_buttons(42,'https://example.org/lead')['inline_keyboard']
         self.assertEqual(rows[0],[{'text':'Оригинал','url':'https://example.org/lead'}])
         self.assertEqual([b['callback_data'] for b in rows[1]],['feedback:fit:42','miss:42'])
-        self.assertEqual(len(rows),2)
+        self.assertEqual(rows[2],[{'text':'📋 Статус','callback_data':'crm:42'}])
         with patch.dict(os.environ,{'WEB_PUBLIC_URL':'https://signalid.test/','MINIAPP_ENABLED':'0'}):
             rows=lead_buttons(42,'https://t.me/business_chat/7','ad')['inline_keyboard']
         self.assertEqual(rows[0][0],{'text':'Открыть','url':'https://signalid.test/app/leads/42'})

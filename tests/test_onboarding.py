@@ -188,9 +188,9 @@ class BotUX(unittest.TestCase):
         self.assertEqual(len(self.calls('answerCallbackQuery')),self.clicks)
         # Buttons of cards sent before the redesign keep working.
         self.callback(f'pipeline:menu:{lid}')
-        self.assertIn(f'status:working:{lid}',[b['callback_data'] for b in buttons(self.calls('sendMessage')[-1]['reply_markup'])])
+        self.assertIn(f'status:in_progress:{lid}',[b['callback_data'] for b in buttons(self.calls('sendMessage')[-1]['reply_markup'])])
         self.callback(f'status:working:{lid}')
-        self.assertEqual(self.db.execute('SELECT pipeline_status FROM user_leads WHERE lead_id=?',(lid,)).fetchone()['pipeline_status'],'working')
+        self.assertEqual(self.db.execute('SELECT pipeline_status FROM user_leads WHERE lead_id=?',(lid,)).fetchone()['pipeline_status'],'in_progress')
         self.callback(f'remind:{lid}')
         self.assertTrue(self.db.execute('SELECT 1 FROM lead_reminders WHERE lead_id=?',(lid,)).fetchone())
         self.assertEqual(len(self.calls('answerCallbackQuery')),self.clicks)
@@ -332,10 +332,10 @@ class BotUX(unittest.TestCase):
 
     def test_leads_page_quick_links_and_collapsed_controls(self):
         page=self.client.get('/app/leads').text
-        for link in ('/app/leads?status=saved','/app/leads?status=working','/app/leads?feedback=fit'):self.assertIn(link,page)
+        for link in ('/app/leads?status=new','/app/leads?status=in_progress','/app/leads?feedback=fit'):self.assertIn(link,page)
         self.assertIn('<summary>Фильтры</summary>',page)
         self.assertLess(page.index('Нужен сайт 0'),page.index('Скачать CSV'))
-        self.assertIn('<summary>Фильтры · 1</summary>',self.client.get('/app/leads?status=saved').text)
+        self.assertIn('<summary>Фильтры · 1</summary>',self.client.get('/app/leads?status=new').text)
         nav=self.client.get('/app/team').text
         self.assertIn('class="nav-more" open',nav)
         self.assertNotIn('class="nav-more" open',self.client.get('/app/leads').text)

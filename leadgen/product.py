@@ -37,9 +37,7 @@ MENU=menu(False)
 MENU_TEXTS={MONITOR_ON,MONITOR_OFF,LATEST,SETUP,CABINET,BILLING,HELP,*LEGACY_LABELS}
 REGISTER={'inline_keyboard':[[{'text':'Зарегистрироваться','callback_data':'register:confirm'}]]}
 PUBLIC_CHAT=re.compile(r'^(?:https?://t\.me/|@)?([A-Za-z][A-Za-z0-9_]{3,})/?$')
-PIPELINE={'saved':'Новый / сохранён','viewed':'Просмотрен','working':'В работе','contacted':'Написали',
-          'discussing':'Получен ответ','meeting':'Назначена встреча','proposal':'Отправлено предложение','won':'Получил заказ',
-          'lost':'Не подошёл','not_fit':'Не подходит'}
+from .crm import PIPELINE, REMIND_DAYS, normalize as normalize_status
 FEEDBACK={'fit':'Подходит','ad':'Реклама','job':'Ищет работу','not_service':'Не моя услуга',
           'too_cold':'Слишком холодный','wrong_geo':'Неверная география','competitor':'Конкурент',
           'vacancy':'Вакансия','duplicate':'Дубль'}
@@ -50,7 +48,7 @@ FIRST_RUN_LIMIT=5
 FIRST_RUN_HOURS=72
 MSK=timezone(timedelta(hours=3))
 # Callbacks that confirm with a toast or edit the card in place answer the query themselves.
-DEFERRED_ANSWER={'ob','feedback','miss','card','topic','toggle'}
+DEFERRED_ANSWER={'ob','feedback','miss','card','topic','toggle','crm'}
 
 
 def amount(text,maximum):
@@ -114,7 +112,20 @@ def lead_buttons(lead_id,url,feedback=None):
     try:source_message(url)
     except ValueError:pass
     else:rows.append([{'text':'✉️ Ответить','callback_data':f'tgcompose:{lead_id}'}])
+    rows.append([{'text':'📋 Статус','callback_data':f'crm:{lead_id}'}])
     return {'inline_keyboard':[row for row in rows if row]}
+
+
+def crm_buttons(lead_id,current=None):
+    """Pipeline status and follow-up reminder buttons that replace the card keyboard in place."""
+    def status(key,icon=''):
+        return {'text':('✓ ' if current==key else icon)+PIPELINE[key],'callback_data':f'status:{key}:{lead_id}'}
+    return {'inline_keyboard':[
+        [status('replied','✉️ '),status('in_progress','🛠 ')],
+        [status('won','✅ '),status('lost','✖️ ')],
+        [status('new'),status('archived','🗄 ')],
+        [{'text':f'⏰ Через {days} {"день" if days==1 else "дня"}','callback_data':f'remind:{lead_id}:{days}'} for days in REMIND_DAYS],
+        [{'text':'← Назад','callback_data':f'card:{lead_id}'}]]}
 
 
 def miss_buttons(lead_id):
@@ -562,6 +573,15 @@ class ProductController:
             self._update_pref(user['id'],'state',json.dumps({}))
             self.say('Не удалось подготовить отклик. Попробуйте ещё раз кнопкой под лидом.')
 
+    def _status(self,user_id,lead_id):
+        row=self.db.execute('SELECT pipeline_status FROM user_leads WHERE user_id=? AND lead_id=?',(user_id,lead_id)).fetchone()
+        return row['pipeline_status'] if row else None
+
+    def _results(self,user_id):
+        from .crm import results,results_text
+        button=web_button('🗂 Воронка в кабинете','/app/pipeline','/tg/feed')
+        self.say(results_text(results(self.db,user_id)),{'inline_keyboard':[[button]]} if button else None)
+
     def _stats(self,user_id):
         feedback={r['label']:r['total'] for r in self.db.execute(
             'SELECT label,count(*) AS total FROM lead_feedback WHERE user_id=? GROUP BY label',(user_id,))}
@@ -674,8 +694,10 @@ class ProductController:
               '• Под карточкой: «Открыть» — статус, напоминание и отклик в кабинете; «Оригинал» — исходное сообщение; '
               '«👍 Подходит» и «👎 Мимо» — оценка, по ней улучшается отбор.\n'
               f'• «{SETUP}» — что искать и от какого бюджета. «🔔 Мониторинг» — включить или поставить на паузу.\n'
-              f'• «{LATEST}» — повторить последние присланные заказы.')
-        rows=[[{'text':'📈 Статистика','callback_data':'stats'}]]
+              f'• «{LATEST}» — повторить последние присланные заказы.\n'
+              '• «📋 Статус» под карточкой — воронка (написали, в работе, сделка) и напоминание через 1 или 3 дня. '
+              '/results — сколько вы заработали через Сигналид.')
+        rows=[[{'text':'📈 Статистика','callback_data':'stats'},{'text':'💰 Результаты','callback_data':'results'}]]
         extra=[button for button in (web_button('🌐 Кабинет','/app','/tg'),support_button()) if button]
         if extra:rows.append(extra)
         self.say(text,{'inline_keyboard':rows})
@@ -770,26 +792,39 @@ class ProductController:
                 if not row:return self._answer('Лид не найден')
                 self._answer('Почему не подходит?' if action=='miss' else None)
                 self._edit_markup(miss_buttons(lid) if action=='miss' else lead_buttons(lid,lead.url,self._feedback(user['id'],lid)))
+            elif action=='crm' and len(parts)==2 and parts[1].isdigit():
+                lid=int(parts[1]);row,_=self._lead(lid)
+                if not row:return self._answer('Лид не найден')
+                self._answer('Статус и напоминание');self._edit_markup(crm_buttons(lid,self._status(user['id'],lid)))
+            elif action=='results':self._results(user['id'])
             elif action=='stats':self._stats(user['id'])
             elif action=='register':self.say('Вы уже зарегистрированы. Выберите действие в меню.')
             elif action=='pipeline' and len(parts)==3 and parts[1]=='menu' and parts[2].isdigit():
-                lid=parts[2];keys={'inline_keyboard':[[{'text':label,'callback_data':f'status:{key}:{lid}'}] for key,label in PIPELINE.items()]}
-                self.say('Выберите результат работы с лидом:',keys)
-            elif action=='status' and len(parts)==3 and parts[1] in PIPELINE and parts[2].isdigit():
-                row,_=self._lead(int(parts[2]))
+                lid=int(parts[2]);self.say('Выберите статус лида:',crm_buttons(lid,self._status(user['id'],lid)))
+            elif action=='status' and len(parts)==3 and normalize_status(parts[1]) and parts[2].isdigit():
+                # Legacy keys come from buttons sent before the mini-CRM.
+                status,lid=normalize_status(parts[1]),int(parts[2])
+                row,_=self._lead(lid)
                 if not row:self.say('Лид не найден.');return
                 with self.db:
-                    self.db.execute('''UPDATE user_leads SET pipeline_status=?,updated_at=now()
-                        WHERE user_id=? AND lead_id=?''',(parts[1],user['id'],int(parts[2])))
-                    self.db.execute("INSERT INTO lead_activity(user_id,lead_id,kind,detail) VALUES(?,?,'status',?)",
-                        (user['id'],int(parts[2]),PIPELINE[parts[1]]))
-                if parts[1]=='won':self._update_pref(user['id'],'state',json.dumps({'await':'deal_amount','lead_id':int(parts[2])}));self.say('Заказ отмечен полученным. Напишите сумму сделки в рублях или 0, если не хотите указывать.')
-                else:self.say('Статус сохранён: '+PIPELINE[parts[1]])
-            elif action=='remind' and len(parts)==2 and parts[1].isdigit():
+                    changed=self.db.execute('''UPDATE user_leads SET pipeline_status=?,updated_at=now()
+                        WHERE user_id=? AND lead_id=? AND pipeline_status<>? RETURNING lead_id''',(status,user['id'],lid,status)).fetchone()
+                    if changed:
+                        self.db.execute("INSERT INTO lead_activity(user_id,lead_id,kind,detail) VALUES(?,?,'status',?)",
+                            (user['id'],lid,PIPELINE[status]))
+                        from .integrations import enqueue_lead_event
+                        enqueue_lead_event(self.db,user['id'],lid,'lead.updated')
+                self._edit_markup(crm_buttons(lid,status))
+                if status=='won':self._update_pref(user['id'],'state',json.dumps({'await':'deal_amount','lead_id':lid}));self.say('🎉 Сделка! Напишите сумму сделки в рублях или 0, если не хотите указывать.')
+                else:self.say('Статус сохранён: '+PIPELINE[status])
+            elif action=='remind' and len(parts) in (2,3) and parts[1].isdigit() and (len(parts)==2 or parts[2] in [str(d) for d in REMIND_DAYS]):
                 from .reminders import schedule
+                # Two parts: the one-hour reminder of cards sent before the mini-CRM.
+                days=int(parts[2]) if len(parts)==3 else 0
+                delay=timedelta(days=days) if days else timedelta(hours=1)
                 try:
-                    schedule(self.db,user['id'],int(parts[1]),datetime.now(timezone.utc)+timedelta(hours=1))
-                    self.say('Напомню об этом лиде через час.')
+                    schedule(self.db,user['id'],int(parts[1]),datetime.now(timezone.utc)+delay)
+                    self.say(f'Напомню об этом лиде через {days} {"день" if days==1 else "дня"}.' if days else 'Напомню об этом лиде через час.')
                 except ValueError as exc:self.say(str(exc))
             elif action=='reply' and len(parts)==2 and parts[1].isdigit():
                 lead_id=int(parts[1]);_,lead=self._lead(lead_id)
@@ -825,7 +860,12 @@ class ProductController:
         if state.get('await')=='deal_amount' and amount(text,1000000000) is not None:
             value=amount(text,1000000000);
             with self.db:self.db.execute('UPDATE user_leads SET deal_amount=?,updated_at=now() WHERE user_id=? AND lead_id=?',(value,user['id'],state['lead_id']))
-            self._update_pref(user['id'],'state',json.dumps({}));self.say('Сумма сделки сохранена.');return
+            self._update_pref(user['id'],'state',json.dumps({'await':'deal_note','lead_id':state['lead_id']}))
+            self.say(f'Сумма сделки сохранена: {money(value)} ₽. Добавьте заметку к сделке одним сообщением или /cancel, чтобы пропустить.');return
+        if state.get('await')=='deal_note' and text:
+            from .crm import save_note
+            save_note(self.db,user['id'],state['lead_id'],text)
+            self._update_pref(user['id'],'state',json.dumps({}));self.say('Заметка сохранена.');return
         if state.get('await')=='portfolio':self._update_pref(user['id'],'portfolio',text[:3000]);self._update_pref(user['id'],'state',json.dumps({}));self.say('Примеры работ сохранены.');return
         if state.get('await')=='chat':
             match=PUBLIC_CHAT.match(text);self._update_pref(user['id'],'state',json.dumps({}))
@@ -853,5 +893,6 @@ class ProductController:
         elif text==BILLING:self.say(self._subscription_text(user),billing_buttons())
         elif text==HELP:self._help()
         elif text in ('📈 Статистика','🗂 Воронка'):self._stats(user['id'])
+        elif command in ('/results','/stats'):self._results(user['id'])
         elif text in ('➕ Добавить чат','🔌 Аккаунт','🧰 Портфолио'):self._moved(text)
         else:self.say('Выберите действие в меню.')

@@ -27,8 +27,9 @@ def register_lead_actions(app, db):
         ids=selected_leads();action=request.form.get('action','')
         with db():
             if action.startswith('status:'):
-                status=action[7:]
-                if status not in PIPELINE:abort(400)
+                from .crm import normalize
+                status=normalize(action[7:])
+                if not status:abort(400)
                 for lead_id in ids:
                     db().execute('UPDATE user_leads SET pipeline_status=?,updated_at=now() WHERE user_id=? AND lead_id=?',
                                  (status,g.owner_id,lead_id))
