@@ -1,8 +1,9 @@
 {% extends 'tg/base.html' %}{% block title %}{{ lead.title|truncate(60) }} — Сигналид{% endblock %}{% block page %}lead{% endblock %}
-{% block content %}
+{% from '_ai_score.html' import ai_line %}{% block content %}
 <article class="tg-card lead-card">
 <p class="lead-top"><span class="badge {{ {'горячий':'hot','тёплый':'warm'}.get(lead.temperature,'cold') }}">{{ lead.temperature|capitalize or 'Лид' }} · {{ lead.score }}/100</span><span class="lead-source">{{ lead.source }}</span></p>
 <h1>{{ lead.title }}</h1>
+{{ ai_line(ai) }}
 <p class="lead-meta">{{ pipeline.get(row.pipeline_status,row.pipeline_status) }}{% if lead.budget_text %} · {{ lead.budget_text }}{% endif %}{% if lead.published %} · {{ lead.published|dt }}{% endif %}</p>
 <p class="lead-text">{{ lead.text|truncate(3000) }}</p>
 {% if lead.score_reason %}<p class="hint small">Почему такая оценка: {{ lead.score_reason }}</p>{% endif %}

@@ -186,7 +186,10 @@ def register_tg_routes(app, db):
             LEFT JOIN lead_feedback f ON f.user_id=ul.user_id AND f.lead_id=ul.lead_id
             WHERE ''' + where + ' ORDER BY l.id DESC LIMIT ?', args + [PAGE + 1]).fetchall()
         more = len(rows) > PAGE
-        items = [dict(row) | {'lead': enrich(Lead(**json.loads(row['payload'])))} for row in rows[:PAGE]]
+        from .ai_scoring import fetch_scores
+        scores = fetch_scores(db(), [row['id'] for row in rows[:PAGE]])
+        items = [dict(row) | {'lead': enrich(Lead(**json.loads(row['payload']))), 'ai': scores.get(row['id'])}
+                 for row in rows[:PAGE]]
         return render_template('tg/feed.html', items=items, kind=kind, filters=FEED_FILTERS,
                                next_before=items[-1]['id'] if more else None, before=before)
 
@@ -232,7 +235,9 @@ def register_tg_routes(app, db):
                                 (g.owner_id, lid)).fetchone()
         activity = db().execute('''SELECT kind,detail,created_at FROM lead_activity WHERE user_id=? AND lead_id=?
             ORDER BY id DESC LIMIT 5''', (g.owner_id, lid)).fetchall()
+        from .ai_scoring import fetch_scores
         return render_template('tg/lead.html', row=row, lead=lead, statuses=TG_STATUSES, reasons=DISLIKE_REASONS,
+                               ai=fetch_scores(db(), [lid]).get(lid),
                                reminder=reminder, activity=activity, replyable=replyable,
                                can_edit=g.role in EDIT_LEADS)
 

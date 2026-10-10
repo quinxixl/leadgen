@@ -1,0 +1,2 @@
+{% macro ai_badge(ai) -%}{% if ai and ai.status=='scored' %}<span class="badge{% if ai.score>=7 %} ok{% endif %}" title="AI-оценка лида">AI {{ ai.score }}/10</span>{% endif %}{%- endmacro %}
+{% macro ai_line(ai) -%}{% if ai and ai.status=='scored' %}<p class="ai-score">{{ ai_badge(ai) }} {{ ai_category.get(ai.category,ai.category)|capitalize }} · срочность: {{ ai_urgency.get(ai.urgency,ai.urgency) }}{% if ai_budget(ai) %} · бюджет {{ ai_budget(ai) }}{% endif %}{% if ai.summary %}<br><span class="muted">{{ ai.summary }}</span>{% endif %}</p>{% endif %}{%- endmacro %}

@@ -45,6 +45,7 @@ FEEDBACK={'fit':'Подходит','ad':'Реклама','job':'Ищет раб�
 MISS_REASONS=tuple(key for key in FEEDBACK if key!='fit')
 BUDGET_PRESETS=((0,'Без ограничения'),(10000,'от 10 000 ₽'),(30000,'от 30 000 ₽'),(100000,'от 100 000 ₽'))
 TOPIC_INDEX={name:i for i,name in enumerate(TOPICS)}
+AI_MIN_STEPS=(0,4,6,8)
 FIRST_RUN_LIMIT=5
 FIRST_RUN_HOURS=72
 MSK=timezone(timedelta(hours=3))
@@ -161,10 +162,22 @@ def wizard_budget(user):
     rows=[presets[:2],presets[2:],
           [{'text':('✅ ' if user['show_without_budget'] else '⬜️ ')+'Показывать запросы без бюджета','callback_data':'ob:nb'}],
           [{'text':'✏️ Своя сумма','callback_data':'budget:custom'}],
+          *ai_filter_rows(user,'ob:ai','ob:aimin'),
           [{'text':'← Услуги','callback_data':'ob:dir'},{'text':'Далее →','callback_data':'ob:launch'}]]
     custom='' if current in dict(BUDGET_PRESETS) else f'\nСейчас: от {money(current)} ₽.'
     return ('Шаг 3 из 4. Минимальный бюджет заказа.'+custom+'\n\nЕсли бюджет в объявлении не указан, сумма не придумывается: '
             'такие запросы приходят, только когда включено «Показывать запросы без бюджета».'),{'inline_keyboard':rows}
+
+
+def ai_filter_rows(user,noise_callback,min_callback):
+    """Toggle for ads/vacancies/spam hidden by the shared AI verdict and the cycling minimum AI score."""
+    hide=user.get('ai_hide_noise',True);minimum=user.get('ai_min_score') or 0
+    return [[{'text':('✅ ' if hide else '⬜️ ')+'Скрывать рекламу и вакансии (AI)','callback_data':noise_callback}],
+            [{'text':'AI-оценка: '+(f'от {minimum}/10' if minimum else 'любая'),'callback_data':min_callback}]]
+
+
+def next_ai_min(current):
+    return AI_MIN_STEPS[(AI_MIN_STEPS.index(current)+1)%len(AI_MIN_STEPS)] if current in AI_MIN_STEPS else 0
 
 
 def wizard_launch(user,selected):
@@ -218,7 +231,19 @@ def _eligibility(lead,config,prefs,projects):
     return allowed,reason,matches
 
 
-def _send_card(db,sender,prefs,lead_id,lead,reason,matches,prefix=''):
+def _ai_eligibility(db,lead_id,lead,config,prefs,projects):
+    """Keyword eligibility, then the per-user AI filter. Returns allowed, reason, matches, card AI lines and score."""
+    from .ai_scoring import card_lines,fetch_scores,personal_score,user_allows
+    allowed,reason,matches=_eligibility(lead,config,prefs,projects)
+    if not allowed:return allowed,reason,matches,'',None
+    ai=fetch_scores(db,[lead_id]).get(lead_id)
+    ok,why=user_allows(ai,lead,prefs,config.get('topics'))
+    if not ok:return False,why,[],'',None
+    score=personal_score(ai,lead,config.get('topics'))
+    return True,reason,matches,card_lines(ai,score),score
+
+
+def _send_card(db,sender,prefs,lead_id,lead,reason,matches,prefix='',ai=''):
     """Send one card and record it; False means the send is uncertain and the batch must stop."""
     if matches:
         with db:
@@ -226,7 +251,7 @@ def _send_card(db,sender,prefs,lead_id,lead,reason,matches,prefix=''):
                 db.execute('''INSERT INTO project_leads(project_id,user_id,lead_id) VALUES(?,?,?)
                     ON CONFLICT(project_id,lead_id) DO NOTHING''',(project_id,prefs['id'],lead_id))
     try:
-        sender('sendMessage',{'chat_id':str(prefs['telegram_chat_id']),'text':prefix+message(lead,reason),
+        sender('sendMessage',{'chat_id':str(prefs['telegram_chat_id']),'text':prefix+message(lead,reason,ai),
             'link_preview_options':{'is_disabled':True},'reply_markup':lead_buttons(lead_id,lead.url)})
     except RuntimeError as exc:
         with db:db.execute('''INSERT INTO user_leads(user_id,lead_id,delivery_status,filter_reason,updated_at)
@@ -257,6 +282,8 @@ UNSEEN='''l.status<>'duplicate' AND (l.origin_user_id IS NULL OR l.origin_user_i
 
 
 def deliver_registered(db,base,sender,limit_per_user=1):
+    """While AI scoring is on, a fresh lead waits up to AI_SCORING_WAIT_SECONDS for its shared score."""
+    from .ai_scoring import scoring_enabled,wait_seconds
     users=db.execute(RECIPIENTS+' ORDER BY u.id').fetchall()
     delivered=0
     for prefs in users:
@@ -264,15 +291,18 @@ def deliver_registered(db,base,sender,limit_per_user=1):
         projects=db.execute('SELECT * FROM projects WHERE user_id=? AND enabled=true ORDER BY id',(prefs['id'],)).fetchall()
         # The live stream starts at registration; older leads reach a user only through the one-time first-run batch.
         rows=db.execute('SELECT l.id,l.payload FROM leads l WHERE '+UNSEEN+''' AND l.first_seen::timestamptz >= ?
-            ORDER BY l.id DESC LIMIT 100''',(prefs['id'],prefs['id'],prefs['id'],prefs['registered_at'])).fetchall()
+            AND (NOT ? OR EXISTS (SELECT 1 FROM lead_ai_scores s WHERE s.lead_id=l.id)
+                 OR l.first_seen::timestamptz < now()-(? * interval '1 second'))
+            ORDER BY l.id DESC LIMIT 100''',(prefs['id'],prefs['id'],prefs['id'],prefs['registered_at'],
+            scoring_enabled(),wait_seconds())).fetchall()
         for row in rows:
             lead=Lead(**json.loads(row['payload']))
-            allowed,reason,matches=_eligibility(lead,config,prefs,projects)
+            allowed,reason,matches,ai,_=_ai_eligibility(db,row['id'],lead,config,prefs,projects)
             if not allowed:
                 with db:db.execute('''INSERT INTO user_leads(user_id,lead_id,delivery_status,filter_reason)
                     VALUES(?,?,'filtered',?) ON CONFLICT(user_id,lead_id) DO NOTHING''',(prefs['id'],row['id'],reason))
                 continue
-            if not _send_card(db,sender,prefs,row['id'],lead,reason,matches):break
+            if not _send_card(db,sender,prefs,row['id'],lead,reason,matches,ai=ai):break
             delivered+=1;processed+=1
             if processed>=limit_per_user:break
     return delivered
@@ -298,15 +328,15 @@ def backfill_first_leads(db,base,sender,user_id,limit=FIRST_RUN_LIMIT,hours=FIRS
     candidates=[]
     for row in rows:
         lead=Lead(**json.loads(row['payload']))
-        allowed,reason,matches=_eligibility(lead,config,prefs,projects)
-        if allowed:candidates.append((lead.score,row['id'],row['fingerprint'],lead,reason,matches))
+        allowed,reason,matches,ai,ai_score=_ai_eligibility(db,row['id'],lead,config,prefs,projects)
+        if allowed:candidates.append(((ai_score or 0,lead.score),row['id'],row['fingerprint'],lead,reason,matches,ai))
     candidates.sort(key=lambda item:(item[0],item[1]),reverse=True)
     sent=0;fingerprints=set()
-    for _,lead_id,fingerprint,lead,reason,matches in candidates:
+    for _,lead_id,fingerprint,lead,reason,matches,ai in candidates:
         if sent>=limit:break
         if fingerprint in fingerprints:continue
         fingerprints.add(fingerprint)
-        if not _send_card(db,sender,prefs,lead_id,lead,reason,matches,'🕘 Из недавних\n'):break
+        if not _send_card(db,sender,prefs,lead_id,lead,reason,matches,'🕘 Из недавних\n',ai):break
         sent+=1
     return sent
 
@@ -408,6 +438,7 @@ class ProductController:
     def _user(self,telegram_id):
         return self.db.execute('''SELECT u.*,p.monitoring_active,p.min_budget,p.show_without_budget,
             p.show_possible_needs,p.topics,p.source_switches,p.profile_services,p.portfolio,p.state,
+            p.ai_hide_noise,p.ai_min_score,
             s.status AS subscription_status,s.plan_code,s.ends_at
             FROM app_users u JOIN user_preferences p ON p.user_id=u.id
             JOIN subscriptions s ON s.user_id=u.id WHERE u.telegram_user_id=?''',(telegram_id,)).fetchone()
@@ -418,7 +449,7 @@ class ProductController:
 
     def _update_pref(self,user_id,column,value):
         allowed={'monitoring_active','min_budget','show_without_budget','show_possible_needs','topics',
-                 'profile_services','portfolio','state','source_switches'}
+                 'profile_services','portfolio','state','source_switches','ai_hide_noise','ai_min_score'}
         if column not in allowed:raise ValueError('unknown preference')
         with self.db:
             self.db.execute(f'UPDATE user_preferences SET {column}=?,updated_at=now() WHERE user_id=?',(value,user_id))
@@ -428,7 +459,8 @@ class ProductController:
         keys={'inline_keyboard':[
             [{'text':('✅ ' if user['show_without_budget'] else '⬜️ ')+'Без бюджета','callback_data':'toggle:no_budget'}],
             [{'text':('✅ ' if user['show_possible_needs'] else '⬜️ ')+'Возможные потребности','callback_data':'toggle:possible'}],
-            [{'text':f"Минимум: {user['min_budget']} ₽",'callback_data':'budget:custom'}]]}
+            [{'text':f"Минимум: {user['min_budget']} ₽",'callback_data':'budget:custom'}],
+            *ai_filter_rows(user,'toggle:ai_noise','toggle:ai_min')]}
         if edit:return self._edit_markup(keys)
         self.say('Настройте поток лидов. Неизвестный бюджет остаётся неизвестным и не заменяется выдуманной суммой.',keys)
 
@@ -605,6 +637,13 @@ class ProductController:
         elif step=='nb':
             self._update_pref(user['id'],'show_without_budget',not user['show_without_budget'])
             view=wizard_budget(dict(user)|{'show_without_budget':not user['show_without_budget']})
+        elif step=='ai':
+            self._update_pref(user['id'],'ai_hide_noise',not user['ai_hide_noise'])
+            view=wizard_budget(dict(user)|{'ai_hide_noise':not user['ai_hide_noise']})
+        elif step=='aimin':
+            value=next_ai_min(user['ai_min_score'])
+            self._update_pref(user['id'],'ai_min_score',value)
+            view=wizard_budget(dict(user)|{'ai_min_score':value})
         elif step=='launch':view=wizard_launch(user,selected)
         elif step=='go':return self._launch(user)
         else:return self._answer()
@@ -631,10 +670,13 @@ class ProductController:
         if not rows:
             hint='Новые придут сюда автоматически.' if user['monitoring_active'] else f'Включите мониторинг кнопкой «{MONITOR_OFF}».'
             return self.say('Пока нет присланных заказов. '+hint)
+        from .ai_scoring import card_lines,fetch_scores,personal_score
+        scores=fetch_scores(self.db,[row['id'] for row in rows])
         # Oldest first, so the newest card ends up at the bottom of the chat.
         for row in reversed(rows):
-            lead=Lead(**json.loads(row['payload']))
-            self.sender('sendMessage',{'chat_id':self.last_chat,'text':message(lead,row['filter_reason'] or 'ранее присланный заказ'),
+            lead=Lead(**json.loads(row['payload']));ai=scores.get(row['id'])
+            lines=card_lines(ai,personal_score(ai,lead,selected_topics(user)))
+            self.sender('sendMessage',{'chat_id':self.last_chat,'text':message(lead,row['filter_reason'] or 'ранее присланный заказ',lines),
                 'link_preview_options':{'is_disabled':True},'reply_markup':lead_buttons(row['id'],lead.url,row['feedback'])})
 
     def _cabinet(self):
@@ -733,8 +775,12 @@ class ProductController:
                 else:selected.append(name)
                 self._update_pref(user['id'],'topics',json.dumps(selected,ensure_ascii=False))
                 self._answer();self._services(dict(user)|{'topics':selected},edit=True)
-            elif action=='toggle' and len(parts)==2 and parts[1] in ('no_budget','possible'):
-                column='show_without_budget' if parts[1]=='no_budget' else 'show_possible_needs'
+            elif action=='toggle' and len(parts)==2 and parts[1]=='ai_min':
+                value=next_ai_min(user['ai_min_score'])
+                self._update_pref(user['id'],'ai_min_score',value)
+                self._answer();self._filters(dict(user)|{'ai_min_score':value},edit=True)
+            elif action=='toggle' and len(parts)==2 and parts[1] in ('no_budget','possible','ai_noise'):
+                column={'no_budget':'show_without_budget','possible':'show_possible_needs','ai_noise':'ai_hide_noise'}[parts[1]]
                 self._update_pref(user['id'],column,not user[column])
                 self._answer();self._filters(dict(user)|{column:not user[column]},edit=True)
             elif action=='budget':self._update_pref(user['id'],'state',json.dumps({'await':'budget'}));self.say('Введите минимальный бюджет числом в рублях. /cancel — отменить.')

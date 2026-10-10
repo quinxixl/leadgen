@@ -224,6 +224,13 @@ def run_bot(db,config):
         print('Менеджер личных Telegram-подключений запущен.', flush=True)
     elif product_mode:
         print('Личные Telegram-подключения отключены: добавьте API-параметры и ключ шифрования.', flush=True)
+    from .ai_scoring import scoring_enabled
+    if product_mode and scoring_enabled():
+        # Off the Telegram polling loop: a slow LLM call never delays updates or delivery.
+        from .ai_scoring import run_scorer
+        threading.Thread(target=run_scorer, args=(db_target,), daemon=True).start()
+    elif product_mode:
+        print('AI-оценка лидов отключена: задайте GROQ_API_KEY.', flush=True)
     future=None;next_scan=0;telegram_retry_delay=2;next_subscription_check=0;next_first_run_check=0
     with ThreadPoolExecutor(max_workers=1) as pool:
         while True:

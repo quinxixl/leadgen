@@ -417,3 +417,4 @@ details.panel.fold>summary{font-size:18px}
 .quick-links a[aria-current=page]{background:var(--brand-soft);border-color:var(--brand);color:var(--brand-ink)}
 .lead-actions{display:flex;flex-wrap:wrap;gap:10px}
 .export-links{margin-top:16px}
+.ai-score{margin:8px 0;font-size:14px;overflow-wrap:anywhere}
