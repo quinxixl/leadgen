@@ -45,7 +45,9 @@
         return;
       }
       if (result.status === 'password') {
+        // The scan was accepted; the account has 2FA. The reloaded page shows only the password form.
         stopped = true;
+        status.textContent = 'QR-код принят. Осталось ввести облачный пароль Telegram…';
         window.location.reload();
         return;
       }

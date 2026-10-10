@@ -361,6 +361,31 @@ class WebPostgres(unittest.TestCase):
         connection=self.db.execute('SELECT status,display_name FROM telegram_connections WHERE user_id=?',(self.u,)).fetchone()
         self.assertEqual((connection['status'],connection['display_name']),('active','QR аккаунт'))
 
+    def test_qr_scan_with_two_factor_shows_only_the_password_form(self):
+        class TwoFactor(FakeTelegramGateway):
+            def wait_qr(self,state):
+                return {'password_required':True,'state':state|{'session':'password-pending-session'}}
+            def verify_password(inner,state,password):
+                # The password must be checked on the very session the QR scan authorized.
+                self.assertEqual(state['session'],'password-pending-session')
+                return super().verify_password(state,password)
+        self.app.config['TELEGRAM_GATEWAY_FACTORY']=TwoFactor
+        try:
+            self.client.post('/app/telegram/qr/start',data={'csrf':'test-csrf'})
+            self.assertEqual(self.client.post('/app/telegram/qr/wait',data={'csrf':'test-csrf'}).json['status'],'password')
+            # A second tab (or an overlapping poll) is sent to the password form too, not to an error.
+            self.assertEqual(self.client.post('/app/telegram/qr/wait',data={'csrf':'test-csrf'}).json['status'],'password')
+            page=self.client.get('/app/telegram').text
+            self.assertIn('action="/app/telegram/password"',page)
+            # Starting over would discard the half-authorized session Telegram lists as incomplete.
+            for restart in ('action="/app/telegram/qr/start"','action="/app/telegram/connect"','telegram_qr.js'):
+                self.assertNotIn(restart,page)
+            self.client.post('/app/telegram/password',data={'csrf':'test-csrf','password':'correct'})
+            connection=self.db.execute('SELECT status FROM telegram_connections WHERE user_id=?',(self.u,)).fetchone()
+            self.assertEqual(connection['status'],'active')
+        finally:
+            self.app.config['TELEGRAM_GATEWAY_FACTORY']=FakeTelegramGateway
+
     def test_qr_refresh_and_overlapping_polls(self):
         from leadgen.telegram_accounts import wait_qr_connection
         cipher=SessionCipher(self.app.config['TELEGRAM_CIPHER_KEY'])

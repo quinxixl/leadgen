@@ -204,9 +204,9 @@ class TelethonGateway:
             # QR approval authorizes the MTProto key on Telegram's side. The short-lived
             # UpdateLoginToken event may be missed between two HTTP polling requests,
             # so always check the durable authorization state before waiting for it.
-            if await client.is_user_authorized():
-                user = await client.get_me()
-                return self._authorized(client, user)
+            probed = await self._qr_probe(client, state)
+            if probed:
+                return probed
             expires = datetime.fromisoformat(state['expires'])
             now = datetime.now(timezone.utc)
             remaining = (expires - now).total_seconds()
@@ -241,9 +241,9 @@ class TelethonGateway:
             try:
                 user = await qr.wait(timeout=min(QR_POLL_SECONDS, remaining))
             except TimeoutError:
-                if await client.is_user_authorized():
-                    user = await client.get_me()
-                    return self._authorized(client, user)
+                probed = await self._qr_probe(client, state)
+                if probed:
+                    return probed
                 state['session'] = client.session.save()
                 return {'pending': True, 'state': state}
             except SessionPasswordNeededError:
@@ -254,6 +254,26 @@ class TelethonGateway:
             return self._authorized(client, user)
         finally:
             await client.disconnect()
+
+    async def _qr_probe(self, client, state):
+        """The outcome of a QR scan that no poll saw live, or None while nobody scanned.
+
+        UpdateLoginToken reaches only a connection that is open at scan time, and short
+        polls are disconnected most of the time. An accepted QR leaves this auth key either
+        authorized or waiting for the cloud password: then every call fails with
+        SESSION_PASSWORD_NEEDED. (is_user_authorized() hides that difference and caches
+        False for the rest of the poll.)"""
+        from telethon.errors import RPCError, SessionPasswordNeededError
+        from telethon.tl.functions.users import GetUsersRequest
+        from telethon.tl.types import InputUserSelf
+        try:
+            users = await client(GetUsersRequest([InputUserSelf()]))
+        except SessionPasswordNeededError:
+            state['session'] = client.session.save()
+            return {'password_required': True, 'state': state}
+        except RPCError:
+            return None
+        return self._authorized(client, users[0]) if users else None
 
     def verify_code(self, state, code):
         return self._run(self._verify_code(state, code))
@@ -285,7 +305,7 @@ class TelethonGateway:
 
     async def _verify_password(self, state, password):
         from telethon import TelegramClient
-        from telethon.errors import PasswordHashInvalidError
+        from telethon.errors import FloodWaitError, PasswordHashInvalidError, RPCError
         from telethon.sessions import StringSession
         client = TelegramClient(StringSession(state['session']), self.api_id, self.api_hash)
         try:
@@ -294,6 +314,10 @@ class TelethonGateway:
                 user = await client.sign_in(password=password)
             except PasswordHashInvalidError:
                 raise TelegramAccountError('Неверный облачный пароль Telegram.') from None
+            except FloodWaitError as exc:
+                raise TelegramAccountError(f'Telegram ограничил частоту. Повторите через {exc.seconds} секунд.') from None
+            except RPCError:
+                raise TelegramAccountError('Telegram не принял вход. Начните подключение заново.') from None
             return self._authorized(client, user)
         finally:
             await client.disconnect()
@@ -413,6 +437,9 @@ def wait_qr_connection(db, user_id, cipher, gateway):
     # An approved Telegram session remains valid after the visual QR token expires.
     # Let the gateway check that durable authorization before rejecting an old token.
     row = db.execute('SELECT * FROM telegram_connection_auth WHERE user_id=?', (user_id,)).fetchone()
+    if row and row['stage'] == 'password' and row['expires_at'] > datetime.now(timezone.utc):
+        # Another poll or tab already saw the scan: send this page to the password form too.
+        return 'password', 0
     if not row or row['stage'] != 'qr':
         raise TelegramAccountError('QR-подключение не запущено.')
     state = cipher.decrypt(row['state_cipher'])
