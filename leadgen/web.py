@@ -17,6 +17,7 @@ from .app import env_load
 from .database import db_open
 from .core import TOPICS, TOPIC_CATEGORIES, Lead, enrich
 from .product import PIPELINE, FEEDBACK, ProductController
+from .crm import NOTE_LIMIT as CRM_NOTE_LIMIT, normalize as normalize_status
 from .web_auth import begin_login, consume_handoff, consume_login, login_status
 from .billing import PLANS, PLAN_NAMES, days_left, legal_entity, subscription_active, support_contact
 from .rate_limit import RateLimited, hit, purge_expired
@@ -117,17 +118,23 @@ class SplitSessionInterface(SecureCookieSessionInterface):
 
 def owner_lead(db,owner_id,lid):
     """The owner's delivered lead with CRM state, or None."""
-    return db.execute('''SELECT l.*,ul.pipeline_status,ul.deal_amount,ul.filter_reason,
+    return db.execute('''SELECT l.*,ul.pipeline_status,ul.deal_amount,ul.filter_reason,ul.crm_note,
         f.label AS feedback FROM user_leads ul JOIN leads l ON l.id=ul.lead_id
         LEFT JOIN lead_feedback f ON f.user_id=ul.user_id AND f.lead_id=ul.lead_id
         WHERE ul.user_id=? AND l.id=? AND ul.delivery_status<>'filtered' ''',(owner_id,lid)).fetchone()
 
 
-def update_lead(db,owner_id,lid,row,status,amount,label):
-    """Save status, deal amount (digits or '') and feedback with activity rows and a webhook event.
+def update_lead(db,owner_id,lid,row,status,amount,label,note=None):
+    """Save status, deal amount (digits or ''), feedback and optionally the CRM note with activity rows
+    and a webhook event.
 
     Shared by the cabinet and the Mini App; callers validate the values first."""
     with db:
+        if note is not None and note.strip()!=(row['crm_note'] or ''):
+            note=note.strip()
+            db.execute('UPDATE user_leads SET crm_note=? WHERE user_id=? AND lead_id=?',(note,owner_id,lid))
+            db.execute("INSERT INTO lead_activity(user_id,lead_id,kind,detail) VALUES(?,?,'note',?)",
+                       (owner_id,lid,'Заметка по сделке: '+note if note else 'Заметка по сделке удалена'))
         for kind,value,old in [('status',status,row['pipeline_status']),('amount',amount,str(row['deal_amount']) if row['deal_amount'] is not None else ''),('feedback',label,row['feedback'] or '')]:
             if value!=old:
                 detail=PIPELINE.get(value,value) if kind=='status' else FEEDBACK.get(value,value) if kind=='feedback' else value or 'Сумма не указана'
@@ -465,7 +472,8 @@ def create_app(test_config=None):
             LEFT JOIN user_leads ul ON ul.user_id=a.owner_user_id AND ul.lead_id=a.lead_id
             WHERE m.workspace_id=? GROUP BY u.id,m.role ORDER BY won DESC,assigned DESC,u.display_name''',
             (g.workspace['id'],)).fetchall()
-        return render_template('dashboard.html',stats=stats,stages=stages,sources=sources,days=days,daily=daily,
+        from .crm import results
+        return render_template('dashboard.html',results=results(db(),g.owner_id),stats=stats,stages=stages,sources=sources,days=days,daily=daily,
             peak=max((r['count'] for r in daily),default=1),quality=quality,response=response,projects=projects,team=team)
 
     def filtered_leads(export=False):
@@ -500,8 +508,8 @@ def create_app(test_config=None):
         if len(dates)==2 and dates['from']>dates['to']:abort(400)
         if search:where+=" AND l.payload ILIKE ? ESCAPE '\\'";args.append(like_pattern(search))
         if status:
-            if status not in PIPELINE:abort(400)
-            where+=' AND ul.pipeline_status=?';args.append(status)
+            if not normalize_status(status):abort(400)
+            where+=' AND ul.pipeline_status=?';args.append(normalize_status(status))
         count=db().execute('SELECT count(*) AS n FROM user_leads ul JOIN leads l ON l.id=ul.lead_id WHERE '+where,args).fetchone()['n']
         if export and count>10000:abort(400,description='Сузьте выборку до 10 000 лидов для экспорта.')
         rows=db().execute('''SELECT l.id,l.payload,ul.pipeline_status,ul.deal_amount
@@ -555,12 +563,14 @@ def create_app(test_config=None):
         row=user_lead(lid)
         if request.method=='POST':
             require_role(*EDIT_LEADS)
-            status=request.form.get('status');label=request.form.get('feedback','')
-            if status not in PIPELINE or label and label not in FEEDBACK:abort(400)
+            status=normalize_status(request.form.get('status'));label=request.form.get('feedback','')
+            if not status or label and label not in FEEDBACK:abort(400)
             amount=request.form.get('amount','').strip()
             if amount and (not amount.isdigit() or int(amount)>1000000000):
                 abort(400,description='Укажите целую сумму от 0 до 1 000 000 000 ₽.')
-            update_lead(db(),g.owner_id,lid,row,status,amount,label)
+            note=request.form.get('crm_note')
+            if note is not None and len(note.strip())>CRM_NOTE_LIMIT:abort(400,description='Заметка — до 1000 символов.')
+            update_lead(db(),g.owner_id,lid,row,status,amount,label,note)
             flash('Изменения сохранены. Статус доступен и в Telegram.');return redirect(url_for('detail',lid=lid))
         activity=db().execute('SELECT kind,detail,created_at FROM lead_activity WHERE user_id=? AND lead_id=? ORDER BY id DESC LIMIT 100',(g.owner_id,lid)).fetchall()
         reminder=db().execute('SELECT * FROM lead_reminders WHERE user_id=? AND lead_id=?',(g.owner_id,lid)).fetchone()
@@ -666,6 +676,8 @@ def create_app(test_config=None):
     register_projects(app,db)
     from .reminders import register_routes
     register_routes(app,db)
+    from .crm import register_crm_routes
+    register_crm_routes(app,db)
     from .web_telegram import register_telegram_routes
     register_telegram_routes(app,db)
     from .web_replies import register_reply_routes

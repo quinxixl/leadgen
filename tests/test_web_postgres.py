@@ -87,6 +87,8 @@ class WebPostgres(unittest.TestCase):
         if not cls.db.execute("SELECT to_regclass('leadgen.telegram_replies') AS name").fetchone()['name']:
             cls.db.connection.execute(Path('supabase/migrations/20261005070330_telegram_replies.sql').read_text(),prepare=False)
         cls.db.connection.execute(Path('supabase/migrations/20261007120000_onboarding_foundation.sql').read_text(),prepare=False)
+        columns=cls.db.execute("SELECT 1 FROM information_schema.columns WHERE table_schema='leadgen' AND table_name='user_leads' AND column_name='crm_note'").fetchone()
+        if not columns:cls.db.connection.execute(Path('supabase/migrations/20261010120000_mini_crm_pipeline.sql').read_text(),prepare=False)
         cls.db.commit()
         cls.app=create_app({'TESTING':True,'SECRET_KEY':'test-'*10,'BOT_USERNAME':'test_bot',
             'SESSION_COOKIE_SECURE':False,'DB_FACTORY':lambda:db_open(DSN),
@@ -139,7 +141,7 @@ class WebPostgres(unittest.TestCase):
         r=self.client.get('/app/leads');self.assertEqual(r.status_code,302);self.assertTrue(r.location.endswith('/app/billing'))
         r=self.client.post(f'/app/leads/{self.ids[0]}',data={'csrf':'test-csrf','status':'won'})
         self.assertEqual(r.status_code,302)
-        self.assertEqual(self.db.execute('SELECT pipeline_status FROM user_leads WHERE lead_id=?',(self.ids[0],)).fetchone()['pipeline_status'],'saved')
+        self.assertEqual(self.db.execute('SELECT pipeline_status FROM user_leads WHERE lead_id=?',(self.ids[0],)).fetchone()['pipeline_status'],'new')
         self.assertEqual(self.client.get('/app/billing').status_code,200)
 
     def test_login_rate_limited_per_ip(self):
@@ -153,7 +155,7 @@ class WebPostgres(unittest.TestCase):
     def test_cross_user_mutation_is_denied(self):
         r=self.client.post(f'/app/leads/{self.ids[1]}',data={'csrf':'test-csrf','status':'won','amount':'100'})
         self.assertEqual(r.status_code,404)
-        self.assertEqual(self.db.execute('SELECT pipeline_status FROM user_leads WHERE lead_id=?',(self.ids[1],)).fetchone()['pipeline_status'],'saved')
+        self.assertEqual(self.db.execute('SELECT pipeline_status FROM user_leads WHERE lead_id=?',(self.ids[1],)).fetchone()['pipeline_status'],'new')
 
     def test_status_feedback_amount_and_settings_persist(self):
         self.assertEqual(self.client.post(f'/app/leads/{self.ids[0]}',data={'csrf':'test-csrf','status':'won','amount':'75000','feedback':'fit'}).status_code,302)
@@ -290,8 +292,11 @@ class WebPostgres(unittest.TestCase):
         self.assertIn('77 001',page.text)
         self.assertNotIn('998 877',page.text)
         with self.db:self.db.execute("UPDATE leads SET first_seen=(now()-interval '20 days')::text WHERE id=?",(self.ids[0],))
-        self.assertNotIn('77 001',self.client.get('/app?days=7').text)
-        self.assertIn('77 001',self.client.get('/app?days=30').text)
+        # The period report excludes the older lead; the earnings widget above it is not period-bound.
+        page=self.client.get('/app?days=7').text
+        self.assertNotIn('77 001',page.split('<h1>Результаты поиска</h1>')[1])
+        self.assertIn('₽77 001 всего',page)
+        self.assertIn('77 001',self.client.get('/app?days=30').text.split('<h1>Результаты поиска</h1>')[1])
         self.assertEqual(self.client.get('/app?days=1000').status_code,400)
 
     def test_duplicate_does_not_send_again_to_user(self):

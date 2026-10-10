@@ -168,7 +168,7 @@ class MiniAppPostgres(unittest.TestCase):
             self.assertEqual(self.tg.get(path).location, '/tg/billing', path)
         r = self.tg.post(f'/tg/leads/{self.ids[0]}', data={'csrf': 'tg-csrf', 'action': 'status', 'status': 'won'})
         self.assertEqual(r.location, '/tg/billing')
-        self.assertEqual(self.db.execute('SELECT pipeline_status FROM user_leads WHERE lead_id=?', (self.ids[0],)).fetchone()['pipeline_status'], 'saved')
+        self.assertEqual(self.db.execute('SELECT pipeline_status FROM user_leads WHERE lead_id=?', (self.ids[0],)).fetchone()['pipeline_status'], 'new')
         page = self.tg.get('/tg/billing')
         self.assertEqual(page.status_code, 200)
         self.assertIn('Доступ приостановлен', page.text)
@@ -214,7 +214,7 @@ class MiniAppPostgres(unittest.TestCase):
         self.assertIn('Нужен сайт 0', second)
         self.assertNotIn('before=', second)
         with self.db:
-            self.db.execute("UPDATE user_leads SET pipeline_status='working' WHERE user_id=? AND lead_id=?", (self.u, self.ids[0]))
+            self.db.execute("UPDATE user_leads SET pipeline_status='in_progress' WHERE user_id=? AND lead_id=?", (self.u, self.ids[0]))
             self.db.execute("INSERT INTO lead_feedback(user_id,lead_id,label) VALUES(?,?,'fit')", (self.u, self.ids[0]))
             self.db.execute("INSERT INTO lead_feedback(user_id,lead_id,label) VALUES(?,?,'fit')", (self.other, self.ids[1]))
         for kind in ('work', 'fit'):
@@ -231,13 +231,13 @@ class MiniAppPostgres(unittest.TestCase):
         lid = self.ids[0]
         events = []
         with patch('leadgen.integrations.enqueue_lead_event', side_effect=lambda db, owner, lead, kind: events.append((owner, lead, kind))):
-            r = self.tg.post(f'/tg/leads/{lid}', data={'csrf': 'tg-csrf', 'action': 'status', 'status': 'working'})
+            r = self.tg.post(f'/tg/leads/{lid}', data={'csrf': 'tg-csrf', 'action': 'status', 'status': 'in_progress'})
             self.assertEqual(r.location, f'/tg/leads/{lid}')
             r = self.tg.post(f'/tg/leads/{lid}', data={'csrf': 'tg-csrf', 'action': 'feedback', 'feedback': 'ad'})
             self.assertEqual(r.status_code, 302)
         self.assertEqual(events, [(self.u, lid, 'lead.updated')] * 2)
         row = self.db.execute('SELECT pipeline_status FROM user_leads WHERE user_id=? AND lead_id=?', (self.u, lid)).fetchone()
-        self.assertEqual(row['pipeline_status'], 'working')
+        self.assertEqual(row['pipeline_status'], 'in_progress')
         self.assertEqual(self.db.execute('SELECT label FROM lead_feedback WHERE user_id=? AND lead_id=?', (self.u, lid)).fetchone()['label'], 'ad')
         activity = [(a['kind'], a['detail']) for a in self.db.execute(
             'SELECT kind,detail FROM lead_activity WHERE user_id=? AND lead_id=? ORDER BY id', (self.u, lid))]
@@ -261,7 +261,7 @@ class MiniAppPostgres(unittest.TestCase):
         self.tg_login()
         self.assertEqual(self.tg.get(f'/tg/leads/{self.ids[1]}').status_code, 404)
         self.assertEqual(self.tg.post(f'/tg/leads/{self.ids[1]}', data={'csrf': 'tg-csrf', 'action': 'status', 'status': 'won'}).status_code, 404)
-        self.assertEqual(self.db.execute('SELECT pipeline_status FROM user_leads WHERE lead_id=?', (self.ids[1],)).fetchone()['pipeline_status'], 'saved')
+        self.assertEqual(self.db.execute('SELECT pipeline_status FROM user_leads WHERE lead_id=?', (self.ids[1],)).fetchone()['pipeline_status'], 'new')
         with self.db:
             self.db.execute("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES(?,?,'viewer')", (self.ws, self.other))
         viewer = self.tg_login(self.app.test_client(), self.other, workspace_id=self.ws)
@@ -328,7 +328,7 @@ class MiniAppPostgres(unittest.TestCase):
         self.assertIn('Отправлено', done.text)
         self.assertNotIn('data-main-button', done.text)
         self.assertEqual(self.db.execute('SELECT pipeline_status FROM user_leads WHERE user_id=? AND lead_id=?',
-                                         (self.u, lid)).fetchone()['pipeline_status'], 'contacted')
+                                         (self.u, lid)).fetchone()['pipeline_status'], 'replied')
         r = self.tg.post(f'/tg/leads/{lid}/reply', data={'csrf': 'tg-csrf', 'mode': 'dm', 'body': ''})
         self.assertEqual(r.status_code, 200)
         self.assertIn('data-haptic="error"', r.text)

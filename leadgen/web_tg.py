@@ -12,6 +12,7 @@ from . import telegram_replies as replies
 from .accounts import accept_terms, register_user
 from .billing import subscription_active
 from .core import TOPICS, TOPIC_CATEGORIES, Lead, enrich
+from .crm import NOTE_LIMIT as CRM_NOTE_LIMIT, REMIND_DAYS
 from .product import FEEDBACK, PIPELINE
 from .rate_limit import RateLimited, hit
 from .teams import EDIT_LEADS, EDIT_SETTINGS, require_role
@@ -21,8 +22,8 @@ from .web import owner_lead, safe_next, save_preferences, start_user_session, up
 from .web_auth import begin_handoff
 
 # Statuses offered as one-tap buttons on the lead card (a subset of PIPELINE).
-TG_STATUSES = ('saved', 'working', 'contacted', 'discussing', 'won', 'lost')
-WORKING = ('working', 'contacted', 'discussing', 'meeting', 'proposal')
+TG_STATUSES = tuple(PIPELINE)
+WORKING = ('replied', 'in_progress')
 FEED_FILTERS = {'new': 'Новые', 'work': 'В работе', 'fit': 'Подходят'}
 # 👎 reasons: every FEEDBACK label except the positive one.
 DISLIKE_REASONS = {key: label for key, label in FEEDBACK.items() if key != 'fit'}
@@ -171,7 +172,7 @@ def register_tg_routes(app, db):
         where = "ul.user_id=? AND ul.delivery_status<>'filtered'"
         args = [g.owner_id]
         if kind == 'new':
-            where += " AND ul.pipeline_status IN ('saved','viewed')"
+            where += " AND ul.pipeline_status='new'"
         elif kind == 'work':
             where += ' AND ul.pipeline_status IN (' + ','.join('?' for _ in WORKING) + ')'
             args += list(WORKING)
@@ -211,14 +212,26 @@ def register_tg_routes(app, db):
                     abort(400)
                 update_lead(db(), g.owner_id, lid, row, row['pipeline_status'], amount, label)
                 flash('Оценка сохранена — отбор станет точнее.' if label else 'Оценка снята.', 'success')
+            elif action == 'deal':
+                value = request.form.get('amount', '').strip()
+                note = request.form.get('crm_note', '')
+                if value and (not value.isdigit() or int(value) > 1000000000) or len(note.strip()) > CRM_NOTE_LIMIT:
+                    abort(400)
+                update_lead(db(), g.owner_id, lid, row, row['pipeline_status'], value, row['feedback'] or '', note)
+                flash('Сделка сохранена.', 'success')
             elif action == 'remind':
                 from .reminders import schedule
+                days = request.form.get('days', '')
+                if days and days not in [str(item) for item in REMIND_DAYS]:
+                    abort(400)
+                delay = timedelta(days=int(days)) if days else timedelta(hours=1)
                 try:
-                    schedule(db(), g.owner_id, lid, datetime.now(timezone.utc) + timedelta(hours=1))
+                    schedule(db(), g.owner_id, lid, datetime.now(timezone.utc) + delay)
                 except ValueError as exc:
                     flash(str(exc), 'error')
                 else:
-                    flash('Напомним в Telegram через час.', 'success')
+                    flash(('Напомним в Telegram через ' + days + (' день.' if days == '1' else ' дня.'))
+                          if days else 'Напомним в Telegram через час.', 'success')
             else:
                 abort(400)
             return redirect(f'/tg/leads/{lid}')

@@ -1,0 +1,8 @@
+{% extends 'base.html' %}{% from '_results.html' import results_widget %}{% block content %}<p class="eyebrow">Мини-CRM</p><h1>Воронка</h1>
+<nav class="quick-links" aria-label="Статусы"><a href="/app/pipeline"{% if not status %} aria-current="page"{% endif %}>Все активные</a>{% for key,label in pipeline.items() %}<a href="/app/pipeline?status={{ key }}"{% if status==key %} aria-current="page"{% endif %}>{{ label }} · {{ counts.get(key,0) }}</a>{% endfor %}</nav>
+{{ results_widget(results) }}
+<div class="pipeline-board">{% for key,items in board.items() %}<section class="panel pipeline-column" aria-label="{{ pipeline[key] }}"><h2 class="split"><span>{{ pipeline[key] }}</span><span class="count">{{ counts.get(key,0) }}</span></h2>
+{% for item in items %}<article class="pipeline-card"><a href="{{ url_for('detail',lid=item.id) }}">{{ item.lead.title|truncate(90) }}</a><p class="muted">{{ item.lead.source }}{% if item.deal_amount is not none %} · ₽{{ item.deal_amount|money }}{% endif %}{% if item.remind_at %} · ⏰ {{ item.remind_at|dt }}{% endif %}</p>{% if item.crm_note %}<p class="excerpt">{{ item.crm_note|truncate(160) }}</p>{% endif %}</article>
+{% else %}<p class="muted">Пусто.</p>{% endfor %}
+{% if counts.get(key,0)>items|length %}<a href="{{ url_for('leads',status=key) }}">Все {{ counts.get(key,0) }} в списке лидов</a>{% endif %}</section>{% endfor %}</div>
+<p class="muted">Статус меняется в карточке лида, кнопкой «📋 Статус» в боте или в Mini App. Архив скрыт из общей воронки.</p>{% endblock %}

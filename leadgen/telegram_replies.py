@@ -217,8 +217,8 @@ def confirm(db, token, actor_id, owner_id, cipher, gateway):
     with db:
         db.execute('UPDATE telegram_replies SET status=?,error=?,updated_at=now() WHERE id=?', (status, error, token))
         if status == 'sent':
-            db.execute("""UPDATE user_leads SET pipeline_status='contacted',updated_at=now()
-                WHERE user_id=? AND lead_id=? AND pipeline_status IN ('saved','viewed','working')""", (owner_id, row['lead_id']))
+            db.execute("""UPDATE user_leads SET pipeline_status='replied',updated_at=now()
+                WHERE user_id=? AND lead_id=? AND pipeline_status='new'""", (owner_id, row['lead_id']))
             db.execute("INSERT INTO lead_activity(user_id,lead_id,kind,detail) VALUES(?,?,'note',?)",
                        (owner_id, row['lead_id'], 'Telegram: ' + MODES[row['mode']] + '. От: ' + row['sender_label'] +
                         '. Кому: ' + row['recipient_label'] + '\n' + row['body']))

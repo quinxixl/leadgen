@@ -417,3 +417,9 @@ details.panel.fold>summary{font-size:18px}
 .quick-links a[aria-current=page]{background:var(--brand-soft);border-color:var(--brand);color:var(--brand-ink)}
 .lead-actions{display:flex;flex-wrap:wrap;gap:10px}
 .export-links{margin-top:16px}
+.pipeline-board{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;margin:20px 0}
+.pipeline-column h2{font-size:17px;margin:0 0 12px}
+.pipeline-card{padding:10px 0;border-top:1px solid var(--line-2)}
+.pipeline-card a{font-weight:600}
+.pipeline-card p{margin:4px 0 0;font-size:13px}
+.results-widget h2{margin-top:4px}
