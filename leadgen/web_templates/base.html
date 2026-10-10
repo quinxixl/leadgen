@@ -34,7 +34,7 @@
 {{ nav_link('/app','Обзор','home',True) }}{{ nav_link('/app/leads','Лиды','leads') }}{{ nav_link('/app/projects','Проекты','projects') }}{{ nav_link('/app/telegram','Мой Telegram','telegram') }}
 <span class="group">Аккаунт</span>{{ nav_link('/app/settings','Настройки','settings') }}{{ nav_link('/app/security','Безопасность','admin') }}{{ nav_link('/app/billing','Подписка','billing') }}{% if platform_admin %}{{ nav_link('/admin','Админка','admin') }}{% endif %}
 <details class="nav-more"{% if request.path.startswith(('/app/demand','/app/sources','/app/team','/app/integrations')) %} open{% endif %}><summary><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg><span>Ещё</span></summary>
-{{ nav_link('/app/demand','Спрос','demand') }}{{ nav_link('/app/sources','Каталог чатов','sources') }}{{ nav_link('/app/team','Команда','team') }}{% if role in ('owner','admin') %}{{ nav_link('/app/integrations','API и webhook','integrations') }}{% endif %}
+{{ nav_link('/app/demand','Спрос','demand') }}{{ nav_link('/app/sources','Каталог чатов','sources') }}{{ nav_link('/app/team','Команда','team') }}{% if integrations_enabled and role in ('owner','admin') %}{{ nav_link('/app/integrations','API и webhook','integrations') }}{% endif %}
 </details>
 </nav>
 {%- endmacro %}
@@ -43,7 +43,7 @@
 {%- endmacro %}
 {% macro side_foot() -%}
 <div class="side-foot">
-{% if subscription %}<a class="plan-chip{% if not subscription_ok %} expired{% endif %}" href="/app/billing"><strong>{{ plan_names.get(subscription.plan_code, subscription.plan_code) }}</strong><span>{% if not subscription_ok %}Доступ приостановлен — продлить{% elif trial_days_left is not none %}Осталось дней: {{ trial_days_left }}{% else %}Активна{% endif %}</span></a>{% endif %}
+{% if subscription %}<a class="plan-chip" href="/app/billing"><strong>{{ plan_names.get(current_plan, current_plan) }}</strong><span>{% if trial_days_left is not none %}Осталось дней: {{ trial_days_left }}{% elif current_plan=='free' %}Заказы с задержкой — улучшить{% else %}Активна{% endif %}</span></a>{% endif %}
 <div class="who"><span class="avatar">{{ (user.display_name or 'С')[:1]|upper }}</span><span>{{ user.display_name or 'Аккаунт' }}</span></div>
 <form action="/logout" method="post"><input type="hidden" name="csrf" value="{{ csrf }}"><button>Выйти</button></form>
 </div>
@@ -55,7 +55,7 @@
 <div class="app">
 <aside class="sidebar on-night"><a class="brand" href="/app">{{ logo() }}<span>Сигналид<small>кабинет</small></span></a>{{ workspace_switch() }}{{ app_nav() }}{{ side_foot() }}</aside>
 <main id="content" class="workspace">
-{% if subscription and subscription_ok and trial_days_left is not none and trial_days_left<=3 and request.path!='/app/billing' %}<p class="notice warn">Пробный период заканчивается{% if trial_days_left==0 %} сегодня{% else %} через {{ trial_days_left }} {{ 'день' if trial_days_left==1 else 'дня' }}{% endif %}. <a href="/app/billing">Выбрать тариф</a></p>{% endif %}
+{% if subscription and subscription_ok and trial_days_left is not none and trial_days_left<=3 and request.path!='/app/billing' %}<p class="notice warn">Пробный период заканчивается{% if trial_days_left==0 %} сегодня{% else %} через {{ trial_days_left }} {{ 'день' if trial_days_left==1 else 'дня' }}{% endif %}, затем аккаунт перейдёт на бесплатный тариф. <a href="/app/billing">Выбрать тариф</a></p>{% endif %}
 {% for message in get_flashed_messages() %}<p class="notice" role="status">{{ message }}</p>{% endfor %}
 {% block content %}{% endblock %}
 </main></div>

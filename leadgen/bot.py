@@ -268,7 +268,8 @@ def run_bot(db,config):
                 if product_mode:
                     from .reminders import deliver_due
                     deliver_due(db,telegram)
-                    if os.getenv('TELEGRAM_SESSION_ENCRYPTION_KEY'):
+                    from .integrations import integrations_enabled
+                    if integrations_enabled() and os.getenv('TELEGRAM_SESSION_ENCRYPTION_KEY'):
                         from .integrations import deliver_webhooks
                         deliver_webhooks(db,os.environ['TELEGRAM_SESSION_ENCRYPTION_KEY'],limit=2)
                     from .team_notifications import deliver_assignments

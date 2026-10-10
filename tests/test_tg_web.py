@@ -164,14 +164,13 @@ class MiniAppPostgres(unittest.TestCase):
         with self.db:
             self.db.execute('UPDATE app_users SET terms_accepted_at=now() WHERE id=?', (self.u,))
             self.db.execute("UPDATE subscriptions SET ends_at=now()-interval '1 minute' WHERE user_id=?", (self.u,))
+        # An ended trial falls back to the Free plan: the Mini App stays open.
         for path in ('/tg/feed', f'/tg/leads/{self.ids[0]}', '/tg/settings'):
-            self.assertEqual(self.tg.get(path).location, '/tg/billing', path)
-        r = self.tg.post(f'/tg/leads/{self.ids[0]}', data={'csrf': 'tg-csrf', 'action': 'status', 'status': 'won'})
-        self.assertEqual(r.location, '/tg/billing')
-        self.assertEqual(self.db.execute('SELECT pipeline_status FROM user_leads WHERE lead_id=?', (self.ids[0],)).fetchone()['pipeline_status'], 'saved')
+            self.assertEqual(self.tg.get(path).status_code, 200, path)
         page = self.tg.get('/tg/billing')
         self.assertEqual(page.status_code, 200)
-        self.assertIn('Доступ приостановлен', page.text)
+        self.assertIn('Бесплатный', page.text)
+        self.assertIn('работает на бесплатном тарифе', page.text)
         self.assertIn('data-handoff="/app/billing"', page.text)
         self.assertEqual(self.tg.post('/tg/handoff', data={'csrf': 'tg-csrf', 'next': '/app/billing'}).status_code, 200)
 

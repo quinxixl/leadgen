@@ -1,12 +1,15 @@
-{% extends 'base.html' %}{% from '_plans.html' import plans_grid %}{% block title %}Тарифы Сигналид — 7 дней бесплатно без карты{% endblock %}{% block description %}Тарифы сервиса «Сигналид»: 7 дней бесплатно без привязки карты, помесячная оплата без автосписаний. Выбирайте план после пробного периода.{% endblock %}
+{% extends 'base.html' %}{% from '_plans.html' import plans_grid %}{% block title %}Тарифы Сигналид — бесплатный тариф и 7 дней полного доступа{% endblock %}{% block description %}Тарифы сервиса «Сигналид»: бесплатный тариф навсегда, 7 дней полного доступа без привязки карты, платные тарифы от 990 ₽ в месяц и скидка {{ annual_discount }}% при оплате за год.{% endblock %}
 {% block content %}
 <section class="section">
-<div class="section-head center" data-goal-view="pricing_view"><p class="eyebrow">Тарифы</p><h1>Простые цены. 7 дней бесплатно</h1><p class="muted">Выберите тариф после пробного периода. Карта не нужна, автоматических списаний нет.</p></div>
-{{ plans_grid(plans) }}
+<div class="section-head center" data-goal-view="pricing_view"><p class="eyebrow">Тарифы</p><h1>Простые цены. Бесплатный тариф навсегда</h1><p class="muted">7 дней полного доступа без карты, затем бесплатный тариф — или платный, если нужно больше. При оплате за год — скидка {{ annual_discount }}%. Автоматических списаний нет.</p></div>
+{{ plans_grid(plans, founder_price=founder_price) }}
 <p class="pricing-note">Цены указаны за месяц. Для агентств с большим числом участников — индивидуальные условия{% if support %}: <a href="https://t.me/{{ support }}" rel="noopener noreferrer">напишите нам</a>{% endif %}.</p>
 </section>
 <section class="section" id="faq"><div class="faq">
-<details><summary>Что входит в пробный период?</summary><p>Все возможности сервиса на 7 дней. После окончания доступ к кабинету и уведомлениям приостанавливается до оплаты тарифа; ваши лиды и настройки сохраняются.</p></details>
+<details><summary>Что входит в пробный период?</summary><p>7 дней с возможностями тарифа «Профи»: до 5 проектов, 30 AI-откликов в день, заказы сразу после публикации. Карта не нужна.</p></details>
+<details><summary>Что будет после пробного периода?</summary><p>Аккаунт перейдёт на бесплатный тариф: 1 проект, 3 AI-отклика в день, заказы приходят с задержкой около часа. Лиды и настройки сохраняются, платный тариф можно выбрать в любой момент.</p></details>
+<details><summary>Сколько стоит оплата за год?</summary><p>На {{ annual_discount }}% дешевле, чем 12 месяцев по отдельности: например, «Старт» — {{ '{:,}'.format((plans|selectattr('code','equalto','start')|first).annual_price).replace(',', ' ') }} ₽ за год.</p></details>
+<details><summary>Что такое цена участника беты?</summary><p>Тем, кто пришёл в Сигналид во время беты, тариф «Старт» доступен за {{ founder_start_price }} ₽ в месяц навсегда: цена не повысится.</p></details>
 <details><summary>Можно ли сменить тариф?</summary><p>Да, в любой момент через раздел «Подписка» в кабинете или через поддержку.</p></details>
 <details><summary>Есть ли возврат?</summary><p>Условия возврата описаны в <a href="/terms">публичной оферте</a>.</p></details>
 </div></section>

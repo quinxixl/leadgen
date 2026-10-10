@@ -18,8 +18,10 @@ from .database import db_open
 from .core import TOPICS, TOPIC_CATEGORIES, Lead, enrich
 from .product import PIPELINE, FEEDBACK, ProductController
 from .web_auth import begin_login, consume_handoff, consume_login, login_status
-from .billing import PLANS, PLAN_NAMES, days_left, legal_entity, subscription_active, support_contact
+from .billing import (ANNUAL_DISCOUNT_PERCENT, FOUNDER_START_PRICE, PLANS, PLAN_NAMES, days_left, effective_plan, legal_entity,
+                      owner_subscription, plan_limits, delay_clause, subscription_active, support_contact)
 from .rate_limit import RateLimited, hit, purge_expired
+from .integrations import integrations_enabled
 
 
 def metrika_id():
@@ -46,9 +48,6 @@ def is_platform_admin(user):
     return bool(user and str(user['telegram_user_id']) in platform_admin_ids())
 
 
-# Paths that stay open when the subscription has ended, so the user can pay or leave.
-BILLING_OPEN=('/app/billing','/app/workspace','/app/telegram/disconnect','/app/team/join/','/app/security',
-              '/tg/billing','/tg/handoff')
 # Mini App paths reachable without a session: the boot page and the initData exchange.
 TG_PUBLIC=('/tg','/tg/auth')
 TG_SESSION_LIFETIME=timedelta(hours=4)
@@ -194,6 +193,7 @@ def create_app(test_config=None):
         TELEGRAM_BOT_TOKEN=os.environ.get('TELEGRAM_BOT_TOKEN',''),
         WEB_PUBLIC_URL=os.environ.get('WEB_PUBLIC_URL','').strip().rstrip('/'),
         TELEGRAM_CIPHER_KEY=os.environ.get('TELEGRAM_SESSION_ENCRYPTION_KEY',''),
+        INTEGRATIONS_ENABLED=integrations_enabled(),
         DB_FACTORY=db_open, TRUSTED_HOSTS=os.environ.get('WEB_ALLOWED_HOSTS','localhost,127.0.0.1').split(','))
     if test_config:app.config.update(test_config)
     if not app.config['SECRET_KEY'] or len(app.config['SECRET_KEY']) < 32:
@@ -240,17 +240,15 @@ def create_app(test_config=None):
             from .teams import load_workspace
             g.workspaces,g.workspace=load_workspace(db(),g.user,session.get('workspace_id'))
             session['workspace_id']=g.workspace['id'];g.role='owner' if is_platform_admin(g.user) else g.workspace['role'];g.owner_id=g.workspace['owner_user_id']
-            # Team members work under the workspace owner's subscription.
-            g.subscription=db().execute('SELECT status,plan_code,ends_at FROM subscriptions WHERE user_id=?',(g.owner_id,)).fetchone()
+            # Team members work under the workspace owner's subscription. An ended trial or paid
+            # period does not close the cabinet: the account continues on the Free plan.
+            g.subscription=owner_subscription(db(),g.owner_id)
             if tg and not g.user['terms_accepted_at']:
                 # Consent is the first onboarding step; nothing else in the Mini App opens before it.
                 if request.path!='/tg/start':
                     target=request.full_path.rstrip('?') if request.method=='GET' and request.path!='/tg/feed' else ''
                     return redirect('/tg/start'+('?next='+quote(target,safe='/') if target else ''))
                 return
-            if (not subscription_active(g.subscription) and not is_platform_admin(g.user)
-                    and not request.path.startswith(BILLING_OPEN)):
-                return redirect('/tg/billing' if tg else url_for('billing'))
 
     @app.after_request
     def headers(response):
@@ -286,9 +284,13 @@ def create_app(test_config=None):
     def context():
         from .teams import ROLES
         sub=g.get('subscription')
+        current_plan=effective_plan(sub) if sub else None
         return dict(csrf=session.get('csrf',''),user=g.get('user'),pipeline=PIPELINE,feedback=FEEDBACK,
                     subscription=sub,subscription_ok=subscription_active(sub),plan_names=PLAN_NAMES,
-                    trial_days_left=days_left(sub) if sub else None,support=support_contact(),plans=PLANS,
+                    current_plan=current_plan,current_limits=plan_limits(current_plan) if sub else None,
+                    trial_days_left=days_left(sub) if current_plan=='trial' else None,
+                    annual_discount=ANNUAL_DISCOUNT_PERCENT,founder_start_price=FOUNDER_START_PRICE,integrations_enabled=app.config['INTEGRATIONS_ENABLED'],
+                    support=support_contact(),plans=PLANS,
                     legal_entity=legal_entity(),metrika_id=metrika_id(),
                     yandex_verification=yandex_verification(),google_verification=google_verification(),
                     workspaces=g.get('workspaces',[]),workspace=g.get('workspace'),role=g.get('role'),roles=ROLES,
@@ -316,7 +318,12 @@ def create_app(test_config=None):
     def landing():return render_template('landing.html')
 
     @app.get('/pricing')
-    def pricing():return render_template('pricing.html')
+    def pricing():
+        founder=None
+        if g.user:
+            row=db().execute('SELECT founder_price FROM subscriptions WHERE user_id=?',(g.user['id'],)).fetchone()
+            founder=row['founder_price'] if row else None
+        return render_template('pricing.html',founder_price=founder)
 
     @app.get('/privacy')
     def privacy():return render_template('privacy.html')
@@ -346,7 +353,7 @@ def create_app(test_config=None):
 
     @app.get('/app/billing')
     def billing():
-        return render_template('billing.html',active=subscription_active(g.subscription))
+        return render_template('billing.html',founder_price=g.subscription['founder_price'] if g.subscription else None)
 
     @app.get('/healthz')
     def health():return {'status':'ok'}
@@ -473,7 +480,9 @@ def create_app(test_config=None):
         except ValueError:abort(400)
         search=request.args.get('q','')[:200];status=request.args.get('status','')
         project=request.args.get('project','')
-        args=[g.owner_id];where="ul.user_id=? AND ul.delivery_status<>'filtered'"
+        # Free plan: a lead appears only after the plan's delay, the same as in Telegram.
+        delayed,delay_args=delay_clause(plan_limits(effective_plan(g.subscription))['delay_minutes'])
+        args=[g.owner_id]+delay_args;where="ul.user_id=? AND ul.delivery_status<>'filtered'"+delayed
         if project:
             if not project.isdigit():abort(400)
             where+=' AND EXISTS (SELECT 1 FROM project_leads pl WHERE pl.user_id=ul.user_id AND pl.lead_id=l.id AND pl.project_id=?)'

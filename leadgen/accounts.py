@@ -13,7 +13,9 @@ def register_user(db,actor,chat_id,accepted_terms=False):
             VALUES(?,?,?,?{values}) ON CONFLICT(telegram_user_id) DO UPDATE SET telegram_chat_id=excluded.telegram_chat_id,
             username=excluded.username,display_name=excluded.display_name,last_seen_at=now(){terms} RETURNING id''',
             (actor['id'],chat_id,actor.get('username'),name)).fetchone()
-        db.execute("INSERT INTO subscriptions(user_id) VALUES(?) ON CONFLICT(user_id) DO NOTHING",(row['id'],))
+        from .billing import FOUNDER_START_PRICE,founder_signups_open
+        db.execute("INSERT INTO subscriptions(user_id,founder_price) VALUES(?,?) ON CONFLICT(user_id) DO NOTHING",
+                   (row['id'],FOUNDER_START_PRICE if founder_signups_open() else None))
         db.execute("INSERT INTO user_preferences(user_id) VALUES(?) ON CONFLICT(user_id) DO NOTHING",(row['id'],))
     return row['id']
 

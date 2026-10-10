@@ -12,19 +12,25 @@ def register_projects(app, db):
             require_role(*EDIT_SETTINGS)
             name=request.form.get('name','').strip()
             if not name or len(name)>100:abort(400)
+            from .billing import limit_message,owner_plan,plan_limits
             with db():
-                # Lock the owner, so parallel requests cannot exceed the limit.
+                # Lock the owner, so parallel requests cannot exceed the plan limit.
                 db().execute('SELECT id FROM workspaces WHERE id=? FOR UPDATE',(g.workspace['id'],))
                 count=db().execute('SELECT count(*) AS n FROM projects WHERE workspace_id=?',(g.workspace['id'],)).fetchone()['n']
-                if count>=20:abort(400,description='Можно создать не более 20 проектов.')
-                row=db().execute('''INSERT INTO projects(user_id,workspace_id,name,topics,enabled)
-                    VALUES(?,?,?,?::jsonb,false) RETURNING id''',
-                    (g.owner_id,g.workspace['id'],name,json.dumps(list(TOPICS)))).fetchone()
+                plan=owner_plan(db(),g.owner_id)
+                row=None
+                if count<plan_limits(plan)['projects']:
+                    row=db().execute('''INSERT INTO projects(user_id,workspace_id,name,topics,enabled)
+                        VALUES(?,?,?,?::jsonb,false) RETURNING id''',
+                        (g.owner_id,g.workspace['id'],name,json.dumps(list(TOPICS)))).fetchone()
+            if not row:
+                flash(limit_message('projects',plan));return redirect('/app/projects')
             return redirect('/app/projects/'+str(row['id']))
         rows=db().execute('''SELECT p.*,count(pl.lead_id) AS matches FROM projects p
             LEFT JOIN project_leads pl ON pl.project_id=p.id AND pl.user_id=p.user_id
             WHERE p.workspace_id=? GROUP BY p.id ORDER BY p.id''',(g.workspace['id'],)).fetchall()
-        return render_template('projects.html',rows=rows)
+        from .billing import owner_plan,plan_limits
+        return render_template('projects.html',rows=rows,project_limit=plan_limits(owner_plan(db(),g.owner_id))['projects'])
 
     @app.route('/app/projects/<int:pid>',methods=['GET','POST'])
     def project_page(pid):

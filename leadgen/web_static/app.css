@@ -233,7 +233,7 @@ td a{overflow-wrap:anywhere}
 .audience p{color:var(--muted);margin:0}
 
 /* Pricing */
-.plans{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;align-items:stretch}
+.plans{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px;align-items:stretch}
 .plan{background:var(--surface);border:1px solid var(--line);border-radius:18px;padding:28px;display:flex;flex-direction:column;position:relative}
 .plan.featured{border:2px solid var(--brand);box-shadow:0 20px 50px rgba(54,84,245,.16)}
 .plan .tag{position:absolute;top:-12px;left:28px;background:var(--brand);color:#fff;font-size:12px;font-weight:700;border-radius:999px;padding:4px 12px}
@@ -247,6 +247,8 @@ td a{overflow-wrap:anywhere}
 .plan .button{width:100%}
 .plan.current{border-color:var(--ok)}
 .pricing-note{text-align:center;color:var(--muted);font-size:14px;margin-top:24px}
+.plan .annual{color:var(--muted);font-size:13.5px;margin:0}
+.plan .founder{margin:10px 0 0;padding:8px 10px;border-radius:10px;background:var(--brand-soft);font-size:13.5px;color:var(--ink-2)}
 
 /* FAQ */
 .faq{max-width:820px;margin:0 auto}

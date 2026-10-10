@@ -1,6 +1,6 @@
 """Telegram Mini App (/tg): sign-in by initData, onboarding, compact lead feed, lead card and replies.
 
-Access rules (session, workspace role, subscription, terms) are enforced in web.protect(); these routes
+Access rules (session, workspace role, terms) are enforced in web.protect(); these routes
 only re-check the role for writes, exactly like the cabinet."""
 import json
 from datetime import datetime, timedelta, timezone
@@ -10,7 +10,7 @@ from flask import abort, current_app, flash, g, jsonify, redirect, render_templa
 
 from . import telegram_replies as replies
 from .accounts import accept_terms, register_user
-from .billing import subscription_active
+from .billing import delay_clause, effective_plan, plan_limits
 from .core import TOPICS, TOPIC_CATEGORIES, Lead, enrich
 from .product import FEEDBACK, PIPELINE
 from .rate_limit import RateLimited, hit
@@ -168,8 +168,10 @@ def register_tg_routes(app, db):
         before = request.args.get('before', '')
         if kind and kind not in FEED_FILTERS or before and (not before.isdigit() or len(before) > 18):
             abort(400)
-        where = "ul.user_id=? AND ul.delivery_status<>'filtered'"
-        args = [g.owner_id]
+        # Free plan: a lead appears only after the plan's delay, the same as in Telegram.
+        delayed, delay_args = delay_clause(plan_limits(effective_plan(g.subscription))['delay_minutes'])
+        where = "ul.user_id=? AND ul.delivery_status<>'filtered'" + delayed
+        args = [g.owner_id] + delay_args
         if kind == 'new':
             where += " AND ul.pipeline_status IN ('saved','viewed')"
         elif kind == 'work':
@@ -323,4 +325,4 @@ def register_tg_routes(app, db):
 
     @app.get('/tg/billing')
     def tg_billing():
-        return render_template('tg/billing.html', active=subscription_active(g.subscription))
+        return render_template('tg/billing.html')
