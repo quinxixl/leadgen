@@ -87,7 +87,7 @@ class WebPostgres(unittest.TestCase):
         if not cls.db.execute("SELECT to_regclass('leadgen.telegram_replies') AS name").fetchone()['name']:
             cls.db.connection.execute(Path('supabase/migrations/20261005070330_telegram_replies.sql').read_text(),prepare=False)
         cls.db.connection.execute(Path('supabase/migrations/20261007120000_onboarding_foundation.sql').read_text(),prepare=False)
-        cls.db.connection.execute(Path('supabase/migrations/20261010120000_ai_lead_scores.sql').read_text(),prepare=False)
+        cls.db.connection.execute(Path('supabase/migrations/20261010130000_ai_lead_scores.sql').read_text(),prepare=False)
         cls.db.commit()
         cls.app=create_app({'TESTING':True,'SECRET_KEY':'test-'*10,'BOT_USERNAME':'test_bot',
             'SESSION_COOKIE_SECURE':False,'DB_FACTORY':lambda:db_open(DSN),

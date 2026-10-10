@@ -60,7 +60,8 @@ def scoring_model():
 
 def batch_size():return _env_int('AI_SCORING_BATCH',5,1,10)
 def request_timeout():return _env_int('AI_SCORING_TIMEOUT',20,3,60)
-def wait_seconds():return _env_int('AI_SCORING_WAIT_SECONDS',90,0,600)
+def wait_seconds():return _env_int('AI_SCORING_WAIT_SECONDS',25,0,600)
+def max_age_hours():return _env_int('AI_SCORING_MAX_AGE_HOURS',48,1,720)
 def daily_limit():return _env_int('AI_SCORING_DAILY_LIMIT',2000,0,100000)
 
 
@@ -186,11 +187,11 @@ def _store(db,lead_id,status,result=None,model='',input_tokens=0,output_tokens=0
         max(0,int(input_tokens or 0)),max(0,int(output_tokens or 0)),1,(error or '')[:300]))
 
 
-def score_pending(db,scorer=groq_score,limit=None,max_age_hours=72):
+def score_pending(db,scorer=groq_score,limit=None,max_age=None):
     """Score one batch of new leads. Returns the number of leads settled (scored or skipped)."""
     if not scoring_enabled():return 0
     size=limit or batch_size()
-    rows=db.execute(PENDING,(max_age_hours,size*4)).fetchall()
+    rows=db.execute(PENDING,(max_age or max_age_hours(),size*4)).fetchall()
     batch=[];settled=0
     with db:
         for row in rows:

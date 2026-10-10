@@ -109,6 +109,11 @@ class Pure(unittest.TestCase):
         self.assertEqual(labels['ob:aimin'],'AI-оценка: любая')
         self.assertEqual([next_ai_min(v) for v in (0,4,6,8,3)],[4,6,8,0,0])
 
+    def test_defaults(self):
+        with patch.dict(os.environ,{},clear=True):
+            self.assertEqual((ai_scoring.wait_seconds(),ai_scoring.max_age_hours(),ai_scoring.scoring_model()),
+                             (25,48,'openai/gpt-oss-20b'))
+
     def test_disabled_without_key(self):
         with patch.dict(os.environ,{'GROQ_API_KEY':''}):
             self.assertEqual(score_pending(None),0)
@@ -123,7 +128,7 @@ class ScoringPostgres(unittest.TestCase):
 
     def setUp(self):
         fixtures.WebPostgres.setUp(self)
-        self.env=patch.dict(os.environ,{'GROQ_API_KEY':'test-key','AI_SCORING_WAIT_SECONDS':'90','WEB_PUBLIC_URL':''})
+        self.env=patch.dict(os.environ,{'GROQ_API_KEY':'test-key','AI_SCORING_WAIT_SECONDS':'25','WEB_PUBLIC_URL':''})
         self.env.start()
         with self.db:
             self.db.execute('DELETE FROM user_leads')
