@@ -5,7 +5,7 @@
 <a class="chip" href="/tg/feed"{% if not kind %} aria-current="page"{% endif %}>Все</a>
 {% for key,label in filters.items() %}<a class="chip" href="/tg/feed?f={{ key }}"{% if kind==key %} aria-current="page"{% endif %}>{{ label }}</a>{% endfor %}
 </div>
-{% if subscription and subscription_ok and trial_days_left is not none and trial_days_left<=3 %}<p class="tg-flash warn">Пробный период заканчивается через {{ trial_days_left }} дн. <a href="/tg/billing">Подписка</a></p>{% endif %}
+{% if subscription and subscription_ok and trial_days_left is not none and trial_days_left<=3 %}<p class="tg-flash warn">Пробный период заканчивается через {{ trial_days_left }} дн., затем — бесплатный тариф. <a href="/tg/billing">Подписка</a></p>{% endif %}
 {% if items %}
 <ul class="leads">
 {% for item in items %}<li><a class="lead-item" href="/tg/leads/{{ item.id }}">

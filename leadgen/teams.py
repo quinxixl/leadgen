@@ -5,6 +5,8 @@ from datetime import datetime, timedelta, timezone
 
 from flask import abort, flash, g, redirect, render_template, request, session, url_for
 
+from .billing import limit_message, owner_plan, plan_limits
+
 
 ROLES = {'owner':'Владелец','admin':'Администратор','manager':'Менеджер','viewer':'Наблюдатель'}
 EDIT_LEADS = {'owner','admin','manager'}
@@ -44,6 +46,11 @@ def can_manage_member(actor_role, target_role, new_role=None):
     return actor_role == 'admin' and target_role in ('manager','viewer') and new_role in (None,'manager','viewer')
 
 
+def member_count(db, workspace_id):
+    return db.execute('SELECT count(*) AS n FROM workspace_members WHERE workspace_id=?',
+                      (workspace_id,)).fetchone()['n']
+
+
 def register_team_routes(app, db):
     @app.post('/app/workspace')
     def switch_workspace():
@@ -67,7 +74,8 @@ def register_team_routes(app, db):
                 WHERE workspace_id=? ORDER BY id DESC LIMIT 30''', (g.workspace['id'],)).fetchall()
         invite_path = session.pop('new_invite_path', None)
         return render_template('team.html', members=members, invites=invites,
-                               invite_path=invite_path, roles=ROLES)
+                               invite_path=invite_path, roles=ROLES,
+                               member_limit=plan_limits(owner_plan(db(), g.owner_id))['members'])
 
     @app.post('/app/team/name')
     def team_name():
@@ -84,6 +92,10 @@ def register_team_routes(app, db):
         role = request.form.get('role','')
         if role not in ('admin','manager','viewer') or (g.role=='admin' and role=='admin'):
             abort(403)
+        plan = owner_plan(db(), g.owner_id)
+        if member_count(db(), g.workspace['id']) >= plan_limits(plan)['members']:
+            flash(limit_message('members', plan))
+            return redirect('/app/team')
         token = secrets.token_urlsafe(32)
         with db():
             db().execute('''INSERT INTO team_invites(workspace_id,token_hash,role,invited_by,expires_at)
@@ -117,10 +129,23 @@ def register_team_routes(app, db):
                 locked=db().execute('''SELECT * FROM team_invites WHERE token_hash=? FOR UPDATE''',(digest,)).fetchone()
                 if not locked or locked['revoked'] or locked['accepted_at'] or locked['expires_at']<=datetime.now(timezone.utc):
                     abort(400)
-                db().execute('''INSERT INTO workspace_members(workspace_id,user_id,role) VALUES(?,?,?)
-                    ON CONFLICT(workspace_id,user_id) DO NOTHING''',(locked['workspace_id'],g.user['id'],locked['role']))
-                db().execute('UPDATE team_invites SET accepted_by=?,accepted_at=now() WHERE id=?',
-                             (g.user['id'],locked['id']))
+                # Lock the workspace, so parallel joins cannot exceed the plan's member limit.
+                workspace=db().execute('SELECT owner_user_id FROM workspaces WHERE id=? FOR UPDATE',
+                                       (locked['workspace_id'],)).fetchone()
+                already=db().execute('SELECT 1 FROM workspace_members WHERE workspace_id=? AND user_id=?',
+                                     (locked['workspace_id'],g.user['id'])).fetchone()
+                plan=owner_plan(db(),workspace['owner_user_id'])
+                full=not already and member_count(db(),locked['workspace_id'])>=plan_limits(plan)['members']
+                if not full:
+                    db().execute('''INSERT INTO workspace_members(workspace_id,user_id,role) VALUES(?,?,?)
+                        ON CONFLICT(workspace_id,user_id) DO NOTHING''',(locked['workspace_id'],g.user['id'],locked['role']))
+                    db().execute('UPDATE team_invites SET accepted_by=?,accepted_at=now() WHERE id=?',
+                                 (g.user['id'],locked['id']))
+            if full:
+                # The invite stays unused: it works again once the owner moves to a plan with more seats.
+                flash('В команде «'+invite['name']+'» нет свободных мест. '+limit_message('members',plan)
+                      +' Попросите владельца команды сменить тариф.')
+                return render_template('join_team.html',invite=invite,valid=False,roles=ROLES)
             session['workspace_id']=invite['workspace_id']
             flash('Вы присоединились к команде.')
             return redirect('/app')

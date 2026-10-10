@@ -8,7 +8,8 @@ from datetime import datetime, timedelta, timezone
 from . import accounts
 from .app import classify_for_config
 from .core import TOPIC_GROUPS, TOPICS, Lead, message, topics, budget
-from .billing import PLAN_NAMES, days_left, subscription_active, support_contact
+from .billing import (ANNUAL_DISCOUNT_PERCENT, PLAN_NAMES, PLANS, days_left, delay_clause, effective_plan,
+                      plan_limits, plan_summary, support_contact)
 from .drafts import reply_drafts
 
 MONITOR_ON='🔔 Мониторинг: вкл'
@@ -97,7 +98,7 @@ def register_text():
     terms,privacy=web_url('/terms'),web_url('/privacy')
     documents=f'\n\nОферта: {terms}\nПолитика конфиденциальности: {privacy}' if terms else ''
     return ('Сигналид находит заказы на ваши услуги в Telegram-чатах и на биржах и присылает их сюда за минуты. '
-            'Пробный период — 7 дней, без привязки карты.\n\n'
+            'Пробный период — 7 дней с полным доступом, затем бесплатный тариф. Карта не нужна.\n\n'
             'Нажимая «Зарегистрироваться», вы принимаете условия публичной оферты и даёте согласие '
             'на обработку персональных данных в соответствии с политикой конфиденциальности.'+documents)
 
@@ -244,27 +245,41 @@ def _send_card(db,sender,prefs,lead_id,lead,reason,matches,prefix=''):
     return True
 
 
-RECIPIENTS='''SELECT u.id,u.telegram_chat_id,u.registered_at,p.* FROM app_users u
+# Every active account receives leads: an ended trial or paid period continues on the Free plan.
+RECIPIENTS='''SELECT u.id,u.telegram_chat_id,u.registered_at,s.status AS sub_status,s.plan_code AS sub_plan,
+    s.ends_at AS sub_ends_at,p.* FROM app_users u
     JOIN user_preferences p ON p.user_id=u.id
     JOIN subscriptions s ON s.user_id=u.id
-    WHERE u.status='active' AND p.monitoring_active=true
-      AND s.status IN ('stub_active','trial','active')
-      AND (s.ends_at IS NULL OR s.ends_at>now())'''
+    WHERE u.status='active' AND p.monitoring_active=true'''
 UNSEEN='''l.status<>'duplicate' AND (l.origin_user_id IS NULL OR l.origin_user_id=?)
       AND NOT EXISTS (SELECT 1 FROM user_leads ul WHERE ul.user_id=? AND ul.lead_id=l.id)
       AND NOT EXISTS (SELECT 1 FROM user_leads seen JOIN leads original ON original.id=seen.lead_id
           WHERE seen.user_id=? AND seen.delivery_status<>'filtered' AND original.fingerprint=l.fingerprint)'''
 
 
+def recipient_limits(prefs):
+    """Plan limits of a RECIPIENTS row."""
+    return plan_limits(effective_plan({'status':prefs['sub_status'],'plan_code':prefs['sub_plan'],
+                                       'ends_at':prefs['sub_ends_at']}))
+
+
+def active_projects(db,user_id,limits):
+    """Enabled projects within the plan's quota; after a downgrade the oldest ones keep working."""
+    return db.execute('SELECT * FROM projects WHERE user_id=? AND enabled=true ORDER BY id LIMIT ?',
+                      (user_id,limits['projects'])).fetchall()
+
+
 def deliver_registered(db,base,sender,limit_per_user=1):
     users=db.execute(RECIPIENTS+' ORDER BY u.id').fetchall()
     delivered=0
     for prefs in users:
-        config=user_config(base,prefs);processed=0
-        projects=db.execute('SELECT * FROM projects WHERE user_id=? AND enabled=true ORDER BY id',(prefs['id'],)).fetchall()
+        config=user_config(base,prefs);processed=0;limits=recipient_limits(prefs)
+        projects=active_projects(db,prefs['id'],limits)
         # The live stream starts at registration; older leads reach a user only through the one-time first-run batch.
-        rows=db.execute('SELECT l.id,l.payload FROM leads l WHERE '+UNSEEN+''' AND l.first_seen::timestamptz >= ?
-            ORDER BY l.id DESC LIMIT 100''',(prefs['id'],prefs['id'],prefs['id'],prefs['registered_at'])).fetchall()
+        # Free plan: a lead becomes deliverable only once the plan's delay has passed since it was found.
+        delayed,delay_args=delay_clause(limits['delay_minutes'])
+        rows=db.execute('SELECT l.id,l.payload FROM leads l WHERE '+UNSEEN+' AND l.first_seen::timestamptz >= ?'+delayed+
+            ' ORDER BY l.id DESC LIMIT 100',[prefs['id'],prefs['id'],prefs['id'],prefs['registered_at']]+delay_args).fetchall()
         for row in rows:
             lead=Lead(**json.loads(row['payload']))
             allowed,reason,matches=_eligibility(lead,config,prefs,projects)
@@ -290,11 +305,12 @@ def backfill_first_leads(db,base,sender,user_id,limit=FIRST_RUN_LIMIT,hours=FIRS
     if not claimed:return 0
     if db.execute("SELECT 1 FROM user_leads WHERE user_id=? AND delivery_status IN ('sent','uncertain') LIMIT 1",(user_id,)).fetchone():
         return 0
-    config=user_config(base,prefs)
-    projects=db.execute('SELECT * FROM projects WHERE user_id=? AND enabled=true ORDER BY id',(user_id,)).fetchall()
+    config=user_config(base,prefs);limits=recipient_limits(prefs)
+    projects=active_projects(db,user_id,limits)
+    delayed,delay_args=delay_clause(limits['delay_minutes'])
     rows=db.execute('SELECT l.id,l.payload,l.fingerprint FROM leads l WHERE '+UNSEEN+''' AND
-        l.first_seen::timestamptz >= now()-(? * interval '1 hour') ORDER BY l.id DESC LIMIT 500''',
-        (user_id,user_id,user_id,hours)).fetchall()
+        l.first_seen::timestamptz >= now()-(? * interval '1 hour')'''+delayed+' ORDER BY l.id DESC LIMIT 500',
+        [user_id,user_id,user_id,hours]+delay_args).fetchall()
     candidates=[]
     for row in rows:
         lead=Lead(**json.loads(row['payload']))
@@ -338,11 +354,12 @@ def notify_subscriptions(db,sender,limit=20):
         trial=row['status']=='trial' or row['plan_code']=='trial'
         period='пробного периода' if trial else f"тарифа «{PLAN_NAMES.get(row['plan_code'],row['plan_code'])}»"
         if row['last_day']:
-            text=f'Сегодня последний день {period}: доступ закончится {when}.'
+            text=f'Сегодня последний день {period}: он закончится {when}.'
         else:
             text=('Пробный период' if trial else f"Оплаченный период {period}")+f' закончится {when}.'
         markup=billing_buttons()
-        text+=' Чтобы мониторинг и уведомления о заказах не остановились, выберите тариф.'
+        text+=(' Затем аккаунт перейдёт на бесплатный тариф: '+plan_summary('free')+
+               '. Чтобы заказы приходили сразу, выберите тариф.')
         if not markup:text+=' Это можно сделать в веб-кабинете, раздел «Подписка».'
         payload={'chat_id':str(row['telegram_chat_id']),'text':text}
         if markup:payload['reply_markup']=markup
@@ -408,7 +425,7 @@ class ProductController:
     def _user(self,telegram_id):
         return self.db.execute('''SELECT u.*,p.monitoring_active,p.min_budget,p.show_without_budget,
             p.show_possible_needs,p.topics,p.source_switches,p.profile_services,p.portfolio,p.state,
-            s.status AS subscription_status,s.plan_code,s.ends_at
+            s.status AS subscription_status,s.plan_code,s.ends_at,s.founder_price
             FROM app_users u JOIN user_preferences p ON p.user_id=u.id
             JOIN subscriptions s ON s.user_id=u.id WHERE u.telegram_user_id=?''',(telegram_id,)).fetchone()
 
@@ -470,14 +487,21 @@ class ProductController:
         return (heading+'\n\n'+'\n\n'.join(name+':\n'+text for name,text in drafts.items()))[:3900]
 
     def _subscription_text(self,user):
-        row={'status':user['subscription_status'],'ends_at':user['ends_at']}
-        name=PLAN_NAMES.get(user['plan_code'],user['plan_code'])
-        if not subscription_active(row):
-            line='Доступ приостановлен: пробный период или оплаченный срок закончился.'
+        row={'status':user['subscription_status'],'plan_code':user['plan_code'],'ends_at':user['ends_at']}
+        plan=effective_plan(row);name=PLAN_NAMES.get(plan,plan)
+        if plan=='free':
+            line=f'Тариф «{name}».'
+            if user['plan_code']!='free':line+=' Пробный период или оплаченный срок закончился, лиды и настройки сохранены.'
         elif days_left(row) is None:
             line=f'Тариф «{name}» активен.'
         else:
             line=f'Тариф «{name}». Осталось дней: {days_left(row)}.'
+        line+='\nЛимиты: '+plan_summary(plan)+'.'
+        if plan in ('free','trial'):
+            prices=', '.join(f"«{item['name']}» — {money(item['price'])} ₽/мес" for item in PLANS if item['price'])
+            line+=f'\n\nПлатные тарифы: {prices}. При оплате за год — скидка {ANNUAL_DISCOUNT_PERCENT}%.'
+            if user['founder_price'] is not None:
+                line+=f"\nДля участников беты: «Старт» за {money(user['founder_price'])} ₽/мес навсегда."
         contact=support_contact()
         if web_url('/app/billing'):tail='\n\nВыбрать или продлить тариф можно кнопкой ниже.'
         elif contact:tail=f'\n\nПродлить или сменить тариф — в веб-кабинете в разделе «Подписка» или у поддержки: @{contact}'
@@ -710,7 +734,7 @@ class ProductController:
             self._answer()
             if callback and callback.get('data')=='register:confirm':
                 user=self._register(actor,chat['id'],accepted_terms=True)
-                self.say('Регистрация завершена. Пробный период — 7 дней, без привязки карты.\n\n'
+                self.say('Регистрация завершена. Пробный период — 7 дней с полным доступом, затем бесплатный тариф.\n\n'
                          'Осталось выбрать услуги — это займёт минуту.',chat_id=chat_id)
                 self.say(*wizard_directions(selected_topics(user)),chat_id=chat_id)
             else:self.say(register_text(),REGISTER,chat_id)
@@ -718,10 +742,6 @@ class ProductController:
         with self.db:self.db.execute('UPDATE app_users SET last_seen_at=now() WHERE id=?',(user['id'],))
         if user['status']=='blocked':
             self._answer();self.say('Аккаунт заблокирован. Обратитесь в поддержку.');return
-        if not subscription_active({'status':user['subscription_status'],'ends_at':user['ends_at']}) and text!=BILLING:
-            self._answer()
-            self.say('Доступ приостановлен: пробный период или оплаченный срок закончился. '
-                     'Выберите тариф, чтобы снова получать заказы.',billing_buttons());return
         if callback:
             parts=callback.get('data','').split(':');action=parts[0]
             if action not in DEFERRED_ANSWER:self._answer()

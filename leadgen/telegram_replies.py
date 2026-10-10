@@ -5,7 +5,6 @@ import re
 import secrets
 from datetime import datetime, timedelta, timezone
 
-from .billing import subscription_active
 from .telegram_accounts import SessionCipher, TelegramAccountError, TelethonGateway
 
 
@@ -128,9 +127,6 @@ def authorized_lead(db, actor_id, owner_id, lead_id):
         (actor_id, owner_id, lead_id)).fetchone()
     if not row:
         raise TelegramAccountError('Лид недоступен или у вас нет права отправлять отклики.')
-    sub = db.execute('SELECT status,ends_at FROM subscriptions WHERE user_id=?', (owner_id,)).fetchone()
-    if not subscription_active(sub):
-        raise TelegramAccountError('Срок подписки закончился.')
     return json.loads(row['payload'])
 
 

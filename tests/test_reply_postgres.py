@@ -130,12 +130,9 @@ class ReplyPostgres(unittest.TestCase):
         row=self.prepare()
         with self.db:self.db.execute('UPDATE telegram_connections SET telegram_user_id=9003 WHERE user_id=?',(self.u,))
         with self.assertRaises(TelegramAccountError):replies.confirm(self.db,row['id'],self.u,self.u,self.cipher,self.gateway)
+        # An ended trial no longer blocks replies: the account continues on the Free plan.
         with self.db:
             self.db.execute('UPDATE telegram_connections SET telegram_user_id=9001 WHERE user_id=?',(self.u,))
-            self.db.execute("UPDATE subscriptions SET ends_at=now()-interval '1 second' WHERE user_id=?",(self.u,))
-        with self.assertRaises(TelegramAccountError):replies.confirm(self.db,row['id'],self.u,self.u,self.cipher,self.gateway)
-        with self.db:
-            self.db.execute("UPDATE subscriptions SET ends_at=now()+interval '1 day' WHERE user_id=?",(self.u,))
             self.db.execute("UPDATE user_leads SET delivery_status='filtered' WHERE user_id=?",(self.u,))
         with self.assertRaises(TelegramAccountError):replies.confirm(self.db,row['id'],self.u,self.u,self.cipher,self.gateway)
         self.assertFalse(self.gateway.sent)

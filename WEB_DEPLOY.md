@@ -76,8 +76,9 @@ WEB_ADMIN_TELEGRAM_IDS=ваш_числовой_Telegram_ID
 TELEGRAM_SESSION_ENCRYPTION_KEY=отдельный_ключ_шифрования_Fernet
 GROQ_API_KEY=новый_ключ_из_консоли_Groq
 GROQ_MODEL=openai/gpt-oss-120b
-GROQ_DAILY_DRAFT_LIMIT=20
 ```
+
+Дневные лимиты AI-откликов зависят от тарифа и задаются в `leadgen/billing.py`; `GROQ_DAILY_DRAFT_LIMIT` больше не используется.
 
 Создать секрет:
 

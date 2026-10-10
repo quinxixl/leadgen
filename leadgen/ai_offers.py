@@ -117,10 +117,11 @@ def groq_offer_drafts(lead,profile_services='',portfolio='',settings=None,api_ke
     return apply_draft_rules(drafts,settings),payload.get('usage',{})
 
 
-def _daily_limit():
-    try:value=int(os.environ.get('GROQ_DAILY_DRAFT_LIMIT','20'))
-    except ValueError:value=20
-    return max(1,min(200,value))
+def daily_limit(db,owner_user_id):
+    """AI drafts per 24 hours come from the workspace owner's plan."""
+    from .billing import owner_plan,plan_limits
+    plan=owner_plan(db,owner_user_id)
+    return plan_limits(plan)['drafts'],plan
 
 
 def generate_for_lead(db,workspace_id,owner_user_id,requested_by,lead_id,lead,
@@ -147,7 +148,11 @@ def generate_for_lead(db,workspace_id,owner_user_id,requested_by,lead_id,lead,
         count=db.execute("SELECT count(*) AS n FROM ai_offer_generations WHERE owner_user_id=? AND created_at>now()-interval '1 day'",
                          (owner_user_id,)).fetchone()['n']
         if recent:raise AIOfferError('Предыдущая генерация ещё обрабатывается. Подождите 10 секунд.')
-        if count>=_daily_limit():raise AIOfferError('Дневной лимит AI-офферов исчерпан. Попробуйте завтра.')
+        limit,plan=daily_limit(db,owner_user_id)
+        if count>=limit:
+            from .billing import limit_message
+            raise AIOfferError('Дневной лимит AI-откликов исчерпан. '+limit_message('drafts',plan)
+                               +' Лимит обновляется в течение суток.')
         row=db.execute('''INSERT INTO ai_offer_generations
             (workspace_id,owner_user_id,lead_id,project_id,requested_by,model,prompt_fingerprint)
             VALUES(?,?,?,?,?,?,?) RETURNING id''',

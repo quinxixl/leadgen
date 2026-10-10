@@ -55,8 +55,10 @@ class WebPostgres(unittest.TestCase):
     def setUpClass(cls):
         from urllib.parse import urlsplit
         url=urlsplit(DSN)
-        if url.hostname!='127.0.0.1' or url.port!=55439 or url.path!='/leadfinder_web_test':
-            raise RuntimeError('Use only the disposable local test database on port 55439')
+        # A parallel checkout may run its own disposable server on another loopback port.
+        port=int(os.environ.get('WEB_TEST_DATABASE_PORT','55439'))
+        if url.hostname!='127.0.0.1' or url.port!=port or url.path!='/leadfinder_web_test':
+            raise RuntimeError('Use only the disposable local test database on port '+str(port))
         cls.db=db_open(DSN)
         for role in ('anon','authenticated'):
             if not cls.db.execute('SELECT 1 FROM pg_roles WHERE rolname=?',(role,)).fetchone():
@@ -87,12 +89,14 @@ class WebPostgres(unittest.TestCase):
         if not cls.db.execute("SELECT to_regclass('leadgen.telegram_replies') AS name").fetchone()['name']:
             cls.db.connection.execute(Path('supabase/migrations/20261005070330_telegram_replies.sql').read_text(),prepare=False)
         cls.db.connection.execute(Path('supabase/migrations/20261007120000_onboarding_foundation.sql').read_text(),prepare=False)
+        cls.db.connection.execute(Path('supabase/migrations/20261010120000_free_tier_and_founder_price.sql').read_text(),prepare=False)
         cls.db.commit()
         cls.app=create_app({'TESTING':True,'SECRET_KEY':'test-'*10,'BOT_USERNAME':'test_bot',
             'SESSION_COOKIE_SECURE':False,'DB_FACTORY':lambda:db_open(DSN),
             'TELEGRAM_CIPHER_KEY':Fernet.generate_key().decode(),
             'TELEGRAM_GATEWAY_FACTORY':FakeTelegramGateway,
             'AI_OFFER_GENERATOR':fake_ai_generator,
+            'INTEGRATIONS_ENABLED':True,
             'WEBHOOK_RESOLVER':lambda *args,**kwargs:[(2,1,6,'',('93.184.216.34',443))]})
 
     @classmethod
@@ -131,16 +135,17 @@ class WebPostgres(unittest.TestCase):
         self.assertEqual(self.client.get(f'/app/leads/{self.ids[1]}').status_code,404)
         self.assertEqual(self.client.get('/admin').status_code,403)
 
-    def test_trial_then_expired_subscription_redirects_to_billing(self):
+    def test_expired_trial_falls_back_to_free_instead_of_paywall(self):
         sub=self.db.execute('SELECT status,ends_at FROM subscriptions WHERE user_id=?',(self.u,)).fetchone()
         self.assertEqual(sub['status'],'trial');self.assertIsNotNone(sub['ends_at'])
-        self.assertEqual(self.client.get('/app/leads').status_code,200)
+        self.assertIn('Пробный период',self.client.get('/app/billing').text)
         with self.db:self.db.execute("UPDATE subscriptions SET ends_at=now()-interval '1 minute' WHERE user_id=?",(self.u,))
-        r=self.client.get('/app/leads');self.assertEqual(r.status_code,302);self.assertTrue(r.location.endswith('/app/billing'))
-        r=self.client.post(f'/app/leads/{self.ids[0]}',data={'csrf':'test-csrf','status':'won'})
-        self.assertEqual(r.status_code,302)
-        self.assertEqual(self.db.execute('SELECT pipeline_status FROM user_leads WHERE lead_id=?',(self.ids[0],)).fetchone()['pipeline_status'],'saved')
-        self.assertEqual(self.client.get('/app/billing').status_code,200)
+        # The cabinet stays open; the lead found an hour ago is visible, limits are the Free ones.
+        with self.db:self.db.execute("UPDATE leads SET first_seen=(now()-interval '2 hours')::text")
+        r=self.client.get('/app/leads');self.assertEqual(r.status_code,200);self.assertIn('Нужен сайт 0',r.text)
+        page=self.client.get('/app/billing').text
+        self.assertIn('Бесплатный',page);self.assertIn('работает на бесплатном тарифе',page)
+        self.assertIn('Ваш тариф',page)
 
     def test_login_rate_limited_per_ip(self):
         with self.db:self.db.execute("DELETE FROM settings WHERE key LIKE ?",('rl:%',))
@@ -433,6 +438,7 @@ class WebPostgres(unittest.TestCase):
         self.assertEqual([item['chat_id'] for item in sent],['1'])
 
     def test_team_invite_roles_shared_leads_and_assignment(self):
+        with self.db:self.db.execute("UPDATE subscriptions SET status='active',plan_code='team',ends_at=NULL WHERE user_id=?",(self.u,))
         response=self.client.post('/app/team/invite',data={'csrf':'test-csrf','role':'manager'})
         self.assertEqual(response.status_code,302)
         with self.client.session_transaction() as state:
@@ -495,6 +501,7 @@ class WebPostgres(unittest.TestCase):
         self.assertFalse(self.db.execute('SELECT 1 FROM lead_tags WHERE user_id=? AND lead_id=?',
                                          (self.u,self.ids[0])).fetchone())
 
+    @patch.dict(os.environ,{'INTEGRATIONS_ENABLED':'1'})
     def test_api_tokens_and_signed_webhook_delivery(self):
         import hashlib,hmac
         from leadgen.integrations import deliver_webhooks

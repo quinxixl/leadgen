@@ -241,21 +241,20 @@ class BotUX(unittest.TestCase):
         self.text('📈 Статистика')
         self.assertIn('Воронка',self.calls('sendMessage')[-1]['text'])
 
-    def test_latest_without_leads_and_suspended_access_buttons(self):
+    def test_latest_without_leads_and_free_plan_after_trial(self):
         with self.db:self.db.execute('DELETE FROM user_leads WHERE user_id=?',(self.u,))
         self.text(LATEST)
         self.assertIn('Пока нет присланных заказов',self.calls('sendMessage')[-1]['text'])
         with self.db:self.db.execute("UPDATE subscriptions SET ends_at=now()-interval '1 minute' WHERE user_id=?",(self.u,))
+        # An ended trial does not block the bot: the account continues on the Free plan.
         self.text(LATEST)
-        blocked=self.calls('sendMessage')[-1]
-        self.assertIn('Доступ приостановлен',blocked['text'])
-        self.assertEqual(buttons(blocked['reply_markup']),[{'text':'Выбрать тариф','url':'https://signalid.test/app/billing'},
-                                                          {'text':'Поддержка','url':'https://t.me/signalid_help'}])
-        self.callback(f'feedback:fit:{self.ids[0]}')
-        self.assertIn('Доступ приостановлен',self.calls('sendMessage')[-1]['text'])
-        self.assertEqual(len(self.calls('answerCallbackQuery')),1)
+        self.assertIn('Пока нет присланных заказов',self.calls('sendMessage')[-1]['text'])
         self.text('💳 Подписка')
-        self.assertEqual(buttons(self.calls('sendMessage')[-1]['reply_markup'])[0]['text'],'Выбрать тариф')
+        reply=self.calls('sendMessage')[-1]
+        self.assertIn('Тариф «Бесплатный»',reply['text']);self.assertIn('проектов: 1',reply['text'])
+        self.assertIn('«Старт» — 990 ₽/мес',reply['text']);self.assertIn('скидка 20%',reply['text'])
+        self.assertEqual(buttons(reply['reply_markup']),[{'text':'Выбрать тариф','url':'https://signalid.test/app/billing'},
+                                                         {'text':'Поддержка','url':'https://t.me/signalid_help'}])
 
     def test_trial_reminders_fire_once_per_window(self):
         with self.db:
@@ -264,6 +263,7 @@ class BotUX(unittest.TestCase):
         sent=[];send=lambda method,data:sent.append(data)
         self.assertEqual(notify_subscriptions(self.db,send),1)
         self.assertEqual(sent[0]['chat_id'],'1');self.assertIn('Пробный период закончится',sent[0]['text'])
+        self.assertIn('перейдёт на бесплатный тариф',sent[0]['text'])
         self.assertEqual(buttons(sent[0]['reply_markup']),[{'text':'Выбрать тариф','url':'https://signalid.test/app/billing'},
                                                           {'text':'Поддержка','url':'https://t.me/signalid_help'}])
         self.assertEqual(notify_subscriptions(self.db,send),0)

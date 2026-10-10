@@ -1,4 +1,7 @@
-"""Workspace API tokens and signed HTTPS webhook delivery."""
+"""Workspace API tokens and signed HTTPS webhook delivery.
+
+Switched off for now: without INTEGRATIONS_ENABLED=1 the /api and /app/integrations routes are not
+registered (404), no webhook events are queued and none are delivered. Tables and data are kept."""
 import hashlib
 import hmac
 import http.client
@@ -16,6 +19,10 @@ from .core import Lead, enrich
 from .product import FEEDBACK, PIPELINE
 from .teams import EDIT_SETTINGS, require_role
 from .telegram_accounts import SessionCipher, TelegramAccountError
+
+
+def integrations_enabled():
+    return os.environ.get('INTEGRATIONS_ENABLED','').strip()=='1'
 
 
 def token_hash(token):return hashlib.sha256(token.encode()).hexdigest()
@@ -72,6 +79,7 @@ def send_webhook(url,body,headers,resolver=socket.getaddrinfo):
 
 
 def enqueue_lead_event(db,owner_user_id,lead_id,event_type='lead.updated'):
+    if not integrations_enabled():return 0
     row=db.execute('''SELECT w.id AS workspace_id,l.payload,ul.pipeline_status,ul.deal_amount,
         f.label AS feedback,a.assignee_user_id,
         coalesce((SELECT jsonb_agg(t.tag ORDER BY t.tag) FROM lead_tags t
@@ -103,6 +111,7 @@ def enqueue_lead_event(db,owner_user_id,lead_id,event_type='lead.updated'):
 
 
 def deliver_webhooks(db,cipher_key,sender=send_webhook,resolver=socket.getaddrinfo,limit=5):
+    if not integrations_enabled():return 0
     cipher=SessionCipher(cipher_key);delivered=0
     with db:db.execute("UPDATE webhook_outbox SET status='failed',last_error='Предыдущая отправка прервана' WHERE status='processing' AND next_attempt_at<now()-interval '5 minutes'")
     for _ in range(limit):
@@ -145,6 +154,7 @@ def api_identity(db):
 
 
 def register_integrations(app,db):
+    if not app.config.get('INTEGRATIONS_ENABLED'):return
     @app.get('/app/integrations')
     def integrations_page():
         require_role(*EDIT_SETTINGS)
