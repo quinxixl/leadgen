@@ -21,5 +21,6 @@
 <main class="tg">
 {% for category,message in get_flashed_messages(with_categories=true) %}<p class="tg-flash {{ category }}" role="status"{% if category in ('success','error') %} data-haptic="{{ category }}"{% endif %}>{{ message }}</p>{% endfor %}
 {% block content %}{% endblock %}
+{% if user and user.terms_accepted_at and request.path!='/tg/feedback' %}<p class="hint small center"><a href="/tg/feedback">💬 Обратная связь</a></p>{% endif %}
 </main>
 </body></html>

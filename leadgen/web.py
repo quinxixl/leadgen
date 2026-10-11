@@ -668,7 +668,8 @@ def create_app(test_config=None):
         if not is_platform_admin(g.user):abort(403)
         health=db().execute('SELECT * FROM health ORDER BY source').fetchall()
         users=db().execute('SELECT display_name,status,registered_at,last_seen_at FROM app_users ORDER BY id DESC LIMIT 100').fetchall()
-        return render_template('admin.html',health=health,users=users)
+        from . import feedback as fb
+        return render_template('admin.html',health=health,users=users,feedback_rows=fb.recent(db()),fb=fb)
 
     @app.errorhandler(400)
     @app.errorhandler(403)
@@ -709,4 +710,6 @@ def create_app(test_config=None):
     register_demand(app,db)
     from .web_tg import register_tg_routes
     register_tg_routes(app,db)
+    from .feedback import register_feedback_routes
+    register_feedback_routes(app,db)
     return app

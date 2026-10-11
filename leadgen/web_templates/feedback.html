@@ -1,0 +1,12 @@
+{% extends 'base.html' %}{% block title %}Обратная связь — Сигналид{% endblock %}
+{% block content %}
+<p class="eyebrow">Бета-тест</p><h1>Обратная связь</h1>
+<section class="panel narrow">
+<p class="muted">Идея, ошибка или вопрос — сообщение получит команда Сигналид. Мы читаем всё.</p>
+<form method="post"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="context" value="{{ context }}">
+<label>Тип<select name="kind">{% for key,label in kinds.items() %}<option value="{{ key }}"{% if key==kind %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+<label>Сообщение<textarea name="text" rows="6" maxlength="4000" required>{{ text }}</textarea></label>
+<button>Отправить</button>
+</form>
+</section>
+{% endblock %}

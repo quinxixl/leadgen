@@ -290,6 +290,13 @@ def run_bot(db,config):
                             # Trial reminders are optional; only RuntimeError is survivable in this loop.
                             print('Напоминания о подписке: '+type(exc).__name__,flush=True)
                             db.connection.rollback()
+                        try:
+                            from .feedback import send_surveys
+                            send_surveys(db,telegram)
+                        except Exception as exc:
+                            # Beta surveys are optional and must never stop lead delivery.
+                            print('Опрос беты: '+type(exc).__name__,flush=True)
+                            db.connection.rollback()
                     if time.monotonic()>=next_first_run_check:
                         # Before the live stream: monitoring enabled on the site gets the welcome batch too.
                         next_first_run_check=time.monotonic()+10
@@ -299,6 +306,13 @@ def run_bot(db,config):
                         except RuntimeError:raise
                         except Exception as exc:
                             print('Первые лиды: '+type(exc).__name__,flush=True)
+                            db.connection.rollback()
+                        try:
+                            from .feedback import deliver_notifications
+                            deliver_notifications(db,telegram)
+                        except Exception as exc:
+                            # Feedback is already saved; only the owner notification is skipped.
+                            print('Уведомление об обратной связи: '+type(exc).__name__,flush=True)
                             db.connection.rollback()
                 if ui.get('active',False) or ui.drain:
                     if product_mode:
