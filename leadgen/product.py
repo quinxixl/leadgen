@@ -19,6 +19,7 @@ SETUP='🎯 Услуги и бюджет'
 CABINET='🌐 Кабинет'
 BILLING='💳 Подписка'
 HELP='❓ Помощь'
+FEEDBACK_ENTRY='💬 Обратная связь'
 # Labels of the previous menu. Clients keep showing them until a message carries the new keyboard.
 LEGACY_LABELS=('▶️ Начать','⏸ Пауза','📥 Лиды','🗂 Воронка','🎯 Услуги','💰 Фильтры',
                '➕ Добавить чат','🔌 Аккаунт','🧰 Портфолио','📈 Статистика')
@@ -34,7 +35,7 @@ def menu(active=False):
 
 
 MENU=menu(False)
-MENU_TEXTS={MONITOR_ON,MONITOR_OFF,LATEST,SETUP,CABINET,BILLING,HELP,*LEGACY_LABELS}
+MENU_TEXTS={MONITOR_ON,MONITOR_OFF,LATEST,SETUP,CABINET,BILLING,HELP,FEEDBACK_ENTRY,*LEGACY_LABELS}
 REGISTER={'inline_keyboard':[[{'text':'Зарегистрироваться','callback_data':'register:confirm'}]]}
 PUBLIC_CHAT=re.compile(r'^(?:https?://t\.me/|@)?([A-Za-z][A-Za-z0-9_]{3,})/?$')
 from .crm import PIPELINE, REMIND_DAYS, normalize as normalize_status
@@ -759,7 +760,37 @@ class ProductController:
         rows=[[{'text':'📈 Статистика','callback_data':'stats'},{'text':'💰 Результаты','callback_data':'results'}]]
         extra=[button for button in (web_button('🌐 Кабинет','/app','/tg'),support_button()) if button]
         if extra:rows.append(extra)
-        self.say(text,{'inline_keyboard':rows})
+        rows.append([{'text':FEEDBACK_ENTRY,'callback_data':'fbk:start'}])
+        self.say(text+'\n\nИдея или ошибка? /feedback — сообщение получит команда Сигналид.',{'inline_keyboard':rows})
+
+    def _product_feedback_start(self):
+        from .feedback import KINDS
+        self.say('Что хотите сообщить команде Сигналид?',{'inline_keyboard':[
+            [{'text':label,'callback_data':'fbk:'+key} for key,label in KINDS.items()]]})
+
+    def _product_feedback_callback(self,user,parts):
+        from .feedback import KINDS
+        if len(parts)!=2:return
+        if parts[1]=='start':return self._product_feedback_start()
+        if parts[1] not in KINDS:return
+        self._update_pref(user['id'],'state',json.dumps({'await':'product_feedback','kind':parts[1]}))
+        self.say(f'«{KINDS[parts[1]]}». Напишите сообщение одним текстом. /cancel — отменить.')
+
+    def _survey_callback(self,user,parts):
+        from . import feedback as fb
+        if len(parts)<3 or parts[1] not in fb.SURVEYS:return
+        survey,step=parts[1],parts[2]
+        if step in ('a','p') and len(parts)==4:
+            field='disappointment' if step=='a' else 'price'
+            if not fb.survey_answer(self.db,user['id'],survey,field,parts[3]):return self.say('Опрос не найден.')
+            self._edit_markup({'inline_keyboard':[]})
+            if step=='a':return self.say(fb.SURVEY_Q2,fb.survey_markup(survey,'p'))
+            self._update_pref(user['id'],'state',json.dumps({'await':'survey_text','survey':survey}))
+            return self.say(fb.SURVEY_Q3,fb.survey_markup(survey,'text'))
+        if step=='skip' and len(parts)==3:
+            self._edit_markup({'inline_keyboard':[]})
+            self._update_pref(user['id'],'state',json.dumps({}))
+            if fb.survey_finish(self.db,user['id'],survey):self.say('Спасибо за ответы! Они помогают нам решить, что делать дальше.')
 
     def _moved(self,label):
         """Old menu sections now live in the cabinet; the reply carries the new keyboard."""
@@ -898,6 +929,8 @@ class ProductController:
                 else:self.say('Лид не найден.')
             elif action=='subscribe':
                 self.say(self._subscription_text(user),billing_buttons())
+            elif action=='fbk':self._product_feedback_callback(user,parts)
+            elif action=='sv':self._survey_callback(user,parts)
             return
         state=user['state'] if isinstance(user['state'],dict) else json.loads(user['state'])
         if text=='/cancel':
@@ -929,6 +962,18 @@ class ProductController:
             from .crm import save_note
             save_note(self.db,user['id'],state['lead_id'],text)
             self._update_pref(user['id'],'state',json.dumps({}));self.say('Заметка сохранена.');return
+        if state.get('await')=='product_feedback':
+            from .feedback import save
+            try:save(self.db,user['id'],state.get('kind',''),text,'bot','bot:'+state.get('kind',''))
+            except ValueError as exc:self.say(str(exc)+' /cancel — отменить.');return
+            self._update_pref(user['id'],'state',json.dumps({}))
+            self.say('Спасибо! Сообщение отправлено команде Сигналид.');return
+        if state.get('await')=='survey_text':
+            from .feedback import survey_finish
+            if not text:self.say('Напишите ответ текстом или нажмите «Пропустить».');return
+            survey_finish(self.db,user['id'],state.get('survey',''),text)
+            self._update_pref(user['id'],'state',json.dumps({}))
+            self.say('Спасибо за ответы! Они помогают нам решить, что делать дальше.');return
         if state.get('await')=='portfolio':self._update_pref(user['id'],'portfolio',text[:3000]);self._update_pref(user['id'],'state',json.dumps({}));self.say('Примеры работ сохранены.');return
         if state.get('await')=='chat':
             match=PUBLIC_CHAT.match(text);self._update_pref(user['id'],'state',json.dumps({}))
@@ -955,6 +1000,7 @@ class ProductController:
         elif text==CABINET:self._cabinet()
         elif text==BILLING:self.say(self._subscription_text(user),billing_buttons())
         elif text==HELP:self._help()
+        elif text==FEEDBACK_ENTRY or command=='/feedback':self._product_feedback_start()
         elif text in ('📈 Статистика','🗂 Воронка'):self._stats(user['id'])
         elif command in ('/results','/stats'):self._results(user['id'])
         elif text in ('➕ Добавить чат','🔌 Аккаунт','🧰 Портфолио'):self._moved(text)
