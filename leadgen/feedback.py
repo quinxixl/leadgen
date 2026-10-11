@@ -1,6 +1,8 @@
 """Product feedback (bot, cabinet, Mini App), beta surveys and owner notifications."""
 import os
 
+from .observability import capture_exception
+
 KINDS={'idea':'Идея','bug':'Ошибка','other':'Другое'}
 SOURCES={'bot':'Бот','web':'Сайт','miniapp':'Mini App'}
 STATUSES={'new':'Новый','seen':'Просмотрен','done':'Готово'}
@@ -78,7 +80,9 @@ def deliver_notifications(db,sender,limit=5):
         text=describe(row)
         for chat in chats:
             try:sender('sendMessage',{'chat_id':chat,'text':text,'disable_web_page_preview':True})
-            except Exception as exc:print('Уведомление об обратной связи: '+type(exc).__name__,flush=True)
+            except Exception as exc:
+                capture_exception(exc,component='feedback_notifications')
+                print('Уведомление об обратной связи: '+type(exc).__name__,flush=True)
             else:sent+=1
     return sent
 
@@ -113,7 +117,9 @@ def send_surveys(db,sender,limit=20):
             if not claimed:continue
             text=('Небольшой опрос участников беты — три вопроса, меньше минуты.\n\n'+SURVEY_Q1)
             try:sender('sendMessage',{'chat_id':str(row['telegram_chat_id']),'text':text,'reply_markup':survey_markup(survey,'a')})
-            except Exception as exc:print('Опрос беты: '+type(exc).__name__,flush=True)
+            except Exception as exc:
+                capture_exception(exc,component='beta_surveys',user_id=row['id'])
+                print('Опрос беты: '+type(exc).__name__,flush=True)
             else:sent+=1
     return sent
 
