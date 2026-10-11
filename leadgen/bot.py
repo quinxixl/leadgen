@@ -76,9 +76,10 @@ class Controller:
         for source in self.config()['sources']:
             if source['kind']=='pending':continue
             keys.append([{'text':('✅ ' if source['enabled'] else '⬜️ ')+source['name'],'callback_data':'source:'+source['id']}])
+        from .source_registry import read_count
         registry={row['status']:row['total'] for row in self.db.execute('SELECT status,count(*) AS total FROM telegram_sources GROUP BY status')}
-        note=(f"\n\nTelegram-база: {sum(registry.values())} источников; "
-              f"активны {registry.get('active',0)}, ожидают проверки {registry.get('pending',0)+registry.get('retry',0)}.")
+        note=(f"\n\nTelegram: служебный аккаунт читает {read_count(self.db)} чатов в реальном времени; "
+              f"в базе {sum(registry.values())} источников, ожидают проверки {registry.get('pending',0)+registry.get('retry',0)}.")
         self.say('Источники. hh показывает проектные вакансии только на проверке. Авито и Kwork пока недоступны.'+note,{'inline_keyboard':keys})
 
     def listing(self,review=False,page=0):
@@ -176,8 +177,10 @@ class Controller:
             if uncertain:lines.append(f'Не подтверждена отправка {uncertain} объявлений; проверьте историю чата.')
             registry={row['status']:row['total'] for row in self.db.execute('SELECT status,count(*) AS total FROM telegram_sources GROUP BY status')}
             if registry:
-                lines.append(f"Telegram-база: активны {registry.get('active',0)}, неактивны {registry.get('inactive',0)}, "
-                             f"не чаты {registry.get('not_chat',0)}, ждут проверки {registry.get('pending',0)+registry.get('retry',0)}")
+                from .source_registry import read_count
+                lines.append(f"Telegram: служебный аккаунт читает {read_count(self.db)} чатов; в базе активны {registry.get('active',0)}, "
+                             f"неактивны {registry.get('inactive',0)}, не чаты {registry.get('not_chat',0)}, "
+                             f"ждут проверки {registry.get('pending',0)+registry.get('retry',0)}")
                 from .telegram_monitor import reader_configured, reader_status
                 state=reader_status(self.db)['state']
                 reader=('нужна однократная настройка Telegram-аккаунта' if not reader_configured() else

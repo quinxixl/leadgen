@@ -663,11 +663,13 @@ def create_app(test_config=None):
 
     @app.get('/app/sources')
     def sources():
+        # Only enabled rows: chats the shared service account follows and reads in real time.
+        from .source_registry import read_count
         q=request.args.get('q','')[:100]
-        rows=db().execute('''SELECT username,title,members,online,checked_at,last_message_at,check_reason
+        rows=db().execute('''SELECT username,title,members,last_message_at
             FROM telegram_sources WHERE enabled=1 AND status='active' AND title ILIKE ? ESCAPE '\\'
-            ORDER BY priority,online DESC LIMIT 100''',(like_pattern(q),)).fetchall()
-        return render_template('sources.html',rows=rows)
+            ORDER BY last_message_at DESC NULLS LAST,title LIMIT 100''',(like_pattern(q),)).fetchall()
+        return render_template('sources.html',rows=rows,total=read_count(db()))
 
     @app.get('/admin')
     def admin():

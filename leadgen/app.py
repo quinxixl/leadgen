@@ -181,7 +181,8 @@ def status(db):
     from .telegram_monitor import SESSION_FILE, reader_status
     counts = {row['status']:row['total'] for row in db.execute('SELECT status,count(*) AS total FROM leads GROUP BY status')}
     registry = {row['status']:row['total'] for row in db.execute('SELECT status,count(*) AS total FROM telegram_sources GROUP BY status')}
-    enabled = db.execute('SELECT count(*) AS total FROM telegram_sources WHERE enabled=1').fetchone()['total']
+    from .source_registry import read_count
+    enabled = read_count(db)  # chats the service account reads; registry statuses are public-page checks
     reader = reader_status(db) | {'session_file': SESSION_FILE.exists()}
     print(json.dumps({'counts':counts,'sources':[dict(r) for r in db.execute('SELECT * FROM health')],
                       'telegram_registry':registry,'telegram_enabled':enabled,'telegram_reader':reader},ensure_ascii=False,indent=2))

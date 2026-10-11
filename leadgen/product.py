@@ -979,10 +979,10 @@ class ProductController:
             match=PUBLIC_CHAT.match(text);self._update_pref(user['id'],'state',json.dumps({}))
             if not match:self.say('Нужна публичная ссылка вида https://t.me/example_chat или @example_chat.');return
             username=match.group(1).lower();source=self.db.execute("SELECT username FROM telegram_sources WHERE username=? AND enabled=1 AND status='active'",(username,)).fetchone()
-            if not source:self.say('Этот чат пока не входит в проверенный realtime-реестр.');return
+            if not source:self.say('Служебный аккаунт сервиса пока не читает этот чат. Доступные чаты — в каталоге чатов в личном кабинете.');return
             with self.db:self.db.execute('''INSERT INTO user_chat_sources(user_id,username) VALUES(?,?)
                 ON CONFLICT(user_id,username) DO UPDATE SET enabled=true''',(user['id'],username))
-            self.say('Чат добавлен. Сообщения поступят, если мониторинговый Telegram-аккаунт состоит в этой группе.');return
+            self.say('Чат добавлен: служебный аккаунт читает его в реальном времени.');return
         command=text.split(' ',1)[0]
         if command in ('/start','/menu'):
             if self._needs_onboarding(user):

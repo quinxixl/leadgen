@@ -158,6 +158,60 @@ class WebPostgres(unittest.TestCase):
                 self.db.execute("DELETE FROM telegram_sources WHERE username='pg_joined_channel'")
                 self.db.execute('DELETE FROM settings WHERE key=?',('reader:heartbeat',))
 
+    def test_migration_disables_unjoined_sources_only(self):
+        from leadgen.source_registry import JOINED_REASON, NOT_JOINED_REASON
+        from leadgen.telegram_monitor import register_joined_chat
+        sql=Path('supabase/migrations/20261011150000_disable_unjoined_sources.sql').read_text()
+        rows={'pgmig_unjoined':('Потенциальные клиенты','Бизнес','{"risks": ""}',1),
+              'pgmig_false':('Требуют проверки','Бизнес','{"joined": false}',1),
+              'pgmig_meta':('Требуют проверки','Бизнес','{"risks": "x", "joined": true, "kind": "channel"}',1),
+              'pgmig_compact':('Требуют проверки',None,'{"joined":true}',1),
+              'pgmig_group':('joined','joined','{}',1),
+              'pgmig_segment':('Потенциальные клиенты','joined','{}',1),
+              'pgmig_off':('Потенциальные клиенты','Бизнес','{}',0)}
+        names=list(rows)
+        def state():
+            return {r['username']:(r['enabled'],r['check_reason']) for r in self.db.execute(
+                'SELECT username,enabled,check_reason FROM telegram_sources WHERE username=ANY(?)',(names,))}
+        try:
+            for username,(group,segment,metadata,enabled) in rows.items():
+                self.db.execute('''INSERT INTO telegram_sources(username,url,title,segment,selection_group,status,enabled,check_reason,metadata)
+                    VALUES(?,?,?,?,?,'active',?,'83 онлайн при проверке',?)''',
+                    (username,'https://t.me/'+username,username,segment,group,enabled,metadata))
+            self.db.connection.execute(sql,prepare=False)
+            kept=(1,'83 онлайн при проверке')
+            self.assertEqual(state(),{'pgmig_unjoined':(0,NOT_JOINED_REASON),'pgmig_false':(0,NOT_JOINED_REASON),
+                'pgmig_meta':kept,'pgmig_compact':kept,'pgmig_group':kept,'pgmig_segment':kept,
+                'pgmig_off':(0,'83 онлайн при проверке')})
+            self.assertEqual(self.db.connection.execute(sql,prepare=False).rowcount,0)  # idempotent
+            self.assertEqual(len(state()),7)  # nothing deleted
+            # The reader re-enables a disabled chat once the service account follows it; a re-run keeps it.
+            self.assertTrue(register_joined_chat(self.db,'pgmig_unjoined','Чат','group'))
+            self.db.connection.execute(sql,prepare=False)
+            self.assertEqual(state()['pgmig_unjoined'],(1,JOINED_REASON))
+        finally:
+            self.db.connection.rollback()
+
+    def test_catalog_lists_only_chats_the_service_account_reads(self):
+        from leadgen.source_registry import NOT_JOINED_REASON, read_count
+        try:
+            with self.db:
+                self.db.execute('''INSERT INTO telegram_sources(username,url,title,segment,selection_group,status,enabled,check_reason,last_message_at,metadata)
+                    VALUES('pgcat_read','https://t.me/pgcat_read','Читаемый канал заказов','joined','joined','active',1,'получено в реальном времени',?,'{"joined": true, "kind": "channel"}')''',
+                    (datetime.now(timezone.utc).isoformat(),))
+                self.db.execute('''INSERT INTO telegram_sources(username,url,title,selection_group,members,online,status,enabled,check_reason,metadata)
+                    VALUES('pgcat_unread','https://t.me/pgcat_unread','Старый каталог','Потенциальные клиенты',900,40,'active',0,?,'{}')''',
+                    (NOT_JOINED_REASON,))
+            page=self.client.get('/app/sources').text
+            self.assertIn('Читаемый канал заказов',page);self.assertNotIn('Старый каталог',page)
+            self.assertIn('читаются в реальном времени',page)
+            self.assertIn(f'<span class="count">{read_count(self.db)}</span>',page)
+            self.assertIn('Читаемый канал заказов',self.client.get('/app/sources',query_string={'q':'канал заказов'}).text)
+            found=self.client.get('/app/sources',query_string={'q':'Старый'}).text
+            self.assertNotIn('Старый каталог',found);self.assertIn('Чаты не найдены',found)
+        finally:
+            with self.db:self.db.execute("DELETE FROM telegram_sources WHERE username IN ('pgcat_read','pgcat_unread')")
+
     def test_expired_trial_falls_back_to_free_instead_of_paywall(self):
         sub=self.db.execute('SELECT status,ends_at FROM subscriptions WHERE user_id=?',(self.u,)).fetchone()
         self.assertEqual(sub['status'],'trial');self.assertIsNotNone(sub['ends_at'])

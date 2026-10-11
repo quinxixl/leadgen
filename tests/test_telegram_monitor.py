@@ -125,6 +125,27 @@ class Registration(DbCase):
         self.assertEqual(apply_monitor_policy(self.db), 2)
         self.assertEqual(self.source('old_chan')['enabled'], 1)
 
+    def test_chat_disabled_as_unjoined_is_reenabled_when_the_account_reads_it(self):
+        from leadgen.source_registry import NOT_JOINED_REASON
+        with self.db:
+            for username in ('synced_chat', 'live_chat', 'not_followed'):
+                self.db.execute('''INSERT INTO telegram_sources(username,url,title,selection_group,status,enabled,check_reason,metadata)
+                    VALUES(?,?,?,'Потенциальные клиенты','active',0,?,'{"risks":""}')''',
+                    (username, 'https://t.me/'+username, username, NOT_JOINED_REASON))
+        # The dialog sync (on connect and hourly) re-enables a followed chat...
+        dialogs = [SimpleNamespace(is_user=False, entity=chat('Synced_Chat', 'Синхронизирован', broadcast=False))]
+        self.assertEqual(asyncio.run(tm.sync_dialogs(FakeClient(dialogs=dialogs), self.path, tm.new_state())), (1, 1))
+        # ...and so does a live message from a followed chat the sync has not seen yet.
+        ok = asyncio.run(tm.process_event(event(chat('Live_Chat', 'Живой'), msg_id=3), self.path, CONFIG, tm.new_state(), self.logs.append))
+        self.assertTrue(ok)
+        for username in ('synced_chat', 'live_chat'):
+            row = self.source(username)
+            self.assertEqual((row['enabled'], row['status']), (1, 'active'), username)
+            self.assertIs(json.loads(row['metadata'])['joined'], True)
+        self.assertEqual(self.source('synced_chat')['check_reason'], 'подписан служебный аккаунт')
+        self.assertEqual(apply_monitor_policy(self.db), 2)  # the policy keeps them enabled
+        self.assertEqual(self.source('not_followed')['enabled'], 0)
+
     def test_uncached_chat_is_fetched_and_post_ingested(self):
         state = tm.new_state()
         ok = asyncio.run(tm.process_event(event(chat('Fresh_Orders', 'Свежие заказы')), self.path, CONFIG, state, self.logs.append))

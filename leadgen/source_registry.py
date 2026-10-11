@@ -15,11 +15,11 @@ from .core import UTC
 PUBLIC_USERNAME = re.compile(r'^https://t\.me/([A-Za-z][A-Za-z0-9_]{3,})/?$', re.I)
 NUMBER = re.compile(r'([\d\s.,]+)\s*(members?|subscribers?|участник\w*|подписчик\w*)', re.I)
 ONLINE = re.compile(r'([\d\s.,]+)\s*(?:online|онлайн)', re.I)
-DISQUALIFY = re.compile(r'Возможно сообщество отдельн|потребительск.{0,20}аудитори|Преимущественно вакансии|Обучение или материалы',re.I)
-# Public chats the shared reader account is subscribed to: the owner chose them explicitly,
-# so registry checks never disable them (channels have no online count to satisfy the policy).
+# Public chats the shared reader account is subscribed to. The reader receives messages only from
+# these chats, so they are the only enabled sources; the rest of the imported catalog is never read.
 JOINED = 'joined'
 JOINED_REASON = 'подписан служебный аккаунт'
+NOT_JOINED_REASON = 'служебный аккаунт не подписан'
 
 
 def _metadata(value):
@@ -36,8 +36,18 @@ def joined_metadata(value, kind='group'):
     return json.dumps(data | {'joined': True, 'kind': kind}, ensure_ascii=False)
 
 
-def is_joined(selection_group, metadata):
-    return selection_group == JOINED or _metadata(metadata).get('joined') is True
+def is_joined(selection_group, metadata, segment=None):
+    return JOINED in (selection_group, segment) or _metadata(metadata).get('joined') is True
+
+
+def monitor_enabled(status, selection_group, metadata, segment=None):
+    """Enabled means read: an active chat the shared service account follows. Activity alone is not enough."""
+    return status == 'active' and is_joined(selection_group, metadata, segment)
+
+
+def read_count(db):
+    """Chats the shared service account reads in real time (what the cabinet catalog lists)."""
+    return db.execute("SELECT count(*) AS total FROM telegram_sources WHERE enabled=1 AND status='active'").fetchone()['total']
 
 
 def _number(value):
@@ -56,8 +66,12 @@ def import_selection(db, path: Path):
                 counts['unsupported_links'] += 1
                 continue
             username = match.group(1).lower()
-            metadata = {'services':item.get('services',''),'offer':item.get('offer',''),
-                        'risks':item.get('risks',''),'source_rows':item.get('sources',[])}
+            metadata = json.dumps({'services':item.get('services',''),'offer':item.get('offer',''),
+                        'risks':item.get('risks',''),'source_rows':item.get('sources',[])},ensure_ascii=False)
+            old = db.execute('SELECT segment,selection_group,metadata FROM telegram_sources WHERE username=?',(username,)).fetchone()
+            if old and is_joined(old['selection_group'],old['metadata'],old['segment']):
+                # A re-import must not drop the marker of a chat the service account follows.
+                metadata = joined_metadata(metadata,_metadata(old['metadata']).get('kind','group'))
             db.execute('''INSERT INTO telegram_sources
                 (username,url,title,segment,priority,selection_group,original_members,status,metadata)
                 VALUES(?,?,?,?,?,?,?,'pending',?)
@@ -65,29 +79,31 @@ def import_selection(db, path: Path):
                 priority=excluded.priority,selection_group=excluded.selection_group,
                 original_members=excluded.original_members,metadata=excluded.metadata''',
                 (username,'https://t.me/'+match.group(1),item['title'],item['segment'],item['priority'],
-                 item['sheet'],item.get('members'),json.dumps(metadata,ensure_ascii=False)))
+                 item['sheet'],item.get('members'),metadata))
             counts['imported'] += 1
             bucket='potential' if item['sheet']=='Потенциальные клиенты' else 'partners' if item['sheet']=='Партнеры и заказы' else 'review'
             counts[bucket] += 1
     return counts
 
 
-def monitor_allowed(selection_group,metadata):
-    if selection_group in ('Потенциальные клиенты','Партнеры и заказы'):
-        return True
-    try: risks=json.loads(metadata or '{}').get('risks','')
-    except (TypeError,json.JSONDecodeError): return False
-    return not DISQUALIFY.search(risks)
-
-
 def apply_monitor_policy(db):
-    rows=db.execute("SELECT username,selection_group,metadata,status,members,online FROM telegram_sources").fetchall(); enabled=0
+    """enabled=1 only for active chats the service account follows; everything else stays disabled.
+
+    Members, online audience and the workbook segment no longer enable a source: the reader gets
+    messages only from joined chats, so an unjoined catalog row would look active but never be read."""
+    rows=db.execute('SELECT username,segment,selection_group,metadata,status,enabled FROM telegram_sources').fetchall();enabled=0
     with db:
         for row in rows:
-            username,group,metadata,status=(row['username'],row['selection_group'],row['metadata'],row['status'])
-            live_group=(status=='active' and (row['members'] or 0)>=50 and (row['online'] or 0)>0)
-            allow=(live_group and monitor_allowed(group,metadata)) or (status=='active' and is_joined(group,metadata))
-            db.execute('UPDATE telegram_sources SET enabled=? WHERE username=?',(int(allow),username));enabled+=int(allow)
+            allow=monitor_enabled(row['status'],row['selection_group'],row['metadata'],row['segment'])
+            if allow and not row['enabled']:
+                db.execute('UPDATE telegram_sources SET enabled=1 WHERE username=?',(row['username'],))
+            elif row['enabled'] and not allow:
+                if row['status']=='active':
+                    db.execute('UPDATE telegram_sources SET enabled=0,check_reason=? WHERE username=?',
+                               (NOT_JOINED_REASON,row['username']))
+                else:
+                    db.execute('UPDATE telegram_sources SET enabled=0 WHERE username=?',(row['username'],))
+            enabled+=int(allow)
     return enabled
 
 
@@ -139,25 +155,26 @@ def inspect_public_page(username):
 
 
 def verify_pending(db, workers=14, limit=None):
-    query = "SELECT username FROM telegram_sources WHERE status IN ('pending','retry','unavailable') ORDER BY priority,original_members DESC"
-    rows = [(r['username'],r['selection_group']) for r in db.execute(query.replace('SELECT username','SELECT username,selection_group') + (" LIMIT ?" if limit else ''),(limit,) if limit else ())]
+    query = ("SELECT username,segment,selection_group,metadata FROM telegram_sources "
+             "WHERE status IN ('pending','retry','unavailable') ORDER BY priority,original_members DESC")
+    rows = [dict(r) for r in db.execute(query + (" LIMIT ?" if limit else ''),(limit,) if limit else ())]
     counts = {}
     def check(row):
-        username,selection_group=row
-        result=inspect_public_page(username)
+        result=inspect_public_page(row['username'])
         time.sleep(.5)
-        return username,selection_group,result
+        return row,result
     started=time.monotonic()
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-        for i,(username,selection_group,result) in enumerate(pool.map(check,rows),1):
-            status=result['status']; now=datetime.now(UTC).isoformat()
+        for i,(row,result) in enumerate(pool.map(check,rows),1):
+            status=result['status']; now=datetime.now(UTC).isoformat(); username=row['username']
+            # A live public page does not mean the service account reads the chat: joined chats only.
+            enabled=monitor_enabled(status,row['selection_group'],row['metadata'],row['segment'])
+            reason=NOT_JOINED_REASON if status=='active' and not enabled else result['reason']
             with db:
-                live_group=(status=='active' and (result.get('members') or 0)>=50 and (result.get('online') or 0)>0)
                 db.execute('''UPDATE telegram_sources SET title=COALESCE(?,title),members=?,online=?,
                     status=?,enabled=?,checked_at=?,last_message_at=?,check_reason=? WHERE username=?''',
-                    (result.get('title'),result.get('members'),result.get('online'),status,
-                     int(live_group and selection_group in ('Потенциальные клиенты','Партнеры и заказы')),
-                     now,result.get('last_message_at'),result['reason'],username))
+                    (result.get('title'),result.get('members'),result.get('online'),status,int(enabled),
+                     now,result.get('last_message_at'),reason,username))
             counts[status]=counts.get(status,0)+1
             if i%250==0:
                 print(json.dumps({'checked':i,'total':len(rows),'counts':counts},ensure_ascii=False),flush=True)
