@@ -3,7 +3,8 @@
 <section class="tg-card">
 <p class="hint small">Текущий тариф</p>
 <h1>{{ plan_names.get(current_plan, current_plan) if subscription else 'Не подключён' }}</h1>
-{% if trial_days_left is not none %}<p><span class="badge {{ 'warm' if trial_days_left<=3 else 'ok' }}">Осталось дней: {{ trial_days_left }}</span></p>
+{% if beta_note %}<p><span class="badge ok">{{ beta_note }}</span></p>
+{% elif trial_days_left is not none %}<p><span class="badge {{ 'warm' if trial_days_left<=3 else 'ok' }}">Осталось дней: {{ trial_days_left }}</span></p>
 {% else %}<p><span class="badge ok">Активна</span></p>{% endif %}
 {% if current_limits %}<p class="hint">Проектов: {{ current_limits.projects }} · AI-откликов в день: {{ current_limits.drafts }} · {% if current_limits.delay_minutes %}заказы с задержкой ~{{ current_limits.delay_minutes }} мин{% else %}заказы сразу после публикации{% endif %}</p>{% endif %}
 {% if current_plan=='free' and subscription and subscription.plan_code!='free' %}<p class="hint">Пробный период или оплаченный срок закончился — аккаунт работает на бесплатном тарифе. Лиды и настройки сохранены.</p>{% endif %}

@@ -14,10 +14,11 @@ alter table leadgen.subscriptions add constraint subscriptions_founder_price_che
 -- Everyone registered so far joined during the beta.
 update leadgen.subscriptions set founder_price=690 where founder_price is null;
 
--- Early-access accounts had no end date. They get a fresh 7-day trial with full limits,
+-- Early-access accounts had no end date. They use «Старт» for free until the beta ends,
 -- then fall back to Free like everyone else (with the founder price available).
+-- Date matches the BETA_ENDS_AT default in leadgen/billing.py (midnight Moscow time).
 update leadgen.subscriptions
-   set status='trial',plan_code='trial',ends_at=now()+interval '7 days',updated_at=now()
+   set status='active',plan_code='start',ends_at='2026-11-15 00:00:00+03',billing_period='month',updated_at=now()
  where status='stub_active';
 
 -- Ended trials, ended paid periods and canceled or unpaid subscriptions continue on Free.

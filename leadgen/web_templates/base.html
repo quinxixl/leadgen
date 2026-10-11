@@ -43,7 +43,7 @@
 {%- endmacro %}
 {% macro side_foot() -%}
 <div class="side-foot">
-{% if subscription %}<a class="plan-chip" href="/app/billing"><strong>{{ plan_names.get(current_plan, current_plan) }}</strong><span>{% if trial_days_left is not none %}Осталось дней: {{ trial_days_left }}{% elif current_plan=='free' %}Заказы с задержкой — улучшить{% else %}Активна{% endif %}</span></a>{% endif %}
+{% if subscription %}<a class="plan-chip" href="/app/billing"><strong>{{ plan_names.get(current_plan, current_plan) }}</strong><span>{% if beta_note %}{{ beta_note }}{% elif trial_days_left is not none %}Осталось дней: {{ trial_days_left }}{% elif current_plan=='free' %}Заказы с задержкой — улучшить{% else %}Активна{% endif %}</span></a>{% endif %}
 <div class="who"><span class="avatar">{{ (user.display_name or 'С')[:1]|upper }}</span><span>{{ user.display_name or 'Аккаунт' }}</span></div>
 <form action="/logout" method="post"><input type="hidden" name="csrf" value="{{ csrf }}"><button>Выйти</button></form>
 </div>

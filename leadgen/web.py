@@ -19,7 +19,7 @@ from .core import TOPICS, TOPIC_CATEGORIES, Lead, enrich
 from .product import PIPELINE, FEEDBACK, ProductController
 from .crm import NOTE_LIMIT as CRM_NOTE_LIMIT, normalize as normalize_status
 from .web_auth import begin_login, consume_handoff, consume_login, login_status
-from .billing import (ANNUAL_DISCOUNT_PERCENT, FOUNDER_START_PRICE, PLANS, PLAN_NAMES, days_left, effective_plan, legal_entity,
+from .billing import (ANNUAL_DISCOUNT_PERCENT, FOUNDER_START_PRICE, PLANS, PLAN_NAMES, beta_label, days_left, effective_plan, legal_entity,
                       owner_subscription, plan_limits, delay_clause, subscription_active, support_contact)
 from .rate_limit import RateLimited, hit, purge_expired
 from .integrations import integrations_enabled
@@ -298,7 +298,7 @@ def create_app(test_config=None):
         return dict(csrf=session.get('csrf',''),user=g.get('user'),pipeline=PIPELINE,feedback=FEEDBACK,
                     subscription=sub,subscription_ok=subscription_active(sub),plan_names=PLAN_NAMES,
                     current_plan=current_plan,current_limits=plan_limits(current_plan) if sub else None,
-                    trial_days_left=days_left(sub) if current_plan=='trial' else None,
+                    trial_days_left=days_left(sub) if current_plan=='trial' else None,beta_note=beta_label(sub) if sub else None,
                     annual_discount=ANNUAL_DISCOUNT_PERCENT,founder_start_price=FOUNDER_START_PRICE,integrations_enabled=app.config['INTEGRATIONS_ENABLED'],
                     support=support_contact(),plans=PLANS,
                     legal_entity=legal_entity(),metrika_id=metrika_id(),

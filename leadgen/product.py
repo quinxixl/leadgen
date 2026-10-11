@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from . import accounts
 from .app import classify_for_config
 from .core import TOPIC_GROUPS, TOPICS, Lead, message, topics, budget
-from .billing import (ANNUAL_DISCOUNT_PERCENT, PLAN_NAMES, PLANS, days_left, delay_clause, effective_plan,
+from .billing import (ANNUAL_DISCOUNT_PERCENT, PLAN_NAMES, PLANS, beta_free_start, beta_label, days_left, delay_clause, effective_plan,
                       plan_limits, plan_summary, support_contact)
 from .drafts import reply_drafts
 
@@ -393,11 +393,14 @@ def notify_subscriptions(db,sender,limit=20):
         if not claimed:continue
         when=row['ends_at'].astimezone(MSK).strftime('%d.%m в %H:%M МСК')
         trial=row['status']=='trial' or row['plan_code']=='trial'
-        period='пробного периода' if trial else f"тарифа «{PLAN_NAMES.get(row['plan_code'],row['plan_code'])}»"
+        beta=beta_free_start(row)
+        period=('бесплатного «Старт» для участников беты' if beta else 'пробного периода' if trial
+                else f"тарифа «{PLAN_NAMES.get(row['plan_code'],row['plan_code'])}»")
         if row['last_day']:
             text=f'Сегодня последний день {period}: он закончится {when}.'
         else:
-            text=('Пробный период' if trial else f"Оплаченный период {period}")+f' закончится {when}.'
+            text=('Бесплатный «Старт» для участников беты' if beta else 'Пробный период' if trial
+                  else f"Оплаченный период {period}")+f' закончится {when}.'
         markup=billing_buttons()
         text+=(' Затем аккаунт перейдёт на бесплатный тариф: '+plan_summary('free')+
                '. Чтобы заказы приходили сразу, выберите тариф.')
@@ -535,6 +538,8 @@ class ProductController:
         if plan=='free':
             line=f'Тариф «{name}».'
             if user['plan_code']!='free':line+=' Пробный период или оплаченный срок закончился, лиды и настройки сохранены.'
+        elif beta_label(row):
+            line=beta_label(row)+'. Затем — бесплатный тариф, лиды и настройки сохранятся.'
         elif days_left(row) is None:
             line=f'Тариф «{name}» активен.'
         else:

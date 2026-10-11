@@ -1,6 +1,6 @@
 """Subscription plans, quotas and access checks. Payment provider integration is not connected yet."""
 import os
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 
 # Free plan: leads reach the user this many minutes after they are found.
@@ -10,6 +10,40 @@ ANNUAL_DISCOUNT_PERCENT = 20
 # Beta founders keep «Старт» at this monthly price for as long as the subscription lasts.
 FOUNDER_START_PRICE = 690
 TRIAL_DAYS = 7
+# Early-access accounts use «Старт» for free until this date (midnight Moscow time), then fall back to Free.
+DEFAULT_BETA_ENDS_AT = '2026-11-15'
+MSK = timezone(timedelta(hours=3))
+
+
+def beta_ends_at():
+    """End of the free beta «Старт» from BETA_ENDS_AT (ISO date), midnight Moscow time."""
+    raw = os.environ.get('BETA_ENDS_AT', '').strip()
+    try:
+        day = date.fromisoformat(raw)
+    except ValueError:
+        day = date.fromisoformat(DEFAULT_BETA_ENDS_AT)
+    return datetime(day.year, day.month, day.day, tzinfo=MSK)
+
+
+def _ends_at(row):
+    ends_at = row['ends_at'] if row and 'ends_at' in row.keys() else None
+    if isinstance(ends_at, str):
+        ends_at = datetime.fromisoformat(ends_at)
+    return ends_at
+
+
+def beta_free_start(row):
+    """The account uses «Старт» for free as an early-access beta member."""
+    ends_at = _ends_at(row)
+    return bool(row and ends_at is not None and row['status'] == 'active' and row['plan_code'] == 'start'
+                and ends_at.astimezone(MSK).date() == beta_ends_at().date())
+
+
+def beta_label(row, now=None):
+    """«Старт бесплатно до 15.11.2026» while the beta period runs, otherwise None."""
+    if not beta_free_start(row) or not subscription_active(row, now):
+        return None
+    return f'Старт бесплатно до {beta_ends_at():%d.%m.%Y}'
 
 
 def annual_monthly_price(price):
@@ -121,11 +155,9 @@ def plan_summary(code):
 
 
 def days_left(row, now=None):
-    ends_at = row['ends_at'] if row and 'ends_at' in row.keys() else None
+    ends_at = _ends_at(row)
     if ends_at is None:
         return None
-    if isinstance(ends_at, str):
-        ends_at = datetime.fromisoformat(ends_at)
     return max(0, (ends_at - (now or datetime.now(timezone.utc))).days)
 
 

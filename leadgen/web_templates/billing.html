@@ -4,7 +4,7 @@
 {% if workspace and workspace.owner_user_id!=user.id %}<p class="notice">Вы работаете в команде «{{ workspace.name }}». Подпиской управляет владелец команды.</p>{% endif %}
 <section class="panel status-card">
 <div><span class="muted">Текущий тариф</span><span class="big">{{ plan_names.get(current_plan, current_plan) if subscription else 'Не подключён' }}</span>
-{% if trial_days_left is not none %}<span class="badge {{ 'warm' if trial_days_left<=3 else 'ok' }}">Осталось дней: {{ trial_days_left }}</span>{% else %}<span class="badge ok">Активна</span>{% endif %}
+{% if beta_note %}<span class="badge ok">{{ beta_note }}</span>{% elif trial_days_left is not none %}<span class="badge {{ 'warm' if trial_days_left<=3 else 'ok' }}">Осталось дней: {{ trial_days_left }}</span>{% else %}<span class="badge ok">Активна</span>{% endif %}
 {% if current_limits %}<span class="muted">Проектов: {{ current_limits.projects }} · AI-откликов в день: {{ current_limits.drafts }}{% if current_limits.members > 1 %} · участников: до {{ current_limits.members }}{% endif %} · {% if current_limits.delay_minutes %}заказы с задержкой ~{{ current_limits.delay_minutes }} мин{% else %}заказы сразу после публикации{% endif %}</span>{% endif %}</div>
 {% if support %}<a class="button quiet" href="https://t.me/{{ support }}" rel="noopener noreferrer">Написать в поддержку</a>{% endif %}
 </section>

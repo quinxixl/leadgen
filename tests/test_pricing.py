@@ -44,6 +44,23 @@ class Plans(unittest.TestCase):
             with self.subTest(row=row):self.assertEqual(billing.effective_plan(row, NOW), expected)
         self.assertEqual(billing.plan_limits('trial'), billing.plan_limits('pro'))
 
+    def test_early_access_gets_free_start_until_beta_end(self):
+        end = billing.beta_ends_at()
+        self.assertEqual(end, datetime(2026, 11, 15, tzinfo=billing.MSK))
+        row = {'status': 'active', 'plan_code': 'start', 'ends_at': end}
+        self.assertEqual(billing.effective_plan(row, NOW), 'start')
+        self.assertEqual(billing.beta_label(row, NOW), 'Старт бесплатно до 15.11.2026')
+        after = end + timedelta(seconds=1)
+        self.assertEqual(billing.effective_plan(row, after), 'free')
+        self.assertIsNone(billing.beta_label(row, after))
+        paid = {'status': 'active', 'plan_code': 'start', 'ends_at': end + timedelta(days=3)}
+        self.assertIsNone(billing.beta_label(paid, NOW))
+        with patch.dict(os.environ, {'BETA_ENDS_AT': '2026-12-01'}):
+            self.assertEqual(billing.beta_ends_at().date().isoformat(), '2026-12-01')
+            self.assertIsNone(billing.beta_label(row, NOW))
+        with patch.dict(os.environ, {'BETA_ENDS_AT': 'soon'}):
+            self.assertEqual(billing.beta_ends_at(), end)
+
     def test_limit_messages_name_the_plan_that_lifts_the_quota(self):
         self.assertIn('«Бесплатный» доступно проектов: 1', billing.limit_message('projects', 'free'))
         self.assertIn('«Профи» — до 5', billing.limit_message('projects', 'free'))
@@ -233,7 +250,12 @@ class PricingPostgres(unittest.TestCase):
         self.db.commit()
         rows = {row['user_id']: row for row in self.db.execute(
             'SELECT user_id,status,plan_code,ends_at>now()+interval \'6 days\' AS fresh,ends_at,founder_price FROM subscriptions')}
-        self.assertEqual((rows[self.u]['status'], rows[self.u]['plan_code'], rows[self.u]['fresh']), ('trial', 'trial', True))
+        if datetime.now(timezone.utc) < billing.beta_ends_at():
+            self.assertEqual((rows[self.u]['status'], rows[self.u]['plan_code'], rows[self.u]['ends_at']),
+                             ('active', 'start', billing.beta_ends_at()))
+            self.assertIn('Старт бесплатно до 15.11.2026', self.client.get('/app/billing').text)
+        else:
+            self.assertEqual((rows[self.u]['status'], rows[self.u]['plan_code']), ('active', 'free'))
         self.assertEqual((rows[self.other]['status'], rows[self.other]['plan_code'], rows[self.other]['ends_at']), ('active', 'free', None))
         self.assertEqual((rows[third]['status'], rows[third]['plan_code']), ('active', 'pro'))
         self.assertEqual((rows[fourth]['status'], rows[fourth]['plan_code']), ('active', 'free'))
