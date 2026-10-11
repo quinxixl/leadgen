@@ -195,6 +195,11 @@ sudo docker compose exec leadfinder python -m leadgen.app status
 
 Контейнер использует `restart: unless-stopped`, а Docker включён в автозапуск. После перезагрузки сервера бот должен подняться автоматически.
 
+Алерты об ошибках в Telegram: с рабочего аккаунта отправьте боту `/start`, узнайте свой ID
+(например, у @userinfobot) и добавьте в `.env` `ERROR_ALERT_CHAT_ID=<ваш id>` (несколько — через запятую;
+`ALERT_ON_START=1` — сообщение при запуске). Пусто — выключено. Одна ошибка приходит не чаще раза в 10 минут
+(потом с числом повторов), не больше 20 алертов в час на процесс. Проверка — та же команда `--test` ниже.
+
 Необязательно: отправка ошибок в Sentry или self-hosted GlitchTip. Добавьте в `.env` `SENTRY_DSN`
 (и при желании `SENTRY_ENVIRONMENT`, `SENTRY_TRACES_SAMPLE_RATE`, `SENTRY_RELEASE`, см. `.env.example`),
 перезапустите контейнер и проверьте доставку тестового события:

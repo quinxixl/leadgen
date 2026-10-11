@@ -187,7 +187,8 @@ def browser_hint(user_agent, now=None):
 
 def create_app(test_config=None):
     env_load()
-    from .observability import init_sentry
+    from .observability import init_alerts, init_sentry
+    init_alerts('web')
     init_sentry('web')
     app = Flask(__name__, template_folder='web_templates', static_folder='web_static')
     # compose.web.yaml exposes this process only on loopback behind one HTTPS proxy.

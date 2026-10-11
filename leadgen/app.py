@@ -219,8 +219,9 @@ def main():
     parser.add_argument('--db',type=Path,help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.command in ('bot','run','scan','monitor-telegram') and not args.fixtures:
-        from .observability import init_sentry
-        init_sentry('bot' if args.command=='bot' else 'cli-'+args.command)
+        from .observability import init_alerts, init_sentry
+        service='bot' if args.command=='bot' else 'cli-'+args.command
+        init_alerts(service);init_sentry(service)
     if args.fixtures and (args.send or args.command in ('run','bot')):
         parser.error('Fixtures support only scan without sending')
     if args.command == 'setup':
