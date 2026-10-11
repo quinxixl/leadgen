@@ -89,10 +89,12 @@ class Forwarding(unittest.TestCase):
     def test_public_message_link(self):
         self.assertEqual(message_link('business_chat',42),'https://t.me/business_chat/42')
 
-    def test_realtime_reader_accepts_only_public_groups(self):
+    def test_realtime_reader_accepts_public_groups_and_channels_only(self):
         group=SimpleNamespace(username='Business_Chat',broadcast=False)
         event=SimpleNamespace(is_group=True,is_private=False)
+        channel_event=SimpleNamespace(is_group=False,is_channel=True,is_private=False)
         self.assertEqual(realtime_group_username(event,group),'business_chat')
         self.assertIsNone(realtime_group_username(SimpleNamespace(is_group=False,is_private=True),group))
-        self.assertIsNone(realtime_group_username(event,SimpleNamespace(username='news',broadcast=True)))
+        self.assertEqual(realtime_group_username(channel_event,SimpleNamespace(username='News',broadcast=True)),'news')
         self.assertIsNone(realtime_group_username(event,SimpleNamespace(username=None,broadcast=False)))
+        self.assertIsNone(realtime_group_username(channel_event,SimpleNamespace(username=None,broadcast=True)))

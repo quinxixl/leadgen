@@ -269,9 +269,23 @@ sudo docker compose up -d
 sudo docker compose restart
 ```
 
+### `Сессия служебного аккаунта не авторизована`
+
+Файл `leadgen/data/telegram_reader.session` есть, но Telegram отозвал сессию. Монитор не падает: он проверяет сессию раз в 10 минут, а `status` показывает `"telegram_reader": {"state": "unauthorized"}`. Войти заново по QR-коду (код по SMS на серверный IP часто не приходит):
+
+```sh
+cd /opt/leadfinder
+sudo docker compose stop leadfinder
+sudo docker compose run --rm --no-deps leadfinder python -m leadgen.app setup-telegram --qr
+sudo docker compose start leadfinder
+sudo docker compose run --rm --no-deps leadfinder python -m leadgen.app status
+```
+
+Отсканировать QR в Telegram служебного аккаунта: «Настройки → Устройства → Подключить устройство». QR обновляется каждые ~30 секунд; при двухэтапной проверке команда спросит облачный пароль. После запуска в логах должно появиться `Мониторинг Telegram запущен`, а в `status` — `"state": "running"`.
+
 ### `Монитор Telegram остановлен`
 
-Проверить наличие и права файла:
+Монитор перезапускается сам с паузой 5 с → 5 мин; причина (тип и текст ошибки) есть в той же строке лога и в `telegram_reader.last_error` команды `status`. Если строка повторяется постоянно, проверить наличие и права файла:
 
 ```sh
 ls -l leadgen/data/telegram_reader.session

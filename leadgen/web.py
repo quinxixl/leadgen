@@ -675,7 +675,8 @@ def create_app(test_config=None):
         health=db().execute('SELECT * FROM health ORDER BY source').fetchall()
         users=db().execute('SELECT display_name,status,registered_at,last_seen_at FROM app_users ORDER BY id DESC LIMIT 100').fetchall()
         from . import feedback as fb
-        return render_template('admin.html',health=health,users=users,feedback_rows=fb.recent(db()),fb=fb)
+        from .telegram_monitor import reader_status
+        return render_template('admin.html',health=health,users=users,feedback_rows=fb.recent(db()),fb=fb,reader=reader_status(db()))
 
     @app.errorhandler(400)
     @app.errorhandler(403)
