@@ -187,6 +187,8 @@ def browser_hint(user_agent, now=None):
 
 def create_app(test_config=None):
     env_load()
+    from .observability import init_sentry
+    init_sentry('web')
     app = Flask(__name__, template_folder='web_templates', static_folder='web_static')
     # compose.web.yaml exposes this process only on loopback behind one HTTPS proxy.
     app.wsgi_app=ProxyFix(app.wsgi_app,x_for=1,x_proto=1,x_host=1)
@@ -230,7 +232,10 @@ def create_app(test_config=None):
         if session.get('user_id'):
             user=db().execute('SELECT * FROM app_users WHERE id=? AND status=\'active\'',(session['user_id'],)).fetchone()
             # «Выйти на всех устройствах» bumps session_version; older cookies stop working at once.
-            if user and session.get('sv',0)==user['session_version']:g.user=user
+            if user and session.get('sv',0)==user['session_version']:
+                g.user=user
+                from .observability import set_user
+                set_user(user['id'])
             else:
                 session.clear();session['csrf']=secrets.token_urlsafe(32)
         if request.path.startswith(('/app','/admin')) and not g.user:

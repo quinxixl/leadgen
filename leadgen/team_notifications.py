@@ -27,6 +27,8 @@ def deliver_assignments(db,sender,limit=5):
         if button:payload['reply_markup']={'inline_keyboard':[[button]]}
         try:sender('sendMessage',payload)
         except Exception as exc:
+            from .observability import capture_exception
+            capture_exception(exc,component='team_notifications')
             with db:db.execute("""UPDATE lead_assignments SET notification_status='uncertain',
                 notification_error=?,notification_updated_at=now() WHERE workspace_id=? AND lead_id=?""",
                 (type(exc).__name__,row['workspace_id'],row['lead_id']))

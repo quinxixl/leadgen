@@ -156,6 +156,27 @@ server {
 `sudo certbot --nginx -d leads.example.ru`. Замените адрес в примере на свой домен и добавьте его
 в `WEB_ALLOWED_HOSTS`. Порт 8000 наружу не открывайте.
 
+## Мониторинг ошибок (Sentry / GlitchTip)
+
+Необязательно. Сайт и бот отправляют ошибки в Sentry или self-hosted GlitchTip, если в `.env` задан DSN:
+
+```dotenv
+SENTRY_DSN=https://ключ@glitchtip.example.ru/1
+SENTRY_ENVIRONMENT=production
+SENTRY_TRACES_SAMPLE_RATE=0
+SENTRY_RELEASE=короткий_SHA_коммита
+```
+
+Пустой `SENTRY_DSN` полностью выключает отправку. Уходят необработанные ошибки Flask, падения бота,
+сбои фоновых циклов (парсеры, AI-оценка, напоминания, уведомления) и логи уровня ERROR.
+Тела запросов, cookies, заголовки авторизации и query-строки не отправляются; телефоны, email,
+токены бота, ключи `gsk_…` и пароли в URL базы вычищаются. Из данных пользователя — только внутренний числовой ID.
+После перезапуска контейнеров проверьте доставку (событие появится в проекте Sentry/GlitchTip):
+
+```sh
+sudo docker compose -f compose.yaml -f compose.web.yaml exec web python -m leadgen.observability --test
+```
+
 ## Автообновления
 
 Установите таймер с нужной веткой и поддержкой web-контейнера:

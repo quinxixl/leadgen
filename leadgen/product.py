@@ -409,7 +409,10 @@ def notify_subscriptions(db,sender,limit=20):
         if markup:payload['reply_markup']=markup
         # At most once: an ambiguous send is not repeated, the marker stays.
         try:sender('sendMessage',payload)
-        except Exception as exc:print('Напоминание о подписке: '+type(exc).__name__,flush=True)
+        except Exception as exc:
+            from .observability import capture_exception
+            capture_exception(exc,component='subscription_reminders')
+            print('Напоминание о подписке: '+type(exc).__name__,flush=True)
         else:sent+=1
     return sent
 
@@ -527,6 +530,9 @@ class ProductController:
             heading='AI-офферы от Groq. Проверьте факты, цену и сроки перед отправкой.'
         except Exception as exc:
             from .ai_offers import AIOfferError
+            if not isinstance(exc,AIOfferError):
+                from .observability import capture_exception
+                capture_exception(exc,user_id=user['id'],component='ai_offers')
             drafts=reply_drafts(lead,user['profile_services'],user['portfolio'],settings)
             reason=str(exc) if isinstance(exc,AIOfferError) else 'AI временно недоступен.'
             heading=reason+' Ниже быстрые локальные шаблоны.'
@@ -588,6 +594,8 @@ class ProductController:
         except Exception as exc:
             # The bot loop only survives RuntimeError; an unexpected error here must not
             # restart the bot. A claimed send stays 'sending' and is later shown as uncertain.
+            from .observability import capture_exception
+            capture_exception(exc,user_id=user['id'],component='telegram_reply')
             print('Telegram-отклик: '+type(exc).__name__,flush=True)
             self.say('Не удалось обработать отклик. Проверьте его статус на сайте перед повтором.')
         return True
@@ -606,6 +614,8 @@ class ProductController:
         except TelegramAccountError as exc:self.say(str(exc))
         except RuntimeError:raise
         except Exception as exc:
+            from .observability import capture_exception
+            capture_exception(exc,user_id=user['id'],component='telegram_reply')
             print('Telegram-отклик: '+type(exc).__name__,flush=True)
             self._update_pref(user['id'],'state',json.dumps({}))
             self.say('Не удалось подготовить отклик. Попробуйте ещё раз кнопкой под лидом.')
@@ -650,6 +660,8 @@ class ProductController:
         except RuntimeError:raise
         except Exception as exc:
             # Only RuntimeError is survivable in the bot loop; the welcome batch is optional.
+            from .observability import capture_exception
+            capture_exception(exc,user_id=user['id'],component='first_leads')
             print('Первые лиды: '+type(exc).__name__,flush=True)
             self.db.connection.rollback()
             return 0

@@ -9,6 +9,7 @@ from datetime import datetime
 from .adapters import collect
 from .app import ROOT, telegram, ingest, deliver, send_lead, classify_for_config, env_load, notification_chat_ids
 from .core import TOPICS, Lead, UTC, classify
+from .observability import capture_exception
 
 MENU = {'keyboard':[[{'text':'▶️ Начать'},{'text':'⏸ Остановить'}],
     [{'text':'🔎 Найти сейчас'},{'text':'📋 Объявления'}],
@@ -22,6 +23,7 @@ def collect_batch(config):
             try:
                 result.append((source['name'],collect(source),None))
             except Exception as exc:
+                capture_exception(exc,component='parser',source=source.get('id',''))
                 result.append((source['name'],[],type(exc).__name__))
     return result
 
@@ -207,6 +209,7 @@ def run_bot(db,config):
                 from .telegram_monitor import run_monitor
                 run_monitor(db_target,config)
             except Exception as exc:
+                capture_exception(exc,component='telegram_monitor')
                 print('Монитор Telegram остановлен: '+type(exc).__name__,flush=True)
         threading.Thread(target=monitor,daemon=True).start()
         monitor_started=True
@@ -219,6 +222,7 @@ def run_bot(db,config):
                 from .telegram_accounts import run_personal_monitors
                 run_personal_monitors(db_target, config)
             except Exception as exc:
+                capture_exception(exc,component='personal_monitors')
                 print('Личные Telegram-подключения остановлены: '+type(exc).__name__, flush=True)
         threading.Thread(target=personal_monitors, daemon=True).start()
         print('Менеджер личных Telegram-подключений запущен.', flush=True)
@@ -288,6 +292,7 @@ def run_bot(db,config):
                             notify_subscriptions(db,telegram)
                         except Exception as exc:
                             # Trial reminders are optional; only RuntimeError is survivable in this loop.
+                            capture_exception(exc,component='subscription_reminders')
                             print('Напоминания о подписке: '+type(exc).__name__,flush=True)
                             db.connection.rollback()
                     if time.monotonic()>=next_first_run_check:
@@ -298,6 +303,7 @@ def run_bot(db,config):
                             backfill_pending(db,config,telegram)
                         except RuntimeError:raise
                         except Exception as exc:
+                            capture_exception(exc,component='first_leads')
                             print('Первые лиды: '+type(exc).__name__,flush=True)
                             db.connection.rollback()
                 if ui.get('active',False) or ui.drain:
@@ -309,5 +315,7 @@ def run_bot(db,config):
                         deliver(db,ui.config(),limit=1)
                         ui.drain=bool(db.execute("SELECT 1 FROM leads WHERE status='ready' AND next_attempt<=? LIMIT 1",(time.time(),)).fetchone())
             except RuntimeError as exc:
+                # Telegram network/API errors are expected here; report only unexpected ones.
+                if not str(exc).startswith('Telegram'):capture_exception(exc,component='bot_loop')
                 print(str(exc),flush=True)
                 time.sleep(3)
