@@ -195,6 +195,16 @@ sudo docker compose exec leadfinder python -m leadgen.app status
 
 Контейнер использует `restart: unless-stopped`, а Docker включён в автозапуск. После перезагрузки сервера бот должен подняться автоматически.
 
+Необязательно: отправка ошибок в Sentry или self-hosted GlitchTip. Добавьте в `.env` `SENTRY_DSN`
+(и при желании `SENTRY_ENVIRONMENT`, `SENTRY_TRACES_SAMPLE_RATE`, `SENTRY_RELEASE`, см. `.env.example`),
+перезапустите контейнер и проверьте доставку тестового события:
+
+```sh
+sudo docker compose exec leadfinder python -m leadgen.observability --test
+```
+
+Без `SENTRY_DSN` ничего не отправляется. Персональные данные и токены вычищаются до отправки.
+
 ## 14. Автоматически обновлять код из GitHub
 
 После первого запуска установить `systemd`-таймер:

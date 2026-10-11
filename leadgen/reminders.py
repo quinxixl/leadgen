@@ -48,7 +48,9 @@ def deliver_due(db,sender,limit=5):
         if button:payload['reply_markup']={'inline_keyboard':[[button]]}
         try:
             sender('sendMessage',payload)
-        except Exception:
+        except Exception as exc:
+            from .observability import capture_exception
+            capture_exception(exc,user_id=row['user_id'],component='reminders')
             with db:db.execute("UPDATE lead_reminders SET status='uncertain',updated_at=now() WHERE user_id=? AND lead_id=?",(row['user_id'],row['lead_id']))
         else:
             with db:db.execute("UPDATE lead_reminders SET status='sent',updated_at=now() WHERE user_id=? AND lead_id=?",(row['user_id'],row['lead_id']))

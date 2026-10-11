@@ -212,6 +212,8 @@ def score_pending(db,scorer=groq_score,limit=None,max_age=None):
     except Exception as exc:
         db.connection.rollback()
         error=str(exc) if isinstance(exc,ScoringError) else type(exc).__name__
+        from .observability import capture_exception
+        capture_exception(exc,component='ai_scoring')
         with db:
             for lead_id,_ in batch:_store(db,lead_id,'failed',model=model,error=error)
         print('AI-оценка лидов: '+error,flush=True)
@@ -239,6 +241,8 @@ def run_scorer(db_target,interval=5,stop=None):
                 if score_pending(db)>=batch_size():pause=0.5
             finally:db.close()
         except Exception as exc:
+            from .observability import capture_exception
+            capture_exception(exc,component='ai_scoring')
             print('AI-оценка лидов: '+type(exc).__name__,flush=True);pause=60
         stop.wait(pause)
 

@@ -111,6 +111,8 @@ def scan(db, config, fixtures=False):
                     count=excluded.count,error=excluded.error''',
                     (source['name'],datetime.now(UTC).isoformat(),0,0,type(exc).__name__))
             print(f"{source['name']}: ошибка {type(exc).__name__}; см. status",flush=True)
+            from .observability import capture_exception
+            capture_exception(exc,component='parser',source=source.get('id',''))
 
 def apply_preferences(lead, config, status, reason):
     from .core import topics, possible_need_topics
@@ -216,6 +218,9 @@ def main():
     parser.add_argument('--fixtures',action='store_true',help='Проверка на ранее сохранённых страницах, без сети')
     parser.add_argument('--db',type=Path,help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.command in ('bot','run','scan','monitor-telegram') and not args.fixtures:
+        from .observability import init_sentry
+        init_sentry('bot' if args.command=='bot' else 'cli-'+args.command)
     if args.fixtures and (args.send or args.command in ('run','bot')):
         parser.error('Fixtures support only scan without sending')
     if args.command == 'setup':
@@ -270,6 +275,8 @@ if __name__ == '__main__':
     except KeyboardInterrupt:
         print('Остановлено.')
     except Exception as exc:
+        from .observability import capture_exception, flush
+        capture_exception(exc,component='main');flush()
         # No traceback or secret-bearing request URLs in user-facing logs.
         print(f'Ошибка: {type(exc).__name__}: {exc}' if isinstance(exc,(ValueError,RuntimeError)) else f'Ошибка: {type(exc).__name__}')
         raise SystemExit(1)
