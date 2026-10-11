@@ -16,6 +16,28 @@ PUBLIC_USERNAME = re.compile(r'^https://t\.me/([A-Za-z][A-Za-z0-9_]{3,})/?$', re
 NUMBER = re.compile(r'([\d\s.,]+)\s*(members?|subscribers?|участник\w*|подписчик\w*)', re.I)
 ONLINE = re.compile(r'([\d\s.,]+)\s*(?:online|онлайн)', re.I)
 DISQUALIFY = re.compile(r'Возможно сообщество отдельн|потребительск.{0,20}аудитори|Преимущественно вакансии|Обучение или материалы',re.I)
+# Public chats the shared reader account is subscribed to: the owner chose them explicitly,
+# so registry checks never disable them (channels have no online count to satisfy the policy).
+JOINED = 'joined'
+JOINED_REASON = 'подписан служебный аккаунт'
+
+
+def _metadata(value):
+    try: data = json.loads(value or '{}')
+    except (TypeError, ValueError): return {}
+    return data if isinstance(data, dict) else {}
+
+
+def joined_metadata(value, kind='group'):
+    """Metadata with the joined marker; returns the same string when it is already marked."""
+    data = _metadata(value)
+    if data.get('joined') is True and data.get('kind') == kind and value:
+        return value
+    return json.dumps(data | {'joined': True, 'kind': kind}, ensure_ascii=False)
+
+
+def is_joined(selection_group, metadata):
+    return selection_group == JOINED or _metadata(metadata).get('joined') is True
 
 
 def _number(value):
@@ -64,7 +86,7 @@ def apply_monitor_policy(db):
         for row in rows:
             username,group,metadata,status=(row['username'],row['selection_group'],row['metadata'],row['status'])
             live_group=(status=='active' and (row['members'] or 0)>=50 and (row['online'] or 0)>0)
-            allow=live_group and monitor_allowed(group,metadata)
+            allow=(live_group and monitor_allowed(group,metadata)) or (status=='active' and is_joined(group,metadata))
             db.execute('UPDATE telegram_sources SET enabled=? WHERE username=?',(int(allow),username));enabled+=int(allow)
     return enabled
 

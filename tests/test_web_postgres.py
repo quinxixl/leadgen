@@ -137,6 +137,26 @@ class WebPostgres(unittest.TestCase):
         self.assertEqual(self.client.get(f'/app/leads/{self.ids[1]}').status_code,404)
         self.assertEqual(self.client.get('/admin').status_code,403)
 
+    def test_admin_shows_shared_reader_and_joined_channels(self):
+        from leadgen.telegram_monitor import new_state, reader_status, register_joined_chat, write_heartbeat
+        try:
+            with self.db:
+                self.db.execute("DELETE FROM telegram_sources WHERE username='pg_joined_channel'")
+                register_joined_chat(self.db,'pg_joined_channel','PG канал','channel')
+            row=self.db.execute("SELECT enabled,status FROM telegram_sources WHERE username='pg_joined_channel'").fetchone()
+            self.assertEqual((row['enabled'],row['status']),(1,'active'))
+            write_heartbeat(self.db,new_state()|{'state':'running','connected':True,'chats':3})
+            info=reader_status(self.db)
+            self.assertEqual(info['state'],'running');self.assertGreaterEqual(info['joined_sources'],1)
+            with patch.dict(os.environ,{'WEB_ADMIN_TELEGRAM_IDS':'1'}):
+                r=self.client.get('/admin')
+            self.assertEqual(r.status_code,200)
+            self.assertIn('Чтение Telegram служебным аккаунтом',r.text);self.assertIn('Работает',r.text)
+        finally:
+            with self.db:
+                self.db.execute("DELETE FROM telegram_sources WHERE username='pg_joined_channel'")
+                self.db.execute('DELETE FROM settings WHERE key=?',('reader:heartbeat',))
+
     def test_expired_trial_falls_back_to_free_instead_of_paywall(self):
         sub=self.db.execute('SELECT status,ends_at FROM subscriptions WHERE user_id=?',(self.u,)).fetchone()
         self.assertEqual(sub['status'],'trial');self.assertIsNotNone(sub['ends_at'])

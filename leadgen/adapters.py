@@ -3,6 +3,7 @@ import os
 import re
 import ssl
 import sys
+import urllib.error
 import urllib.request
 import urllib.parse
 from datetime import datetime, timedelta, timezone
@@ -11,6 +12,27 @@ from .core import Lead, UTC
 
 MSK = timezone(timedelta(hours=3))
 MONTHS = 'января февраля марта апреля мая июня июля августа сентября октября ноября декабря'.split()
+MAINTENANCE = re.compile(r'технические работы|technical works|under maintenance', re.I)
+BLOCKED = re.compile(r'captcha|капч|доступ (?:запрещ|ограничен)|access denied|подтвердите, что вы не робот', re.I)
+
+
+class SourceError(ValueError):
+    """A source answered, but not with listings; the message is safe to show in health."""
+
+
+def error_label(exc):
+    """Health text: our own source diagnostics keep their message, other errors only their type."""
+    return f'{type(exc).__name__}: {exc}'[:200] if isinstance(exc, SourceError) else type(exc).__name__
+
+
+def page_problem(soup):
+    """Why a page without listings has none: maintenance stub or anti-bot block; None if unknown."""
+    text = soup.get_text(' ', strip=True)[:5000]
+    if MAINTENANCE.search(text):
+        return 'на сайте технические работы, лента временно недоступна'
+    if BLOCKED.search(text) or soup.select_one('form[action*="captcha"], [class*="captcha"], [id*="captcha"]'):
+        return 'доступ заблокирован проверкой на робота (капча)'
+    return None
 
 def fetch(url, data=None, headers=None):
     cafile = os.getenv('SSL_CERT_FILE')
@@ -97,12 +119,19 @@ def parse(source, body, now=None):
     else:
         raise ValueError('Unsupported adapter: '+kind)
     if not cards:
-        raise ValueError('No listing elements: source layout changed or access blocked')
+        problem = page_problem(soup)
+        raise SourceError(f'{name}: ' + (problem or 'нет карточек объявлений: изменилась вёрстка или доступ закрыт'))
     return result
 
 def collect(source):
     if source['kind'] != 'hh':
-        return parse(source,fetch(source['url']))
+        try:
+            body = fetch(source['url'])
+        except urllib.error.HTTPError as exc:
+            if exc.code in (401, 403, 429, 451, 503):
+                raise SourceError(f"{source['name']}: HTTP {exc.code}, сайт не отдаёт ленту (блокировка или ограничение частоты)") from None
+            raise
+        return parse(source,body)
     ua = os.getenv('HH_USER_AGENT','')
     if not ua:
         raise ValueError('Set HH_USER_AGENT to application name and contact email')

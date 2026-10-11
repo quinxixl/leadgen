@@ -10,7 +10,7 @@ from pathlib import Path
 import time
 from datetime import datetime
 from urllib.error import HTTPError, URLError
-from .adapters import collect, fetch, parse
+from .adapters import collect, error_label, fetch, parse
 from .core import Lead, UTC, classify, fingerprint, message, enrich
 from .database import db_open, database_url
 
@@ -109,8 +109,8 @@ def scan(db, config, fixtures=False):
                 db.execute('''INSERT INTO health(source,checked,ok,count,error) VALUES(?,?,?,?,?)
                     ON CONFLICT(source) DO UPDATE SET checked=excluded.checked,ok=excluded.ok,
                     count=excluded.count,error=excluded.error''',
-                    (source['name'],datetime.now(UTC).isoformat(),0,0,type(exc).__name__))
-            print(f"{source['name']}: ошибка {type(exc).__name__}; см. status",flush=True)
+                    (source['name'],datetime.now(UTC).isoformat(),0,0,error_label(exc)))
+            print(f"{source['name']}: ошибка {error_label(exc)}; см. status",flush=True)
 
 def apply_preferences(lead, config, status, reason):
     from .core import topics, possible_need_topics
@@ -176,11 +176,13 @@ def deliver(db, config, sender=telegram, limit=20):
             time.sleep(1.1)
 
 def status(db):
+    from .telegram_monitor import SESSION_FILE, reader_status
     counts = {row['status']:row['total'] for row in db.execute('SELECT status,count(*) AS total FROM leads GROUP BY status')}
     registry = {row['status']:row['total'] for row in db.execute('SELECT status,count(*) AS total FROM telegram_sources GROUP BY status')}
     enabled = db.execute('SELECT count(*) AS total FROM telegram_sources WHERE enabled=1').fetchone()['total']
+    reader = reader_status(db) | {'session_file': SESSION_FILE.exists()}
     print(json.dumps({'counts':counts,'sources':[dict(r) for r in db.execute('SELECT * FROM health')],
-                      'telegram_registry':registry,'telegram_enabled':enabled},ensure_ascii=False,indent=2))
+                      'telegram_registry':registry,'telegram_enabled':enabled,'telegram_reader':reader},ensure_ascii=False,indent=2))
 
 def setup():
     path = ROOT.parent/'.env'
@@ -214,6 +216,7 @@ def main():
     parser.add_argument('command',choices=['scan','run','bot','status','export','setup','import-sources','verify-sources','setup-telegram','monitor-telegram'])
     parser.add_argument('--send',action='store_true',help='Отправлять подходящие объявления в ваш Telegram')
     parser.add_argument('--fixtures',action='store_true',help='Проверка на ранее сохранённых страницах, без сети')
+    parser.add_argument('--qr',action='store_true',help='setup-telegram: вход по QR-коду вместо кода из SMS/Telegram')
     parser.add_argument('--db',type=Path,help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.fixtures and (args.send or args.command in ('run','bot')):
@@ -222,7 +225,7 @@ def main():
         setup(); return
     if args.command == 'setup-telegram':
         from .telegram_monitor import setup_session
-        setup_session(); return
+        setup_session(qr=args.qr); return
     config = json.loads((ROOT/'sources.json').read_text())
     if config['poll_seconds'] < 60 or config['min_budget'] < 0:
         raise ValueError('Invalid config')
