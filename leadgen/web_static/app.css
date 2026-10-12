@@ -473,7 +473,13 @@ details.fold.is-closing>summary:before{transform:rotate(-45deg)}
 /* Interactive surfaces: soft color changes on hover/focus */
 .side-nav a,.side-nav .nav-more summary,.quick-links a,.plan-chip,.site-footer a,.menu summary,.mobile-top details summary,details.fold>summary{transition:color var(--dur-fast) var(--ease-out),background-color var(--dur-fast) var(--ease-out),border-color var(--dur-fast) var(--ease-out)}
 .side-nav a svg{transition:opacity var(--dur-fast) var(--ease-out),color var(--dur-fast) var(--ease-out)}
+/* Scroll reveal (motion.js): blocks below the fold rise in once as they enter the viewport */
+.reveal{opacity:0;transform:translateY(16px)}
+.reveal.is-revealed{opacity:1;transform:none;transition:opacity 480ms var(--ease-out),transform 480ms var(--ease-out);transition-delay:var(--reveal-delay,0ms)}
+@media print{.reveal{opacity:1;transform:none}}
+/* No-reload navigation (nav.js): pages crossfade */
+::view-transition-old(root),::view-transition-new(root){animation-duration:200ms;animation-timing-function:var(--ease-out)}
 /* In-page anchors (#faq, #pricing…) glide and stop below the sticky header */
 [id]{scroll-margin-top:84px}
 @media(prefers-reduced-motion:no-preference){html{scroll-behavior:smooth}}
-@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}.reveal{opacity:1;transform:none}::view-transition-group(*),::view-transition-old(*),::view-transition-new(*){animation:none!important}}

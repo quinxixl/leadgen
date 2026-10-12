@@ -23,6 +23,7 @@
 <link rel="apple-touch-icon" href="{{ url_for('static',filename='apple-touch-icon.png') }}">
 <link rel="stylesheet" href="{{ url_for('static',filename='app.css') }}">
 <script src="{{ url_for('static',filename='motion.js') }}" defer></script>
+<script src="{{ url_for('static',filename='nav.js') }}" defer></script>
 <script type="application/ld+json">{"@context":"https://schema.org","@type":"Organization","name":"Сигналид","url":"{{ site_root }}","logo":"{{ site_root ~ url_for('static',filename='favicon.svg') }}"{% if support %},"sameAs":["https://t.me/{{ support }}"]{% endif %}}</script>
 {% block head_extra %}{% endblock %}
 {% if metrika_id and not request.path.startswith(('/app','/admin','/login')) %}<script src="{{ url_for('static',filename='metrika.js') }}" data-id="{{ metrika_id }}" defer></script>{% endif %}</head>

@@ -126,6 +126,11 @@ class MiniAppPublic(unittest.TestCase):
     def test_login_page_polls_only_while_code_shown(self):
         self.assertNotIn('login.js',self.client.get('/login').text)
         with self.client.get('/web_static/login.js') as response:self.assertEqual(response.status_code,200)
+    def test_site_scripts_are_static_files(self):
+        page=self.client.get('/pricing').text
+        for name in ('motion.js','nav.js'):
+            self.assertIn('/web_static/'+name,page)
+            with self.client.get('/web_static/'+name) as response:self.assertEqual(response.status_code,200)
 
 
 class Helpers(unittest.TestCase):
