@@ -40,7 +40,8 @@ def migrate():
                          '20261010140000_free_tier_and_founder_price.sql',
                          '20261011120000_user_feedback.sql',
                          '20261011150000_disable_unjoined_sources.sql',
-                         '20261012120000_plan_requests.sql'):
+                         '20261012120000_plan_requests.sql',
+                         '20261012130000_ai_prompt_admin.sql'):
                 sql=(root/name).read_text();checksum=hashlib.sha256(sql.encode()).hexdigest()
                 old=db.execute('SELECT checksum FROM leadgen.web_schema_versions WHERE name=?',(name,)).fetchone()
                 if old:

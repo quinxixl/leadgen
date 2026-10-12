@@ -216,8 +216,8 @@ def user_config(base,row):
     return result
 
 
-def eligible_for_user(lead,config,prefs):
-    state,reason=classify_for_config(lead,config)
+def eligible_for_user(lead,config,prefs,ai_topics=None):
+    state,reason=classify_for_config(lead,config,ai_topics)
     if state=='ready':
         return True,reason
     if reason in ('бюджет не указан','указан только потолок бюджета') and prefs['show_without_budget']:
@@ -230,26 +230,33 @@ def eligible_for_user(lead,config,prefs):
     return False,reason
 
 
-def _eligibility(lead,config,prefs,projects):
+def _eligibility(lead,config,prefs,projects,ai_topics=None):
     """Projects are created disabled; only enabled ones replace the general preferences."""
-    allowed,reason=eligible_for_user(lead,config,prefs)
+    allowed,reason=eligible_for_user(lead,config,prefs,ai_topics)
     matches=[]
     if projects:
         from .projects import project_eligibility
         for project in projects:
-            match,why=project_eligibility(lead,config,project)
+            match,why=project_eligibility(lead,config,project,ai_topics)
             if match:matches.append(project['id']);reason=why
         allowed=bool(matches)
         if not allowed:reason='не соответствует фильтрам проектов'
     return allowed,reason,matches
 
 
-def _ai_eligibility(db,lead_id,lead,config,prefs,projects):
-    """Keyword eligibility, then the per-user AI filter. Returns allowed, reason, matches, card AI lines and score."""
-    from .ai_scoring import card_lines,fetch_scores,personal_score,user_allows
-    allowed,reason,matches=_eligibility(lead,config,prefs,projects)
+def _ai_eligibility(db,lead_id,lead,config,prefs,projects,scores=None):
+    """Rule eligibility, then the per-user AI filter. Returns allowed, reason, matches, card AI lines and score.
+
+    With a scored lead whose services the LLM detected, those services replace the keyword ones when matching
+    the user's (or the projects') services; an ad, vacancy or spam verdict hides the lead (ai_hide_noise).
+    Unscored, skipped and failed leads and scored leads without detected services keep the keyword rules.
+    scores: prefetched fetch_scores() result for a batch of leads."""
+    from .ai_scoring import ai_topics,card_lines,fetch_scores,personal_score,user_allows
+    ai=(scores if scores is not None else fetch_scores(db,[lead_id])).get(lead_id)
+    detected=ai_topics(ai)
+    allowed,reason,matches=_eligibility(lead,config,prefs,projects,detected)
     if not allowed:return allowed,reason,matches,'',None
-    ai=fetch_scores(db,[lead_id]).get(lead_id)
+    if detected and not reason.startswith('AI: '):reason='AI: услуга '+', '.join(detected)+'; '+reason
     ok,why=user_allows(ai,lead,prefs,config.get('topics'))
     if not ok:return False,why,[],'',None
     score=personal_score(ai,lead,config.get('topics'))
@@ -309,7 +316,7 @@ def active_projects(db,user_id,limits):
 
 def deliver_registered(db,base,sender,limit_per_user=1):
     """While AI scoring is on, a fresh lead waits up to AI_SCORING_WAIT_SECONDS for its shared score."""
-    from .ai_scoring import scoring_enabled,wait_seconds
+    from .ai_scoring import fetch_scores,scoring_enabled,wait_seconds
     users=db.execute(RECIPIENTS+' ORDER BY u.id').fetchall()
     delivered=0
     for prefs in users:
@@ -322,10 +329,11 @@ def deliver_registered(db,base,sender,limit_per_user=1):
             AND (NOT ? OR EXISTS (SELECT 1 FROM lead_ai_scores s WHERE s.lead_id=l.id)
                  OR l.first_seen::timestamptz < now()-(? * interval '1 second'))'''+delayed+
             ' ORDER BY l.id DESC LIMIT 100',[prefs['id'],prefs['id'],prefs['id'],prefs['registered_at'],
-            scoring_enabled(),wait_seconds()]+delay_args).fetchall()
+            scoring_enabled(db),wait_seconds()]+delay_args).fetchall()
+        scores=fetch_scores(db,[row['id'] for row in rows])
         for row in rows:
             lead=Lead(**json.loads(row['payload']))
-            allowed,reason,matches,ai,_=_ai_eligibility(db,row['id'],lead,config,prefs,projects)
+            allowed,reason,matches,ai,_=_ai_eligibility(db,row['id'],lead,config,prefs,projects,scores)
             if not allowed:
                 with db:db.execute('''INSERT INTO user_leads(user_id,lead_id,delivery_status,filter_reason)
                     VALUES(?,?,'filtered',?) ON CONFLICT(user_id,lead_id) DO NOTHING''',(prefs['id'],row['id'],reason))
@@ -355,9 +363,11 @@ def backfill_first_leads(db,base,sender,user_id,limit=FIRST_RUN_LIMIT,hours=FIRS
         l.first_seen::timestamptz >= now()-(? * interval '1 hour')'''+delayed+' ORDER BY l.id DESC LIMIT 500',
         [user_id,user_id,user_id,hours]+delay_args).fetchall()
     candidates=[]
+    from .ai_scoring import fetch_scores
+    scores=fetch_scores(db,[row['id'] for row in rows])
     for row in rows:
         lead=Lead(**json.loads(row['payload']))
-        allowed,reason,matches,ai,ai_score=_ai_eligibility(db,row['id'],lead,config,prefs,projects)
+        allowed,reason,matches,ai,ai_score=_ai_eligibility(db,row['id'],lead,config,prefs,projects,scores)
         if allowed:candidates.append(((ai_score or 0,lead.score),row['id'],row['fingerprint'],lead,reason,matches,ai))
     candidates.sort(key=lambda item:(item[0],item[1]),reverse=True)
     sent=0;fingerprints=set()

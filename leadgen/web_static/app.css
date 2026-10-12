@@ -483,3 +483,22 @@ details.fold.is-closing>summary:before{transform:rotate(-45deg)}
 [id]{scroll-margin-top:84px}
 @media(prefers-reduced-motion:no-preference){html{scroll-behavior:smooth}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}.reveal{opacity:1;transform:none}::view-transition-group(*),::view-transition-old(*),::view-transition-new(*){animation:none!important}}
+/* /admin/ai: prompt versions, sandbox and journal */
+.ai-tabs{display:flex;gap:8px;flex-wrap:wrap;margin:16px 0}
+.ai-tabs a{padding:8px 14px;border:1px solid var(--line-2);border-radius:999px;font-size:14px;font-weight:600;color:var(--ink-2);text-decoration:none;background:var(--surface)}
+.ai-tabs a[aria-current="page"]{background:var(--brand);border-color:var(--brand);color:#fff}
+.ai-pre{white-space:pre-wrap;overflow-wrap:anywhere;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;line-height:1.5;background:var(--surface-2);border-radius:var(--radius-sm);padding:12px;max-height:420px;overflow:auto;margin:8px 0}
+.ai-editor textarea{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;line-height:1.5}
+.ai-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;align-items:end}
+.ai-fields label{margin:0}
+.ai-compare{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px}
+.ai-compare>section{min-width:0}
+.ai-result{border-top:1px solid var(--line);padding:10px 0}
+.ai-result p{margin:4px 0}
+.ai-pick{width:32px}
+.ai-pick input{width:18px;height:18px;margin:0;accent-color:var(--brand)}
+.badge.fail{background:#fdeeed;color:#b42318}
+.notice.split form button{margin:0}
+.ai-actions form>button{margin-top:0}
+#sandbox>h3{margin-top:28px}
+@media(max-width:760px){.ai-compare{grid-template-columns:1fr}}

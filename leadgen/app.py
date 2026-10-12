@@ -76,14 +76,15 @@ def ingest(db, lead, config, origin_user_id=None):
                (lead.url,fp,json.dumps(lead.data(),ensure_ascii=False),status,reason,
                 datetime.now(UTC).isoformat(),origin_user_id))
 
-def classify_for_config(lead,config):
+def classify_for_config(lead,config,ai_topics=None):
     # The score is shared across projects; their budget floors only gate delivery.
+    # ai_topics: services detected by the LLM; they replace the keyword services for this decision.
     enrich(lead)
-    status, reason, _ = classify(lead,config['min_budget'],config['max_age_hours'])
+    status, reason, _ = classify(lead,config['min_budget'],config['max_age_hours'],ai_topics=ai_topics)
     if (config.get('notify_without_budget') and status == 'review' and
             reason in ('бюджет не указан','указан только потолок бюджета') and lead.score >= 45):
         status, reason = 'ready', f'{lead.temperature} лид; бюджет нужно уточнить'
-    status, reason = apply_preferences(lead, config, status, reason)
+    status, reason = apply_preferences(lead, config, status, reason, ai_topics)
     return status,reason
 
 def scan(db, config, fixtures=False):
@@ -114,10 +115,14 @@ def scan(db, config, fixtures=False):
             from .observability import capture_exception
             capture_exception(exc,component='parser',source=source.get('id',''))
 
-def apply_preferences(lead, config, status, reason):
+def apply_preferences(lead, config, status, reason, ai_topics=None):
     from .core import topics, possible_need_topics
-    if 'topics' in config and not set(topics(lead.title+' '+lead.text)+possible_need_topics(lead.title+' '+lead.text)).intersection(config['topics']):
-        return 'rejected', 'направление выключено'
+    if 'topics' in config:
+        if ai_topics:
+            if not set(ai_topics).intersection(config['topics']):
+                return 'rejected', 'AI: услуга не выбрана — '+', '.join(ai_topics)
+        elif not set(topics(lead.title+' '+lead.text)+possible_need_topics(lead.title+' '+lead.text)).intersection(config['topics']):
+            return 'rejected', 'направление выключено'
     known = {s['name'] for s in config.get('sources',[])}
     enabled = {s['name'] for s in config.get('sources',[]) if s['enabled']}
     if lead.source in known and lead.source not in enabled:

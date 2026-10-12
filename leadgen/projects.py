@@ -8,7 +8,7 @@ def as_list(value):
     return value if isinstance(value,list) else json.loads(value or '[]')
 
 
-def project_eligibility(lead,base,project):
+def project_eligibility(lead,base,project,ai_topics=None):
     from .product import eligible_for_user
     text=normalize(lead.title+' '+lead.text)
     if not project['enabled']:return False,'проект приостановлен'
@@ -21,6 +21,6 @@ def project_eligibility(lead,base,project):
     config=copy.deepcopy(base)
     config['min_budget']=project['min_budget'];config['topics']=as_list(project['topics'])
     config['notify_without_budget']=False
-    allowed,reason=eligible_for_user(lead,config,project)
+    allowed,reason=eligible_for_user(lead,config,project,ai_topics)
     if allowed and lead.score<project['min_score']:return False,'оценка ниже порога проекта'
     return allowed,reason
