@@ -7,7 +7,26 @@
   const body = document.body;
   const page = body.dataset.page;
   const GUARD = 'signalid_tg_boot';
-  if (tg) { tg.ready(); tg.expand(); body.classList.add('in-tg'); }
+  // Site palette in Telegram's light/dark scheme; header, background and bottom bar repainted to match.
+  function paintChrome() {
+    if (!tg) return;
+    const root = document.documentElement;
+    root.dataset.theme = tg.colorScheme === 'dark' ? 'dark' : 'light';
+    const css = getComputedStyle(root);
+    const bg = css.getPropertyValue('--bg').trim();
+    const button = css.getPropertyValue('--button').trim();
+    const supports = (version) => tg.isVersionAtLeast && tg.isVersionAtLeast(version);
+    try {
+      if (bg && supports('6.9')) { tg.setHeaderColor(bg); tg.setBackgroundColor(bg); }
+      if (bg && supports('7.10') && tg.setBottomBarColor) tg.setBottomBarColor(bg);
+      if (button && tg.MainButton) tg.MainButton.setParams({ color: button, text_color: '#ffffff' });
+    } catch (e) { /* older clients keep their own colours */ }
+  }
+  if (tg) {
+    paintChrome();
+    tg.ready(); tg.expand(); body.classList.add('in-tg');
+    if (tg.onEvent) tg.onEvent('themeChanged', paintChrome);
+  }
 
   function post(url, data) {
     return fetch(url, { method: 'POST', credentials: 'include', headers: { Accept: 'application/json' },

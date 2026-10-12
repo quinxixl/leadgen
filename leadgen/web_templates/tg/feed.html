@@ -8,7 +8,7 @@
 {% if subscription and subscription_ok and trial_days_left is not none and trial_days_left<=3 %}<p class="tg-flash warn">Пробный период заканчивается через {{ trial_days_left }} дн., затем — бесплатный тариф. <a href="/tg/billing">Подписка</a></p>{% endif %}
 {% if items %}
 <ul class="leads">
-{% for item in items %}<li><a class="lead-item" href="/tg/leads/{{ item.id }}">
+{% for item in items %}<li><a class="lead-item" data-temp="{{ {'горячий':'hot','тёплый':'warm'}.get(item.lead.temperature,'cold') }}" href="/tg/leads/{{ item.id }}">
 <span class="lead-top">{{ temp_badge(item.lead) }}{{ ai_badge(item.ai) }}<span class="lead-source">{{ item.lead.source }}</span>{% if item.feedback=='fit' %}<span class="tag">👍</span>{% endif %}</span>
 <strong>{{ item.lead.title|truncate(120) }}</strong>
 <span class="lead-meta">{{ pipeline.get(item.pipeline_status,item.pipeline_status) }}{% if item.lead.budget_text %} · {{ item.lead.budget_text }}{% endif %}{% if item.lead.published %} · {{ item.lead.published|dt }}{% endif %}</span>
