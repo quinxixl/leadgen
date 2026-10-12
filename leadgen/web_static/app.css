@@ -8,7 +8,7 @@
   --ok:#0f9d58;--ok-soft:#e7f7ee;--danger:#d93025;
   --night:#0a0f1e;--night-2:#121a30;--night-line:#232c47;--night-text:#c7cde0;
   --radius:14px;--radius-sm:9px;--shadow:0 1px 2px rgba(13,19,36,.05),0 6px 24px rgba(13,19,36,.06);
-  --ease-out:cubic-bezier(.2,.8,.2,1);--dur-fast:140ms;--dur:220ms;--dur-slow:360ms;
+  --ease-out:cubic-bezier(.2,.8,.2,1);--dur-fast:140ms;--dur:220ms;--dur-slow:360ms;--dur-fold:280ms;
   --font:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
   font-family:var(--font);color:var(--ink);background:var(--bg);font-size:16px;line-height:1.6;
   -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility
@@ -16,7 +16,7 @@
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);min-height:100vh}
 img,svg{max-width:100%}
-a{color:var(--brand-ink);text-underline-offset:3px;text-decoration-thickness:1px}
+a{color:var(--brand-ink);text-underline-offset:3px;text-decoration-thickness:1px;transition:color var(--dur-fast) var(--ease-out),background-color var(--dur-fast) var(--ease-out),border-color var(--dur-fast) var(--ease-out)}
 a:hover{color:var(--brand)}
 h1,h2,h3{line-height:1.15;letter-spacing:-.025em;color:var(--ink);margin:0 0 .5em}
 h1{font-size:clamp(28px,3.4vw,38px);font-weight:750;overflow-wrap:anywhere}
@@ -39,7 +39,7 @@ code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.9em;back
 /* Buttons */
 .button,button{display:inline-flex;align-items:center;justify-content:center;gap:8px;border:1px solid var(--brand);border-radius:var(--radius-sm);
   padding:11px 18px;background:var(--brand);color:#fff;font:inherit;font-size:14px;font-weight:650;text-decoration:none;cursor:pointer;line-height:1.4;
-  transition:background .15s,border-color .15s,transform var(--dur-fast) var(--ease-out);white-space:normal;text-align:center}
+  transition:background-color var(--dur-fast) var(--ease-out),border-color var(--dur-fast) var(--ease-out),color var(--dur-fast) var(--ease-out),box-shadow var(--dur-fast) var(--ease-out),transform var(--dur-fast) var(--ease-out);white-space:normal;text-align:center}
 .button:hover,button:hover{background:var(--brand-ink);border-color:var(--brand-ink);color:#fff}
 .button:active,button:active{transform:translateY(1px) scale(.985);transition-duration:60ms}
 .button.large{padding:15px 24px;font-size:16px;border-radius:11px}
@@ -58,7 +58,7 @@ form{margin:0}
 form>button,form>.button{margin-top:16px}
 label{display:block;font-size:14px;font-weight:600;margin:16px 0;color:var(--ink-2)}
 input,textarea,select{display:block;width:100%;border:1px solid var(--line-2);border-radius:var(--radius-sm);padding:10px 12px;margin-top:6px;
-  background:var(--surface);color:var(--ink);font:inherit;font-size:15px;font-weight:400;transition:border-color .15s,box-shadow .15s}
+  background:var(--surface);color:var(--ink);font:inherit;font-size:15px;font-weight:400;transition:border-color var(--dur-fast) var(--ease-out),box-shadow var(--dur-fast) var(--ease-out),background-color var(--dur-fast) var(--ease-out)}
 input:focus,textarea:focus,select:focus{outline:0;border-color:var(--brand);box-shadow:0 0 0 3px rgba(54,84,245,.15)}
 textarea{resize:vertical}
 .check{display:flex;align-items:flex-start;gap:10px;font-weight:450}
@@ -113,7 +113,7 @@ td a{overflow-wrap:anywhere}
 .filters>a{padding:10px 4px;font-size:14px}
 .filters select{max-width:100%}
 .lead-list{display:grid;gap:10px}
-.lead-list .panel{margin:0;transition:border-color .15s,box-shadow .15s}
+.lead-list .panel{margin:0;transition:border-color var(--dur-fast) var(--ease-out),box-shadow var(--dur-fast) var(--ease-out)}
 .lead-list .panel:hover{border-color:var(--line-2);box-shadow:0 2px 4px rgba(13,19,36,.05),0 12px 32px rgba(13,19,36,.08)}
 .lead-list h2{font-size:18px;margin:8px 0 6px}
 .lead-list h2 a{text-decoration:none;color:var(--ink)}
@@ -263,7 +263,10 @@ td a{overflow-wrap:anywhere}
 .faq details{border-bottom:1px solid var(--line);padding:4px 0}
 .faq summary{cursor:pointer;font-weight:650;font-size:17px;padding:18px 36px 18px 0;list-style:none;position:relative}
 .faq summary::-webkit-details-marker{display:none}
-.faq summary:after{content:"+";position:absolute;right:4px;top:14px;font-size:24px;font-weight:400;color:var(--muted);transition:transform var(--dur) var(--ease-out)}
+.faq summary{transition:color var(--dur-fast) var(--ease-out)}
+.faq summary:hover{color:var(--brand-ink)}
+.faq summary:after{content:"+";position:absolute;right:4px;top:14px;font-size:24px;font-weight:400;color:var(--muted);transition:transform var(--dur-fold) var(--ease-out),color var(--dur-fast) var(--ease-out)}
+.faq summary:hover:after{color:var(--brand-ink)}
 .faq details[open] summary:after{transform:rotate(45deg)}
 .faq details p{color:var(--muted);padding-right:36px}
 
@@ -419,12 +422,12 @@ td a{overflow-wrap:anywhere}
 .side-nav .nav-more summary svg{width:18px;height:18px;flex:none;opacity:.75}
 .side-nav .nav-more summary span{display:inline;width:auto;height:auto;background:none;position:static;border-radius:0}
 .side-nav .nav-more summary span:before,.side-nav .nav-more summary span:after{content:none}
-.side-nav .nav-more summary:after{content:"";margin-left:auto;width:7px;height:7px;border-right:1.6px solid currentColor;border-bottom:1.6px solid currentColor;transform:rotate(45deg);opacity:.6;transition:transform var(--dur) var(--ease-out)}
+.side-nav .nav-more summary:after{content:"";margin-left:auto;width:7px;height:7px;border-right:1.6px solid currentColor;border-bottom:1.6px solid currentColor;transform:rotate(45deg);opacity:.6;transition:transform var(--dur-fold) var(--ease-out)}
 .side-nav .nav-more[open] summary:after{transform:rotate(225deg)}
 .side-nav .nav-more a{padding-left:20px}
 details.fold>summary{list-style:none;cursor:pointer;font-weight:650;display:flex;align-items:center;gap:8px}
 details.fold>summary::-webkit-details-marker{display:none}
-details.fold>summary:before{content:"";width:7px;height:7px;border-right:1.6px solid var(--muted);border-bottom:1.6px solid var(--muted);transform:rotate(-45deg);transition:transform var(--dur) var(--ease-out)}
+details.fold>summary:before{content:"";width:7px;height:7px;border-right:1.6px solid var(--muted);border-bottom:1.6px solid var(--muted);transform:rotate(-45deg);transition:transform var(--dur-fold) var(--ease-out)}
 details.fold[open]>summary:before{transform:rotate(45deg)}
 details.fold[open]>summary{margin-bottom:12px}
 details.fold:not(.panel){margin:12px 0}
@@ -462,4 +465,15 @@ details.fold[open]>:not(summary),.side-nav .nav-more[open]>a,.faq details[open]>
 .lead-list>:nth-child(n+6){animation-delay:150ms}
 /* Login: waiting hint and "code expired" notice revealed by polling */
 [data-login-waiting],[data-login-expired]{animation:fade-in var(--dur) var(--ease-out) both}
+/* Disclosures with motion.js: height, content and icon animate together; CSS entrance is off to avoid a double animation */
+.js-details .faq details[open]>:not(summary),.js-details details.fold[open]>:not(summary),.js-details .side-nav .nav-more[open]>a{animation:none}
+.faq details.is-closing summary:after{transform:none}
+details.fold.is-closing>summary:before{transform:rotate(-45deg)}
+.side-nav .nav-more.is-closing summary:after{transform:rotate(45deg)}
+/* Interactive surfaces: soft color changes on hover/focus */
+.side-nav a,.side-nav .nav-more summary,.quick-links a,.plan-chip,.site-footer a,.menu summary,.mobile-top details summary,details.fold>summary{transition:color var(--dur-fast) var(--ease-out),background-color var(--dur-fast) var(--ease-out),border-color var(--dur-fast) var(--ease-out)}
+.side-nav a svg{transition:opacity var(--dur-fast) var(--ease-out),color var(--dur-fast) var(--ease-out)}
+/* In-page anchors (#faq, #pricing…) glide and stop below the sticky header */
+[id]{scroll-margin-top:84px}
+@media(prefers-reduced-motion:no-preference){html{scroll-behavior:smooth}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
