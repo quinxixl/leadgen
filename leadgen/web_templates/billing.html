@@ -3,13 +3,14 @@
 <p class="eyebrow">Аккаунт</p><h1>Подписка</h1>
 {% if workspace and workspace.owner_user_id!=user.id %}<p class="notice">Вы работаете в команде «{{ workspace.name }}». Подпиской управляет владелец команды.</p>{% endif %}
 <section class="panel status-card">
-<div><span class="muted">Текущий тариф</span><span class="big">{{ plan_names.get(current_plan, current_plan) if subscription else 'Не подключён' }}</span>
-{% if beta_note %}<span class="badge ok">{{ beta_note }}</span>{% elif trial_days_left is not none %}<span class="badge {{ 'warm' if trial_days_left<=3 else 'ok' }}">Осталось дней: {{ trial_days_left }}</span>{% else %}<span class="badge ok">Активна</span>{% endif %}
+<div><span class="muted">Текущий тариф</span><span class="big">{% if service_plan %}{{ plan_names[current_plan] }} (служебный){% else %}{{ plan_names.get(current_plan, current_plan) if subscription else 'Не подключён' }}{% endif %}</span>
+{% if service_plan %}<span class="badge ok">Без ограничения срока</span>{% elif beta_note %}<span class="badge ok">{{ beta_note }}</span>{% elif trial_days_left is not none %}<span class="badge {{ 'warm' if trial_days_left<=3 else 'ok' }}">Осталось дней: {{ trial_days_left }}</span>{% else %}<span class="badge ok">Активна</span>{% endif %}
 {% if current_limits %}<span class="muted">Проектов: {{ current_limits.projects }} · AI-откликов в день: {{ current_limits.drafts }}{% if current_limits.members > 1 %} · участников: до {{ current_limits.members }}{% endif %} · {% if current_limits.delay_minutes %}заказы с задержкой ~{{ current_limits.delay_minutes }} мин{% else %}заказы сразу после публикации{% endif %}</span>{% endif %}</div>
 {% if support %}<a class="button quiet" href="https://t.me/{{ support }}" rel="noopener noreferrer">Написать в поддержку</a>{% endif %}
 </section>
 {% if current_plan=='free' and subscription and subscription.plan_code!='free' %}<p class="notice">Пробный период или оплаченный срок закончился — аккаунт работает на бесплатном тарифе. Лиды и настройки сохранены. Выберите тариф, чтобы получать заказы сразу и без ограничений бесплатного тарифа.</p>{% endif %}
 <h2>Тарифы</h2>
-<p class="muted">Онлайн-оплата подключается. Чтобы оформить тариф сейчас, выберите его — откроется чат с поддержкой. Пришлём ссылку на оплату картой или счёт для ИП и юрлиц. При оплате за год — скидка {{ annual_discount }}%.</p>
-{{ plans_grid(plans, 'billing', current_plan, support, founder_price) }}
+{% if pending %}<p class="notice" id="plan-request">Заявка на тариф «{{ plan_names[pending.plan_code] }}» ({{ 'год' if pending.billing_period=='year' else 'месяц' }}, {{ '{:,}'.format(pending.price).replace(',', ' ') }} ₽) отправлена {{ pending.updated_at|dt }} — мы свяжемся с вами в Telegram в течение дня.</p>{% endif %}
+<p class="muted">Онлайн-оплата подключается. Выберите тариф и период и нажмите «Подключить» — мы свяжемся с вами в Telegram в течение дня и пришлём ссылку на оплату картой или счёт для ИП и юрлиц. При оплате за год — скидка {{ annual_discount }}%.</p>
+{{ plans_grid(plans, 'billing', current_plan, founder_price, csrf, pending, not workspace or workspace.owner_user_id==user.id) }}
 {% endblock %}

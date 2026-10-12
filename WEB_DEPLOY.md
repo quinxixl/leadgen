@@ -156,6 +156,28 @@ server {
 `sudo certbot --nginx -d leads.example.ru`. Замените адрес в примере на свой домен и добавьте его
 в `WEB_ALLOWED_HOSTS`. Порт 8000 наружу не открывайте.
 
+## Тарифы вручную (оплата не подключена)
+
+Кнопка «Подключить «Тариф»» в разделе «Подписка» (сайт и Mini App) создаёт заявку в `leadgen.plan_requests`
+(одна открытая заявка на пользователя, повторное нажатие её обновляет) и присылает уведомление в
+`FEEDBACK_CHAT_ID`, а если он пуст — в личные чаты `WEB_ADMIN_TELEGRAM_IDS`. В `/admin` («Заявки на тарифы»)
+кнопка «Выдать» включает тариф на месяц или год и пишет пользователю в бот, «Отклонить» закрывает заявку.
+Там же форма «Тариф пользователя»: любой тариф, срок (+1 месяц, +1 год, до конца беты, бессрочно, до даты)
+и цена участника беты. Все изменения записываются в `leadgen.plan_changes`.
+
+Администраторы (`WEB_ADMIN_TELEGRAM_IDS`) и служебные аккаунты (`UNLIMITED_TELEGRAM_IDS`) всегда работают на
+тарифе «Команда» без срока — это вычисляется в коде, записи в базе не меняются.
+
+Аварийно, без сайта:
+
+```sh
+sudo docker compose -f compose.yaml -f compose.web.yaml exec web python -m leadgen.billing set-plan --user @username --plan pro --months 1
+sudo docker compose -f compose.yaml -f compose.web.yaml exec web python -m leadgen.billing set-plan --user 123456789 --plan team --forever
+```
+
+`--user` — внутренний id, Telegram ID или @username; срок — `--months N` (продлевает текущий срок того же
+тарифа), `--until 2026-12-31` или `--forever`; `--founder on|off` включает или снимает цену участника беты.
+
 ## Алерты об ошибках в Telegram
 
 Основной канал оповещений: бот присылает владельцу короткое сообщение «🔴 Ошибка в web/bot» с типом

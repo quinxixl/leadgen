@@ -9,7 +9,7 @@ from . import accounts
 from .app import classify_for_config
 from .core import TOPIC_GROUPS, TOPICS, Lead, message, topics, budget
 from .billing import (ANNUAL_DISCOUNT_PERCENT, PLAN_NAMES, PLANS, beta_free_start, beta_label, days_left, delay_clause, effective_plan,
-                      plan_limits, plan_summary, support_contact)
+                      is_unlimited, plan_limits, plan_summary, service_subscription, support_contact)
 from .drafts import reply_drafts
 
 MONITOR_ON='🔔 Мониторинг: вкл'
@@ -283,7 +283,7 @@ def _send_card(db,sender,prefs,lead_id,lead,reason,matches,prefix='',ai=''):
 
 
 # Every active account receives leads: an ended trial or paid period continues on the Free plan.
-RECIPIENTS='''SELECT u.id,u.telegram_chat_id,u.registered_at,s.status AS sub_status,s.plan_code AS sub_plan,
+RECIPIENTS='''SELECT u.id,u.telegram_chat_id,u.telegram_user_id,u.registered_at,s.status AS sub_status,s.plan_code AS sub_plan,
     s.ends_at AS sub_ends_at,p.* FROM app_users u
     JOIN user_preferences p ON p.user_id=u.id
     JOIN subscriptions s ON s.user_id=u.id
@@ -295,7 +295,8 @@ UNSEEN='''l.status<>'duplicate' AND (l.origin_user_id IS NULL OR l.origin_user_i
 
 
 def recipient_limits(prefs):
-    """Plan limits of a RECIPIENTS row."""
+    """Plan limits of a RECIPIENTS row; admin and service accounts always get the top plan."""
+    if "telegram_user_id" in prefs.keys() and is_unlimited(prefs["telegram_user_id"]):return plan_limits(effective_plan(service_subscription()))
     return plan_limits(effective_plan({'status':prefs['sub_status'],'plan_code':prefs['sub_plan'],
                                        'ends_at':prefs['sub_ends_at']}))
 
@@ -378,7 +379,7 @@ def backfill_pending(db,base,sender,limit_users=5):
 
 def notify_subscriptions(db,sender,limit=20):
     """Warn once two days before the access ends and once on the last day; markers are keyed by ends_at."""
-    rows=db.execute('''SELECT * FROM (SELECT u.id,u.telegram_chat_id,s.status,s.plan_code,s.ends_at,
+    rows=db.execute('''SELECT * FROM (SELECT u.id,u.telegram_chat_id,u.telegram_user_id,s.status,s.plan_code,s.ends_at,
             s.ends_at<=now()+interval '1 day' AS last_day,
             'subnote:'||u.id||':'||(CASE WHEN s.ends_at<=now()+interval '1 day' THEN 'last' ELSE 'soon' END)
                 ||':'||floor(extract(epoch FROM s.ends_at))::bigint AS marker
@@ -388,6 +389,7 @@ def notify_subscriptions(db,sender,limit=20):
         WHERE NOT EXISTS (SELECT 1 FROM settings WHERE key=due.marker) ORDER BY ends_at LIMIT ?''',(limit,)).fetchall()
     sent=0
     for row in rows:
+        if is_unlimited(row["telegram_user_id"]):continue
         with db:
             claimed=db.execute('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO NOTHING RETURNING key',
                 (row['marker'],json.dumps(datetime.now(timezone.utc).isoformat()))).fetchone()
@@ -540,6 +542,9 @@ class ProductController:
         return (heading+'\n\n'+'\n\n'.join(name+':\n'+text for name,text in drafts.items()))[:3900]
 
     def _subscription_text(self,user):
+        if is_unlimited(user['telegram_user_id']):
+            plan=effective_plan(service_subscription())
+            return f'Тариф «{PLAN_NAMES[plan]}» (служебный), без ограничения срока.\nЛимиты: '+plan_summary(plan)+'.'
         row={'status':user['subscription_status'],'plan_code':user['plan_code'],'ends_at':user['ends_at']}
         plan=effective_plan(row);name=PLAN_NAMES.get(plan,plan)
         if plan=='free':
@@ -558,7 +563,7 @@ class ProductController:
             if user['founder_price'] is not None:
                 line+=f"\nДля участников беты: «Старт» за {money(user['founder_price'])} ₽/мес навсегда."
         contact=support_contact()
-        if web_url('/app/billing'):tail='\n\nВыбрать или продлить тариф можно кнопкой ниже.'
+        if web_url('/app/billing'):tail='\n\nВыбрать тариф и оставить заявку на подключение можно кнопкой ниже.'
         elif contact:tail=f'\n\nПродлить или сменить тариф — в веб-кабинете в разделе «Подписка» или у поддержки: @{contact}'
         else:tail='\n\nПродлить или сменить тариф можно в веб-кабинете, раздел «Подписка».'
         return line+tail

@@ -1,18 +1,37 @@
 {% extends 'tg/base.html' %}{% block title %}Подписка — Сигналид{% endblock %}{% block page %}billing{% endblock %}
+{% macro rub(value) -%}{{ '{:,}'.format(value).replace(',', ' ') }}{%- endmacro %}
 {% block content %}
+{% set owner = not workspace or workspace.owner_user_id==user.id %}
 <section class="tg-card">
 <p class="hint small">Текущий тариф</p>
-<h1>{{ plan_names.get(current_plan, current_plan) if subscription else 'Не подключён' }}</h1>
-{% if beta_note %}<p><span class="badge ok">{{ beta_note }}</span></p>
+<h1>{% if service_plan %}{{ plan_names[current_plan] }} (служебный){% else %}{{ plan_names.get(current_plan, current_plan) if subscription else 'Не подключён' }}{% endif %}</h1>
+{% if service_plan %}<p><span class="badge ok">Без ограничения срока</span></p>
+{% elif beta_note %}<p><span class="badge ok">{{ beta_note }}</span></p>
 {% elif trial_days_left is not none %}<p><span class="badge {{ 'warm' if trial_days_left<=3 else 'ok' }}">Осталось дней: {{ trial_days_left }}</span></p>
 {% else %}<p><span class="badge ok">Активна</span></p>{% endif %}
 {% if current_limits %}<p class="hint">Проектов: {{ current_limits.projects }} · AI-откликов в день: {{ current_limits.drafts }} · {% if current_limits.delay_minutes %}заказы с задержкой ~{{ current_limits.delay_minutes }} мин{% else %}заказы сразу после публикации{% endif %}</p>{% endif %}
 {% if current_plan=='free' and subscription and subscription.plan_code!='free' %}<p class="hint">Пробный период или оплаченный срок закончился — аккаунт работает на бесплатном тарифе. Лиды и настройки сохранены.</p>{% endif %}
-{% if workspace and workspace.owner_user_id!=user.id %}<p class="hint">Вы работаете в команде «{{ workspace.name }}». Подпиской управляет владелец.</p>{% endif %}
+{% if not owner %}<p class="hint">Вы работаете в команде «{{ workspace.name }}». Подпиской управляет владелец.</p>{% endif %}
 </section>
+{% if pending %}<p class="tg-flash success" id="plan-request">Заявка на «{{ plan_names[pending.plan_code] }}» ({{ 'год' if pending.billing_period=='year' else 'месяц' }}, {{ rub(pending.price) }} ₽) отправлена — мы свяжемся с вами в Telegram в течение дня.</p>{% endif %}
+{% if owner and not service_plan %}
 <section class="tg-section">
-<button type="button" class="btn wide" data-handoff="/app/billing">Тарифы и оплата на сайте</button>
+<p class="hint small">Онлайн-оплата подключается. Выберите тариф и период — мы свяжемся с вами в Telegram и пришлём ссылку на оплату. За год — скидка {{ annual_discount }}%.</p>
+{% for plan in plans if plan.price %}
+<form class="tg-card" method="post" action="/tg/billing/request"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="plan" value="{{ plan.code }}">
+<h2>{{ plan.name }}{% if current_plan==plan.code %} <span class="badge ok">Ваш тариф</span>{% endif %}</h2>
+<p class="hint">{{ rub(founder_price if plan.code=='start' and founder_price is not none else plan.price) }} ₽ / месяц{% if plan.code=='start' and founder_price is not none %} — цена участника беты{% endif %}</p>
+{% set requested = pending and pending.plan_code==plan.code %}
+<fieldset class="row"><legend class="sr">Период оплаты</legend>
+<label><input type="radio" name="period" value="month"{% if not (requested and pending.billing_period=='year') %} checked{% endif %}> месяц</label>
+<label><input type="radio" name="period" value="year"{% if requested and pending.billing_period=='year' %} checked{% endif %}> год −{{ annual_discount }}%</label></fieldset>
+<button class="btn wide{% if not plan.featured %} quiet{% endif %}">{{ 'Обновить заявку' if requested else 'Подключить «' ~ plan.name ~ '»' }}</button>
+</form>
+{% endfor %}
+</section>
+{% endif %}
+<section class="tg-section">
+<button type="button" class="btn quiet wide" data-handoff="/app/billing">Тарифы подробнее на сайте</button>
 {% if support %}<a class="btn quiet wide" href="https://t.me/{{ support }}" target="_blank" rel="noopener noreferrer">Написать в поддержку</a>{% endif %}
-<p class="hint small">Оплата и документы оформляются на сайте: откроем его в браузере, вход выполнится автоматически.</p>
 </section>
 {% endblock %}

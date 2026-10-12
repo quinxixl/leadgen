@@ -109,9 +109,45 @@ def plan_limits(code):
     return LIMITS.get(code, LIMITS['free'])
 
 
+def _env_ids(*names):
+    return {value.strip() for name in names for value in os.environ.get(name, '').split(',') if value.strip()}
+
+
+def unlimited_telegram_ids():
+    """Platform admins (WEB_ADMIN_TELEGRAM_IDS) and service accounts (UNLIMITED_TELEGRAM_IDS)."""
+    return _env_ids('WEB_ADMIN_TELEGRAM_IDS', 'UNLIMITED_TELEGRAM_IDS')
+
+
+def is_unlimited(telegram_user_id):
+    return telegram_user_id is not None and str(telegram_user_id) in unlimited_telegram_ids()
+
+
+SERVICE_PLAN = 'team'
+
+
+def service_subscription(row=None):
+    """Subscription view of an admin or service account: the top plan without an end date.
+
+    Computed on the fly; the stored subscription row is left as it is."""
+    keys = row.keys() if row else ()
+    return {'status': 'active', 'plan_code': SERVICE_PLAN, 'ends_at': None, 'service': True,
+            'founder_price': row['founder_price'] if 'founder_price' in keys else None,
+            'billing_period': (row['billing_period'] if 'billing_period' in keys else None) or 'month'}
+
+
+def is_service(row):
+    return isinstance(row, dict) and row.get('service') is True
+
+
 def owner_subscription(db, owner_id):
-    return db.execute('''SELECT status,plan_code,ends_at,founder_price,billing_period
-        FROM subscriptions WHERE user_id=?''', (owner_id,)).fetchone()
+    """Subscription whose plan applies to the owner's workspace; admin and service accounts get «Команда»."""
+    row = db.execute('''SELECT s.status,s.plan_code,s.ends_at,s.founder_price,s.billing_period,u.telegram_user_id
+        FROM app_users u LEFT JOIN subscriptions s ON s.user_id=u.id WHERE u.id=?''', (owner_id,)).fetchone()
+    if row and is_unlimited(row['telegram_user_id']):
+        return service_subscription(row)
+    if not row or row['status'] is None:
+        return None
+    return row
 
 
 def owner_plan(db, owner_id):
@@ -171,6 +207,139 @@ def support_contact():
     return os.environ.get('SUPPORT_TELEGRAM', '').strip().lstrip('@')
 
 
+# --- manual plan management (payments are not integrated) -------------------------------------
+PAID_PLANS = tuple(plan['code'] for plan in PLANS if plan['price'])
+PLAN_CODES = tuple(plan['code'] for plan in PLANS)
+PERIODS = {'month': 'месяц', 'year': 'год'}
+
+
+def plan_by_code(code):
+    return next((plan for plan in PLANS if plan['code'] == code), None)
+
+
+def quote(code, period, founder_price=None):
+    """(price for the whole period in rubles, founder price applied) for a paid plan request."""
+    plan = plan_by_code(code)
+    if not plan or not plan['price'] or period not in PERIODS:
+        raise ValueError('Неизвестный тариф или период.')
+    founder = code == 'start' and founder_price is not None
+    monthly = founder_price if founder else plan['price']
+    return (monthly if period == 'month' else annual_monthly_price(monthly) * 12), founder
+
+
+def add_months(moment, months):
+    """Same day and time `months` later; the 31st becomes the last day of a shorter month."""
+    import calendar
+    month = moment.month - 1 + months
+    year, month = moment.year + month // 12, month % 12 + 1
+    return moment.replace(year=year, month=month, day=min(moment.day, calendar.monthrange(year, month)[1]))
+
+
+def period_end(current, code, months, now=None):
+    """New end date: a running period of the same plan is extended, otherwise counted from now."""
+    now = now or datetime.now(timezone.utc)
+    start = now
+    if current and current['plan_code'] == code and subscription_active(current, now) and _ends_at(current):
+        start = _ends_at(current)
+    return add_months(start, months)
+
+
+def format_until(ends_at):
+    return f'до {ends_at.astimezone(MSK):%d.%m.%Y}' if ends_at else 'без ограничения срока'
+
+
+def find_user(db, ident):
+    """app_users row by internal id, Telegram id or @username; ValueError when absent or ambiguous."""
+    ident = (ident or '').strip()
+    if not ident:
+        raise ValueError('Укажите пользователя: id, Telegram ID или @username.')
+    if ident.startswith('@') or not ident.lstrip('#').isdigit():
+        rows = db.execute('SELECT * FROM app_users WHERE lower(username)=lower(?)', (ident.lstrip('@'),)).fetchall()
+    else:
+        number = int(ident.lstrip('#'))
+        rows = db.execute('SELECT * FROM app_users WHERE id=? OR telegram_user_id=?', (number, number)).fetchall()
+    if not rows:
+        raise ValueError('Пользователь не найден: ' + ident)
+    if len(rows) > 1:
+        raise ValueError('Неоднозначно: ' + ident + ' совпадает с несколькими пользователями. Укажите @username.')
+    return rows[0]
+
+
+def set_plan(db, user_id, code, ends_at, period='month', founder=None, changed_by=None, source='admin', note=''):
+    """Store a plan granted by hand and log the change. founder: None keeps, True/False sets the founder price."""
+    if code not in PLAN_CODES:
+        raise ValueError('Неизвестный тариф.')
+    if period not in PERIODS:
+        raise ValueError('Неизвестный период.')
+    if code == 'free':
+        ends_at = None
+    with db:
+        old = db.execute('SELECT plan_code,ends_at,founder_price FROM subscriptions WHERE user_id=? FOR UPDATE',
+                         (user_id,)).fetchone()
+        if founder is None:
+            founder_value = old['founder_price'] if old else None
+        else:
+            founder_value = FOUNDER_START_PRICE if founder else None
+        db.execute('''INSERT INTO subscriptions(user_id,status,plan_code,ends_at,billing_period,founder_price,provider,updated_at)
+            VALUES(?,'active',?,?,?,?,'manual',now()) ON CONFLICT(user_id) DO UPDATE SET status='active',
+            plan_code=excluded.plan_code,ends_at=excluded.ends_at,billing_period=excluded.billing_period,
+            founder_price=excluded.founder_price,provider='manual',updated_at=now()''',
+                   (user_id, code, ends_at, period, founder_value))
+        db.execute('''INSERT INTO plan_changes(user_id,changed_by,source,old_plan,old_ends_at,new_plan,new_ends_at,
+            billing_period,founder_price,note) VALUES(?,?,?,?,?,?,?,?,?,?)''',
+                   (user_id, changed_by, source, old['plan_code'] if old else None, old['ends_at'] if old else None,
+                    code, ends_at, period, founder_value, (note or '')[:500]))
+    return ends_at
+
+
+def main(argv=None, db_factory=None):
+    """Emergency CLI: python -m leadgen.billing set-plan --user @name --plan pro --months 1"""
+    import argparse
+    parser = argparse.ArgumentParser(prog='python -m leadgen.billing', description='Ручное управление тарифами')
+    sub = parser.add_subparsers(dest='command', required=True)
+    cmd = sub.add_parser('set-plan', help='выдать тариф пользователю')
+    cmd.add_argument('--user', required=True, help='id, Telegram ID или @username')
+    cmd.add_argument('--plan', required=True, choices=PLAN_CODES)
+    term = cmd.add_mutually_exclusive_group()
+    term.add_argument('--months', type=int, help='срок в месяцах (продлевает текущий срок того же тарифа)')
+    term.add_argument('--forever', action='store_true', help='без даты окончания')
+    term.add_argument('--until', help='дата окончания YYYY-MM-DD (полночь МСК)')
+    cmd.add_argument('--founder', choices=('on', 'off'), help='цена основателя для «Старт»')
+    cmd.add_argument('--note', default='')
+    args = parser.parse_args(argv)
+    if args.plan != 'free' and args.months is None and not args.forever and not args.until:
+        parser.error('укажите --months, --until или --forever')
+    if args.months is not None and not 1 <= args.months <= 120:
+        parser.error('--months: от 1 до 120')
+    if db_factory is None:
+        from .app import env_load
+        from .database import db_open
+        env_load()
+        db_factory = db_open
+    db = db_factory()
+    try:
+        user = find_user(db, args.user)
+        current = db.execute('SELECT status,plan_code,ends_at FROM subscriptions WHERE user_id=?', (user['id'],)).fetchone()
+        if args.forever or args.plan == 'free':
+            ends_at = None
+        elif args.until:
+            day = date.fromisoformat(args.until)
+            ends_at = datetime(day.year, day.month, day.day, tzinfo=MSK)
+        else:
+            ends_at = period_end(current, args.plan, args.months)
+        period = 'year' if args.months and args.months % 12 == 0 else 'month'
+        set_plan(db, user['id'], args.plan, ends_at, period,
+                 None if args.founder is None else args.founder == 'on', source='cli', note=args.note)
+    except ValueError as exc:
+        print('Ошибка: ' + str(exc))
+        return 1
+    finally:
+        db.close()
+    name = user['display_name'] or ('@' + user['username'] if user['username'] else 'без имени')
+    print(f"Пользователь id {user['id']} ({name}): тариф «{PLAN_NAMES[args.plan]}» {format_until(ends_at)}.")
+    return 0
+
+
 DEFAULT_LEGAL_ENTITY = "ИП Маленюк Никита Романович, ОГРНИП 325911200139330, ИНН 910924258281"
 
 
@@ -180,3 +349,7 @@ def legal_entity():
     if not value or value == '0':
         return DEFAULT_LEGAL_ENTITY
     return value
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

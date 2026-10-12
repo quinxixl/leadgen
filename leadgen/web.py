@@ -19,7 +19,7 @@ from .core import TOPICS, TOPIC_CATEGORIES, Lead, enrich
 from .product import PIPELINE, FEEDBACK, ProductController
 from .crm import NOTE_LIMIT as CRM_NOTE_LIMIT, normalize as normalize_status
 from .web_auth import begin_login, consume_handoff, consume_login, login_status
-from .billing import (ANNUAL_DISCOUNT_PERCENT, FOUNDER_START_PRICE, PLANS, PLAN_NAMES, beta_label, days_left, effective_plan, legal_entity,
+from .billing import (ANNUAL_DISCOUNT_PERCENT, FOUNDER_START_PRICE, PLANS, PLAN_NAMES, beta_label, days_left, effective_plan, is_service, legal_entity,
                       owner_subscription, plan_limits, delay_clause, subscription_active, support_contact)
 from .rate_limit import RateLimited, hit, purge_expired
 from .integrations import integrations_enabled
@@ -303,7 +303,7 @@ def create_app(test_config=None):
         current_plan=effective_plan(sub) if sub else None
         return dict(csrf=session.get('csrf',''),user=g.get('user'),pipeline=PIPELINE,feedback=FEEDBACK,
                     subscription=sub,subscription_ok=subscription_active(sub),plan_names=PLAN_NAMES,
-                    current_plan=current_plan,current_limits=plan_limits(current_plan) if sub else None,
+                    current_plan=current_plan,current_limits=plan_limits(current_plan) if sub else None,service_plan=is_service(sub),
                     trial_days_left=days_left(sub) if current_plan=='trial' else None,beta_note=beta_label(sub) if sub else None,
                     annual_discount=ANNUAL_DISCOUNT_PERCENT,founder_start_price=FOUNDER_START_PRICE,integrations_enabled=app.config['INTEGRATIONS_ENABLED'],
                     support=support_contact(),plans=PLANS,
@@ -369,7 +369,9 @@ def create_app(test_config=None):
 
     @app.get('/app/billing')
     def billing():
-        return render_template('billing.html',founder_price=g.subscription['founder_price'] if g.subscription else None)
+        from .plan_requests import open_request
+        return render_template('billing.html',founder_price=g.subscription['founder_price'] if g.subscription else None,
+                               pending=open_request(db(),g.owner_id))
 
     @app.get('/healthz')
     def health():return {'status':'ok'}
@@ -675,10 +677,13 @@ def create_app(test_config=None):
     def admin():
         if not is_platform_admin(g.user):abort(403)
         health=db().execute('SELECT * FROM health ORDER BY source').fetchall()
-        users=db().execute('SELECT display_name,status,registered_at,last_seen_at FROM app_users ORDER BY id DESC LIMIT 100').fetchall()
         from . import feedback as fb
+        from . import plan_requests as pr
+        from .billing import PERIODS,is_unlimited
         from .telegram_monitor import reader_status
-        return render_template('admin.html',health=health,users=users,feedback_rows=fb.recent(db()),fb=fb,reader=reader_status(db()))
+        return render_template('admin.html',health=health,users=pr.admin_users(db()),feedback_rows=fb.recent(db()),fb=fb,
+                               reader=reader_status(db()),plan_requests=pr.open_requests(db()),plan_changes=pr.recent_changes(db()),
+                               terms=pr.TERMS,periods=PERIODS,is_unlimited=is_unlimited)
 
     @app.errorhandler(400)
     @app.errorhandler(403)
@@ -721,4 +726,6 @@ def create_app(test_config=None):
     register_tg_routes(app,db)
     from .feedback import register_feedback_routes
     register_feedback_routes(app,db)
+    from .plan_requests import register_plan_routes
+    register_plan_routes(app,db)
     return app
