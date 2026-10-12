@@ -153,12 +153,16 @@ def budget(text):
         return None, 'несколько сумм: нужна проверка'
     return amounts[0], 'RUB за проект'
 
-def classify(lead, minimum=5000, max_age_hours=72, now=None):
+def classify(lead, minimum=5000, max_age_hours=72, now=None, ai_topics=None):
+    """ai_topics: services detected by the LLM (ai_scoring); when given they replace the keyword services."""
     now = now or datetime.now(UTC)
     text = normalize(lead.title + '\n' + lead.text)
-    direct_tags = topics(lead.title if lead.trusted_order else text)
     need_tags = possible_need_topics(text)
-    tags = list(dict.fromkeys(direct_tags+need_tags))
+    if ai_topics:
+        tags = list(dict.fromkeys(ai_topics))
+    else:
+        direct_tags = topics(lead.title if lead.trusted_order else text)
+        tags = list(dict.fromkeys(direct_tags+need_tags))
     if not tags:
         return 'rejected', 'другая услуга', tags
     if lead.kind != 'order':
@@ -189,7 +193,8 @@ def classify(lead, minimum=5000, max_age_hours=72, now=None):
         return 'review', reason, tags
     if price < minimum:
         return 'rejected', 'бюджет ниже порога', tags
-    return 'ready', f'{", ".join(tags)}; бюджет от {price:,} ₽'.replace(',', ' '), tags
+    label = ('AI: услуга ' if ai_topics else '') + ', '.join(tags)
+    return 'ready', f'{label}; бюджет от ' + f'{price:,}'.replace(',', ' ') + ' ₽', tags
 
 def lead_profile(lead, minimum=5000):
     """Create a compact, deterministic brief and a transparent intent score."""

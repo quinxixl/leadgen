@@ -1,0 +1,62 @@
+{% extends 'base.html' %}{% from '_ai_nav.html' import ai_nav with context %}
+{% block title %}AI: журнал и качество — Сигналид{% endblock %}
+{% block head_extra %}<script src="{{ url_for('static',filename='ai_admin.js') }}" defer></script>{% endblock %}
+{% block content %}{{ ai_nav('journal', paused, '/admin/ai/journal') }}
+{% macro rate(stats) -%}{% if stats.rate is not none %}{{ stats.rate }}%{% else %}—{% endif %}{%- endmacro %}
+
+<section class="grid four metrics">
+<article class="panel"><span>Оценено за сутки / лимит</span><strong>{{ summary.used }} / {{ summary.limit }}</strong></article>
+<article class="panel"><span>Совпадение с разметкой, 7 дней</span><strong>{{ rate(summary.week) }}</strong><small>{{ summary.week.agree }} из {{ summary.week.total }}</small></article>
+<article class="panel"><span>Совпадение с разметкой, 30 дней</span><strong>{{ rate(summary.month) }}</strong><small>{{ summary.month.agree }} из {{ summary.month.total }}</small></article>
+<article class="panel"><span>Ошибок за сутки / 7 дней</span><strong>{{ summary.failed_day }} / {{ summary.failed_week }}</strong><small>в очереди на оценку: {{ summary.pending }}</small></article>
+</section>
+{% if not summary.configured %}<p class="notice warn">AI-оценка не настроена на сервере: задайте GROQ_API_KEY (и AI_SCORING_ENABLED≠0).</p>{% endif %}
+
+<section class="panel" id="quality">
+<h2>Качество</h2>
+<p class="muted">Совпадение категории AI с разметкой пользователей: «Подходит» ↔ заказ услуги, «Реклама» и «Конкурент» ↔ реклама, «Ищет работу» и «Вакансия» ↔ вакансия.</p>
+{% if summary.month.pairs %}<div class="table-wrap"><table><thead><tr><th>Разметка пользователя</th><th>Категория AI</th><th>Лидов за 30 дней</th></tr></thead><tbody>{% for label,category,count in summary.month.pairs %}<tr><td>{{ feedback_labels.get(label,label) }}</td><td>{{ category_labels.get(category,category) }}</td><td>{{ count }}</td></tr>{% endfor %}</tbody></table></div>{% else %}<p class="muted">Пока нет оценённых лидов с разметкой.</p>{% endif %}
+{% if summary.errors %}<h3>Частые ошибки за 7 дней</h3><ul>{% for row in summary.errors %}<li>{{ row.error }} — {{ row.n }}</li>{% endfor %}</ul>{% endif %}
+<h3>Расход по дням</h3>
+{% if summary.days %}<div class="table-wrap"><table><thead><tr><th>День (МСК)</th><th>Оценено</th><th>Ошибок</th><th>Токены оценки (вход / выход)</th><th>AI-отклики</th><th>Токены откликов</th></tr></thead><tbody>{% for day in summary.days %}<tr><td>{{ day.day.strftime('%d.%m.%Y') }}</td><td>{{ day.scored }}</td><td>{{ day.failed }}</td><td>{{ day.input_tokens }} / {{ day.output_tokens }}</td><td>{{ day.generations }}</td><td>{{ day.offer_tokens }}</td></tr>{% endfor %}</tbody></table></div>{% else %}<p class="muted">За 14 дней запросов не было.</p>{% endif %}
+</section>
+
+<section class="panel" id="journal">
+<h2>Журнал оценок</h2>
+<form method="get" class="filters">
+<label>Услуга<select name="topic"><option value="">Любая</option>{% for item in topics %}<option value="{{ item }}"{% if filters.topic==item %} selected{% endif %}>{{ item }}</option>{% endfor %}</select></label>
+<label>Категория AI<select name="category"><option value="">Любая</option>{% for item in categories %}<option value="{{ item }}"{% if filters.category==item %} selected{% endif %}>{{ category_labels[item] }}</option>{% endfor %}</select></label>
+<label>Статус<select name="status"><option value="">Любой</option>{% for key,label in score_statuses.items() %}<option value="{{ key }}"{% if filters.status==key %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+<label>Источник<select name="source"><option value="">Любой</option>{% for item in sources %}<option value="{{ item }}"{% if filters.source==item %} selected{% endif %}>{{ item }}</option>{% endfor %}</select></label>
+<label>С даты<input type="date" name="date_from" value="{{ filters.date_from }}"></label>
+<label>По дату<input type="date" name="date_to" value="{{ filters.date_to }}"></label>
+<label class="check"><input type="checkbox" name="feedback" value="1"{% if filters.feedback %} checked{% endif %}> С разметкой</label>
+<button>Показать</button><a href="/admin/ai/journal">Сбросить</a>
+</form>
+
+<form method="post" action="/admin/ai/rescore" id="rescore">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<div class="table-wrap"><table><thead><tr><th class="ai-pick"><input type="checkbox" data-select-all="lead_id" aria-label="Отметить все"></th><th>Лид</th><th>AI</th><th>Услуги AI</th><th>Правила</th><th>Разметка</th><th>Обновлено</th></tr></thead><tbody>
+{% for row in rows %}<tr>
+<td class="ai-pick"><input type="checkbox" name="lead_id" value="{{ row.lead_id }}" aria-label="Лид {{ row.lead_id }}"></td>
+<td>#{{ row.lead_id }} {% if row.url %}<a href="{{ row.url|original_url }}" target="_blank" rel="noopener noreferrer">{{ row.title or 'Без заголовка' }}</a>{% else %}{{ row.title }}{% endif %}<small>{{ row.source }}</small></td>
+<td>{{ score_statuses.get(row.status,row.status) }}{% if row.category %} · {{ category_labels.get(row.category,row.category) }}{% endif %}{% if row.score %} · {{ row.score }}/10{% endif %}
+<small>{% if row.status=='failed' and row.error %}{{ row.error }}{% elif row.summary %}{{ row.summary }}{% elif row.error %}{{ row.error }}{% endif %}</small>
+<small>{{ row.model or '—' }} · {{ 'v' ~ row.prompt_version if row.prompt_version else 'заводской' }}{% if row.input_tokens or row.output_tokens %} · {{ row.input_tokens }}/{{ row.output_tokens }} ток.{% endif %}</small></td>
+<td>{{ row.topics|join(', ') if row.topics else '—' }}</td>
+<td>{{ rule_statuses.get(row.rule_status,row.rule_status) }}<small>{{ row.rule_reason }}</small></td>
+<td>{% for label in row.feedback %}<span class="badge">{{ feedback_labels.get(label,label) }}</span> {% else %}—{% endfor %}</td>
+<td>{{ row.updated_at|dt }}</td>
+</tr>{% else %}<tr><td colspan="7">Оценок по этим фильтрам нет.</td></tr>{% endfor %}
+</tbody></table></div>
+{% if rows|length>=100 %}<p class="muted">Показаны последние 100 записей: уточните фильтры.</p>{% endif %}
+<h3>Повторная оценка</h3>
+<p class="muted">Лиды возвращаются в очередь, и фоновая оценка заново прогоняет их через активный промпт (не больше {{ rescore_max }} за раз, в пределах дневного лимита). Уже доставленные лиды повторно не отправляются.</p>
+<div class="filters">
+<button name="mode" value="selected" data-confirm="Отправить отмеченные лиды на повторную оценку?">Переоценить отмеченные</button>
+<label>Последние N лидов<input type="number" name="last" min="1" max="{{ rescore_max }}" placeholder="до {{ rescore_max }}"></label>
+<button class="quiet" name="mode" value="last" data-confirm="Отправить последние лиды на повторную оценку?">Переоценить последние N</button>
+</div>
+</form>
+</section>
+{% endblock %}

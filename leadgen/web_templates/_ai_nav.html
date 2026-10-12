@@ -1,0 +1,16 @@
+{% macro ai_nav(current, paused, back) -%}
+<p class="eyebrow"><a href="/admin">Управление продуктом</a> · AI</p>
+<h1>AI-запросы</h1>
+<p class="muted">Раздел виден только администраторам платформы: пользователи не видят промпты. Редактируются инструкции, модель и параметры; формат ответа, категории и список услуг задаёт код и добавляет к каждому запросу.</p>
+<nav class="ai-tabs" aria-label="Разделы AI">
+<a href="/admin/ai?task=scoring"{% if current=='scoring' %} aria-current="page"{% endif %}>Оценка объявлений</a>
+<a href="/admin/ai?task=offers"{% if current=='offers' %} aria-current="page"{% endif %}>AI-отклики</a>
+<a href="/admin/ai/journal"{% if current=='journal' %} aria-current="page"{% endif %}>Журнал и качество</a>
+</nav>
+<div class="notice{% if paused %} warn{% endif %} split" id="pause">
+{% if paused %}<span><strong>AI-оценка лидов на паузе</strong>{% if paused.at %} с {{ paused.at|dt }}{% endif %}. Новые лиды уходят по правилам без ожидания оценки.</span>
+<form method="post" action="/admin/ai/pause"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="paused" value="0"><input type="hidden" name="next" value="{{ back }}"><button>Возобновить оценку</button></form>
+{% else %}<span>AI-оценка лидов работает. Пауза останавливает новые запросы к Groq; доставка продолжается по правилам.</span>
+<form method="post" action="/admin/ai/pause"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="paused" value="1"><input type="hidden" name="next" value="{{ back }}"><button class="quiet" data-confirm="Приостановить AI-оценку лидов?">Поставить на паузу</button></form>{% endif %}
+</div>
+{%- endmacro %}

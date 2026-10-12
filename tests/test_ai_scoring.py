@@ -147,7 +147,7 @@ class ScoringPostgres(unittest.TestCase):
                 (url,url,json.dumps(payload,ensure_ascii=False),now)).fetchone()['id']
 
     def scorer(self,result):
-        def run(batch,examples,model=None):
+        def run(batch,examples,model=None,prompt=None):
             self.calls.append(([lead_id for lead_id,_ in batch],examples,model))
             if isinstance(result,Exception):raise result
             return {lead_id:result|{} for lead_id,_ in batch},{'prompt_tokens':600,'completion_tokens':100}

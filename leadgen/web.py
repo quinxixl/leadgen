@@ -728,4 +728,6 @@ def create_app(test_config=None):
     register_feedback_routes(app,db)
     from .plan_requests import register_plan_routes
     register_plan_routes(app,db)
+    from .ai_admin import register_ai_admin_routes
+    register_ai_admin_routes(app,db)
     return app

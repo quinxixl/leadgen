@@ -1,0 +1,112 @@
+{% extends 'base.html' %}{% from '_ai_nav.html' import ai_nav with context %}
+{% block title %}AI-запросы — Сигналид{% endblock %}
+{% block head_extra %}<script src="{{ url_for('static',filename='ai_admin.js') }}" defer></script>{% endblock %}
+{% block content %}{{ ai_nav(task, paused, '/admin/ai') }}
+{% macro version_name(prompt) -%}{% if prompt.id %}v{{ prompt.version }}{% else %}заводской{% endif %}{%- endmacro %}
+{% macro params_text(values) -%}{% for key,value in values.items() %}{{ params[key][0] if key in params else key }}: {{ value }}{% if not loop.last %}; {% endif %}{% else %}как в настройках сервера{% endfor %}{%- endmacro %}
+
+<section class="panel" id="active">
+<h2>{{ tasks[task] }}: что работает сейчас</h2>
+{% if active %}
+<p>Активна версия <strong>v{{ active.version }}</strong> с {{ active.activated_at|dt }} · модель <code>{{ active.model }}</code> · температура {{ '%.2f'|format(active.temperature|float) }}</p>
+<p class="muted">Параметры: {{ params_text(runtime.params) }}.{% if active.note %} Комментарий: {{ active.note }}{% endif %} Процессы подхватывают изменения в течение минуты.</p>
+<form method="post" action="/admin/ai/reset"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="task" value="{{ task }}"><button class="quiet" data-confirm="Снять v{{ active.version }} и вернуть заводской промпт из кода?">Вернуть заводской промпт</button></form>
+{% else %}
+<p>Работает <strong>заводской промпт</strong> из кода · модель <code>{{ factory.model }}</code> · температура {{ '%.2f'|format(factory.temperature) }}. Параметры берутся из настроек сервера.</p>
+{% endif %}
+</section>
+
+<section class="panel ai-editor" id="editor">
+{% if editor.source=='edit' %}<h2>Черновик v{{ editor.version }}</h2><p class="muted">Любое изменение сбрасывает проверку: перед активацией черновик снова нужно прогнать в песочнице.</p>
+{% else %}<h2>Новый черновик</h2><p class="muted">{% if editor.source=='form' %}Исправьте ошибку и сохраните.{% elif editor.copied %}Заполнено по версии v{{ editor.copied }}.{% else %}Заполнено по заводскому промпту.{% endif %} Новая версия сохраняется черновиком и не влияет на работу, пока её не активируют.</p>{% endif %}
+<p class="inline-actions ai-actions">{% if active %}<a class="button quiet" href="/admin/ai?task={{ task }}#editor">На основе активной</a>{% endif %}<a class="button quiet" href="/admin/ai?task={{ task }}&amp;from=factory#editor">На основе заводского</a></p>
+<form method="post" action="{{ '/admin/ai/prompts/' ~ editor.id if editor.source=='edit' else '/admin/ai/prompts' }}">
+<input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="task" value="{{ task }}">
+<label>Инструкции <small>до {{ max_instructions }} символов; системная часть с форматом ответа добавляется кодом</small><textarea name="instructions" rows="16" maxlength="{{ max_instructions }}" required data-counter="instructions-count">{{ editor.instructions }}</textarea></label>
+<p class="muted" id="instructions-count" aria-live="polite"></p>
+<div class="ai-fields">
+<label>Модель Groq<select name="model">{% for key,info in models.items() %}<option value="{{ key }}"{% if key==editor.model %} selected{% endif %}>{{ info.label }} · {{ key }}</option>{% endfor %}</select></label>
+<label>Температура (0–1)<input name="temperature" type="number" min="0" max="1" step="0.05" value="{{ editor.temperature }}" required></label>
+{% for key,spec in params.items() %}<label>{{ spec[0] }}<input name="param_{{ key }}" type="number" min="{{ spec[1] }}" max="{{ spec[2] }}" step="1" value="{{ editor.params.get(key,'') }}" placeholder="сервер: {{ param_defaults[key] }}"></label>{% endfor %}
+</div>
+<label>Комментарий к версии<input name="note" maxlength="500" value="{{ editor.note }}" placeholder="Что изменилось и зачем"></label>
+<button>{{ 'Сохранить черновик' if editor.source=='edit' else 'Создать черновик' }}</button>
+</form>
+</section>
+
+<section class="panel" id="versions">
+<h2>Версии</h2>
+{% if rows %}<div class="table-wrap"><table><thead><tr><th>Версия</th><th>Статус</th><th>Модель и параметры</th><th>Автор</th><th>Проверка</th><th>Действия</th></tr></thead><tbody>
+{% for row in rows %}<tr>
+<td><strong>v{{ row.version }}</strong>{% if row.note %}<small>{{ row.note }}</small>{% endif %}</td>
+<td>{% if row.status=='active' %}<span class="badge ok">Активна</span>{% else %}{{ statuses[row.status] }}{% endif %}{% if row.activated_at %}<small>активирована {{ row.activated_at|dt }}</small>{% endif %}</td>
+<td><code>{{ row.model }}</code><small>t={{ '%.2f'|format(row.temperature|float) }} · {{ params_text(row.params or {}) }}</small></td>
+<td>{{ row.author or '—' }}<small>{{ row.created_at|dt }}</small></td>
+<td>{% if row.status=='draft' %}{% if test_current(row) %}<span class="badge ok">Проверен</span><small>{{ row.test_passed_at|dt }}</small>{% elif row.test_passed_at %}<span class="badge fail">Изменён после проверки</span>{% else %}<span class="badge">Не проверен</span>{% endif %}{% elif row.activated_at %}Была в работе{% else %}—{% endif %}</td>
+<td><div class="inline-actions ai-actions">
+{% if row.status=='draft' %}<a class="button quiet" href="/admin/ai?task={{ task }}&amp;edit={{ row.id }}#editor">Изменить</a><a class="button quiet" href="/admin/ai?task={{ task }}&amp;draft={{ row.id }}#sandbox">Песочница</a>
+<form method="post" action="/admin/ai/prompts/{{ row.id }}/activate"><input type="hidden" name="csrf" value="{{ csrf }}"><button{% if not test_current(row) %} disabled title="Сначала проверьте черновик в песочнице"{% endif %} data-confirm="Активировать v{{ row.version }}? Она заменит текущую версию для всех пользователей.">Активировать</button></form>
+<form method="post" action="/admin/ai/prompts/{{ row.id }}/discard"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="quiet" data-confirm="Убрать черновик v{{ row.version }} в архив?">В архив</button></form>
+{% elif row.status=='archived' and row.activated_at %}<form method="post" action="/admin/ai/prompts/{{ row.id }}/activate"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="quiet" data-confirm="Откатиться на v{{ row.version }}?">Откатить на эту версию</button></form>{% endif %}
+<a class="button quiet" href="/admin/ai?task={{ task }}&amp;from={{ row.id }}#editor">Копия в черновик</a>
+</div></td></tr>{% endfor %}
+</tbody></table></div>
+{% else %}<p class="muted">Версий пока нет: работает заводской промпт. Создайте черновик выше.</p>{% endif %}
+</section>
+
+<section class="panel" id="sandbox">
+<h2>Песочница</h2>
+<p class="muted">Черновик и активная версия запускаются рядом на одних и тех же данных. Запуск расходует токены Groq: не больше 30 запусков в час на администратора. Если ответ черновика полностью соответствует схеме, черновик отмечается проверенным.</p>
+<form method="post" action="/admin/ai/sandbox"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="task" value="{{ task }}">
+<label>Черновик<select name="draft">{% for row in drafts %}<option value="{{ row.id }}"{% if sandbox_draft and row.id==sandbox_draft.id %} selected{% endif %}>v{{ row.version }}{% if row.note %} — {{ row.note[:60] }}{% endif %}</option>{% endfor %}<option value=""{% if not drafts %} selected{% endif %}>Без черновика: только активная версия</option></select></label>
+{% if task=='scoring' %}
+<label>Текст объявления <small>если заполнен, лиды ниже не используются</small><textarea name="text" rows="5" maxlength="6000" placeholder="Вставьте текст объявления">{{ form.get('text','') }}</textarea></label>
+<fieldset><legend>Или недавние лиды</legend><div class="ai-fields">
+<label>ID лидов через запятую<input name="lead_ids" value="{{ form.get('lead_ids','') }}" placeholder="12, 15"></label>
+<label>Источник<select name="source"><option value="">Любой</option>{% for item in sandbox_sources %}<option value="{{ item }}"{% if form.get('source')==item %} selected{% endif %}>{{ item }}</option>{% endfor %}</select></label>
+<label>Последние N (до {{ sandbox_max }})<input name="last" type="number" min="1" max="{{ sandbox_max }}" value="{{ form.get('last','5') }}"></label>
+<label class="check"><input type="checkbox" name="with_feedback" value="1"{% if form.get('with_feedback') %} checked{% endif %}> Только с разметкой пользователей</label>
+</div></fieldset>
+{% else %}
+<div class="ai-fields">
+<label>ID лида<input name="lead_id" required value="{{ form.get('lead_id','') }}" inputmode="numeric"></label>
+<label>ID проекта <small>необязательно: профиль откликов проекта</small><input name="project_id" value="{{ form.get('project_id','') }}" inputmode="numeric"></label>
+</div>
+{% endif %}
+<button>Запустить</button>
+</form>
+
+{% if sandbox %}<h3>Результат</h3>
+{% if sandbox.task=='offers' %}<p class="muted">Лид #{{ sandbox.lead.id }}: {{ sandbox.lead.title }} · {{ sandbox.lead.source }}{% if sandbox.project %} · проект {{ sandbox.project }}{% endif %}</p>{% endif %}
+<div class="ai-compare">
+{% for name in ('draft','active') %}{% if name in sandbox.runs %}{% set run=sandbox.runs[name] %}
+<section>
+<h4>{{ 'Черновик' if name=='draft' else 'Активная' }} · {{ version_name(run.prompt) }}</h4>
+<p><span class="badge {{ 'ok' if run.valid else 'fail' }}">{{ 'Схема: ответ корректен' if run.valid else 'Схема: ошибка' }}</span></p>
+<p class="muted"><code>{{ run.prompt.model }}</code> · {{ run.latency_ms }} мс · токены: вход {{ run.usage.get('prompt_tokens',0) }}, выход {{ run.usage.get('completion_tokens',0) }}</p>
+{% if run.error %}<p class="notice danger">{{ run.error }}</p>{% endif %}
+{% if sandbox.task=='scoring' %}
+{% for lead_id,meta in sandbox['items'] %}{% set result=run.results.get(lead_id) %}
+<div class="ai-result"><strong>#{{ lead_id }} · {{ meta.title }}</strong><small>{{ meta.source }}{% if meta.feedback %} · разметка: {% for label in meta.feedback %}{{ feedback_labels.get(label,label) }}{% if not loop.last %}, {% endif %}{% endfor %}{% endif %}</small>
+{% if result %}<p>{{ ai_category.get(result.category, result.category) }} · {{ result.score }}/10 · срочность: {{ ai_urgency.get(result.urgency, result.urgency) }}{% if ai_budget(result) %} · бюджет {{ ai_budget(result) }}{% endif %}</p>
+<p>Услуги: {{ result.topics|join(', ') if result.topics else 'не определены' }}</p>
+{% if result.summary %}<p class="muted">{{ result.summary }}</p>{% endif %}
+{% else %}<p class="muted">Нет корректного результата.</p>{% endif %}
+{% if run.dropped.get(lead_id) %}<small>Отброшены услуги не из списка: {{ run.dropped[lead_id]|join(', ') }}</small>{% endif %}
+</div>{% endfor %}
+{% else %}
+{% for title,text in run.drafts.items() %}<div class="ai-result"><strong>{{ title }}</strong><p class="excerpt">{{ text }}</p></div>{% endfor %}
+{% endif %}
+<details class="fold"><summary>Сырой ответ модели</summary><pre class="ai-pre">{{ run.raw or '—' }}</pre></details>
+</section>{% endif %}{% endfor %}
+</div>{% endif %}
+</section>
+
+<details class="panel fold" id="factory"><summary>Заводской промпт и системная часть</summary>
+<h3>Заводские инструкции (из кода, только чтение)</h3>
+<p class="muted">Модель <code>{{ factory.model }}</code>, температура {{ '%.2f'|format(factory.temperature) }}. Чтобы вернуться к нему, снимите активную версию кнопкой «Вернуть заводской промпт» или создайте черновик «На основе заводского».</p>
+<pre class="ai-pre">{{ factory.instructions }}</pre>
+<h3>Системная часть (добавляется кодом к любым инструкциям)</h3>
+<pre class="ai-pre">{{ contract }}</pre>
+</details>
+{% endblock %}
