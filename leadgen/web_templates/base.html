@@ -22,7 +22,7 @@
 <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static',filename='favicon-32.png') }}">
 <link rel="apple-touch-icon" href="{{ url_for('static',filename='apple-touch-icon.png') }}">
 <link rel="stylesheet" href="{{ url_for('static',filename='app.css') }}">
-<script src="{{ url_for('static',filename='motion.js') }}" defer></script>
+<script src="{{ url_for('static',filename='motion.js') }}"></script>
 <script src="{{ url_for('static',filename='nav.js') }}" defer></script>
 <script type="application/ld+json">{"@context":"https://schema.org","@type":"Organization","name":"Сигналид","url":"{{ site_root }}","logo":"{{ site_root ~ url_for('static',filename='favicon.svg') }}"{% if support %},"sameAs":["https://t.me/{{ support }}"]{% endif %}}</script>
 {% block head_extra %}{% endblock %}

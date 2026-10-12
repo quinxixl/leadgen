@@ -8,7 +8,13 @@
   --ok:#0f9d58;--ok-soft:#e7f7ee;--danger:#d93025;
   --night:#0a0f1e;--night-2:#121a30;--night-line:#232c47;--night-text:#c7cde0;
   --radius:14px;--radius-sm:9px;--shadow:0 1px 2px rgba(13,19,36,.05),0 6px 24px rgba(13,19,36,.06);
-  --ease-out:cubic-bezier(.2,.8,.2,1);--dur-fast:140ms;--dur:220ms;--dur-slow:360ms;--dur-fold:280ms;
+  /* Motion tokens. Entrances decelerate hard (expo-out), state changes move on a calm standard curve,
+     presses and color changes snap, small panels leave on an accelerating exit (fades that hand over to new
+     content use the front-loaded standard curve instead). Durations grow with distance and size. */
+  --ease-out-expo:cubic-bezier(.16,1,.3,1);--ease-standard:cubic-bezier(.32,.72,0,1);
+  --ease-snap:cubic-bezier(.2,0,0,1);--ease-exit:cubic-bezier(.4,0,1,1);
+  --dur-press:90ms;--dur-fast:150ms;--dur:240ms;--dur-fold:340ms;--dur-slow:440ms;--dur-reveal:720ms;
+  --dur-page-out:140ms;--dur-page-in:380ms;
   --font:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
   font-family:var(--font);color:var(--ink);background:var(--bg);font-size:16px;line-height:1.6;
   -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility
@@ -16,7 +22,7 @@
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);min-height:100vh}
 img,svg{max-width:100%}
-a{color:var(--brand-ink);text-underline-offset:3px;text-decoration-thickness:1px;transition:color var(--dur-fast) var(--ease-out),background-color var(--dur-fast) var(--ease-out),border-color var(--dur-fast) var(--ease-out)}
+a{color:var(--brand-ink);text-underline-offset:3px;text-decoration-thickness:1px;transition:color var(--dur-fast) var(--ease-snap),background-color var(--dur-fast) var(--ease-snap),border-color var(--dur-fast) var(--ease-snap)}
 a:hover{color:var(--brand)}
 h1,h2,h3{line-height:1.15;letter-spacing:-.025em;color:var(--ink);margin:0 0 .5em}
 h1{font-size:clamp(28px,3.4vw,38px);font-weight:750;overflow-wrap:anywhere}
@@ -26,7 +32,8 @@ p{margin:0 0 1em;overflow-wrap:anywhere}
 code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.9em;background:var(--surface-2);padding:2px 6px;border-radius:5px}
 .skip,.offscreen{position:absolute;left:-10000px}
 .skip:focus{left:16px;top:16px;background:#fff;padding:10px 14px;z-index:100;border-radius:8px}
-:focus-visible{outline:3px solid rgba(54,84,245,.45);outline-offset:2px}
+:focus-visible{outline:3px solid rgba(54,84,245,.45);outline-offset:2px;animation:focus-ring var(--dur) var(--ease-out-expo)}
+@keyframes focus-ring{from{outline-color:rgba(54,84,245,0);outline-offset:6px}}
 
 /* Brand */
 .brand{display:inline-flex;align-items:center;gap:10px;color:var(--ink);text-decoration:none;font-weight:800;font-size:19px;letter-spacing:-.03em}
@@ -39,9 +46,10 @@ code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.9em;back
 /* Buttons */
 .button,button{display:inline-flex;align-items:center;justify-content:center;gap:8px;border:1px solid var(--brand);border-radius:var(--radius-sm);
   padding:11px 18px;background:var(--brand);color:#fff;font:inherit;font-size:14px;font-weight:650;text-decoration:none;cursor:pointer;line-height:1.4;
-  transition:background-color var(--dur-fast) var(--ease-out),border-color var(--dur-fast) var(--ease-out),color var(--dur-fast) var(--ease-out),box-shadow var(--dur-fast) var(--ease-out),transform var(--dur-fast) var(--ease-out);white-space:normal;text-align:center}
+  transition:background-color var(--dur-fast) var(--ease-snap),border-color var(--dur-fast) var(--ease-snap),color var(--dur-fast) var(--ease-snap),box-shadow var(--dur-fast) var(--ease-snap),transform var(--dur) var(--ease-out-expo);white-space:normal;text-align:center}
 .button:hover,button:hover{background:var(--brand-ink);border-color:var(--brand-ink);color:#fff}
-.button:active,button:active{transform:translateY(1px) scale(.985);transition-duration:60ms}
+.button:active,button:active{transform:scale(.97);transition-duration:var(--dur-press);transition-timing-function:var(--ease-snap)}
+.button.large:active,button.large:active{transform:scale(.985)}
 .button.large{padding:15px 24px;font-size:16px;border-radius:11px}
 .quiet,.button.quiet{background:var(--surface);color:var(--ink);border-color:var(--line-2)}
 .quiet:hover,.button.quiet:hover{background:var(--surface-2);color:var(--ink);border-color:var(--line-2)}
@@ -58,7 +66,7 @@ form{margin:0}
 form>button,form>.button{margin-top:16px}
 label{display:block;font-size:14px;font-weight:600;margin:16px 0;color:var(--ink-2)}
 input,textarea,select{display:block;width:100%;border:1px solid var(--line-2);border-radius:var(--radius-sm);padding:10px 12px;margin-top:6px;
-  background:var(--surface);color:var(--ink);font:inherit;font-size:15px;font-weight:400;transition:border-color var(--dur-fast) var(--ease-out),box-shadow var(--dur-fast) var(--ease-out),background-color var(--dur-fast) var(--ease-out)}
+  background:var(--surface);color:var(--ink);font:inherit;font-size:15px;font-weight:400;transition:border-color var(--dur-fast) var(--ease-snap),box-shadow var(--dur-fast) var(--ease-snap),background-color var(--dur-fast) var(--ease-snap)}
 input:focus,textarea:focus,select:focus{outline:0;border-color:var(--brand);box-shadow:0 0 0 3px rgba(54,84,245,.15)}
 textarea{resize:vertical}
 .check{display:flex;align-items:flex-start;gap:10px;font-weight:450}
@@ -113,7 +121,7 @@ td a{overflow-wrap:anywhere}
 .filters>a{padding:10px 4px;font-size:14px}
 .filters select{max-width:100%}
 .lead-list{display:grid;gap:10px}
-.lead-list .panel{margin:0;transition:border-color var(--dur-fast) var(--ease-out),box-shadow var(--dur-fast) var(--ease-out)}
+.lead-list .panel{margin:0;transition:border-color var(--dur-fast) var(--ease-snap),box-shadow var(--dur-fast) var(--ease-snap)}
 .lead-list .panel:hover{border-color:var(--line-2);box-shadow:0 2px 4px rgba(13,19,36,.05),0 12px 32px rgba(13,19,36,.08)}
 .lead-list h2{font-size:18px;margin:8px 0 6px}
 .lead-list h2 a{text-decoration:none;color:var(--ink)}
@@ -180,7 +188,12 @@ td a{overflow-wrap:anywhere}
 
 .hero{max-width:1200px;margin:0 auto;padding:72px 24px 96px;display:grid;grid-template-columns:1.05fr .95fr;gap:56px;align-items:center}
 .hero h1{font-size:clamp(40px,5.4vw,66px);line-height:1.02;letter-spacing:-.045em;font-weight:800;margin-bottom:22px}
-.hero h1 em{font-style:normal;background:linear-gradient(92deg,#ff7a4d,#ff5a2c 40%,#ffb36b);-webkit-background-clip:text;background-clip:text;color:transparent}
+.hero h1 em{font-style:normal}
+/* Headline words are atomic boxes so the intro can mask each one. The accent gradient is painted per word
+   (a clipped-text background cannot reach transformed children); the two halves continue one gradient. */
+.hero h1 .w,.hero h1 .w>span{display:inline-block}
+.hero h1 em .w>span{background:linear-gradient(92deg,#ff5a2c,#ffb36b);-webkit-background-clip:text;background-clip:text;color:transparent}
+.hero h1 em .w:first-child>span{background-image:linear-gradient(92deg,#ff7a4d,#ff5c2e)}
 .hero .lead{font-size:19px;line-height:1.55;max-width:560px;color:var(--night-text);margin-bottom:30px}
 .hero .actions{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:18px}
 .trust{display:flex;gap:18px;flex-wrap:wrap;font-size:13.5px;color:#98a1ba;margin:0;padding:0;list-style:none}
@@ -191,9 +204,10 @@ td a{overflow-wrap:anywhere}
 .mock{position:relative}
 .mock-window{background:linear-gradient(180deg,#141c34,#0f162b);border:1px solid var(--night-line);border-radius:18px;padding:18px;box-shadow:0 30px 80px rgba(0,0,0,.45)}
 .mock-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;font-size:12.5px;color:#8f99b5}
-.live{display:inline-flex;align-items:center;gap:8px;color:#7ee2a8;font-weight:600}
-.live:before{content:"";width:8px;height:8px;border-radius:50%;background:#34d27b;box-shadow:0 0 0 0 rgba(52,210,123,.6);animation:pulse 2s infinite}
-@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(52,210,123,.55)}70%{box-shadow:0 0 0 10px rgba(52,210,123,0)}100%{box-shadow:0 0 0 0 rgba(52,210,123,0)}}
+.live{display:inline-flex;align-items:center;gap:8px;color:#7ee2a8;font-weight:600;position:relative}
+.live:before{content:"";width:8px;height:8px;border-radius:50%;background:#34d27b}
+.live:after{content:"";position:absolute;left:0;top:50%;width:8px;height:8px;margin-top:-4px;border-radius:50%;background:#34d27b;opacity:0;animation:live-ping 2.4s var(--ease-out-expo) infinite}
+@keyframes live-ping{0%{opacity:.5;transform:scale(1)}70%,100%{opacity:0;transform:scale(3)}}
 .lead-card{background:#fff;color:var(--ink);border-radius:14px;padding:16px 16px 14px;margin-bottom:10px}
 .lead-card:last-child{margin-bottom:0}
 .lead-card.dim{opacity:.55;transform:scale(.97);transform-origin:top center}
@@ -218,8 +232,8 @@ td a{overflow-wrap:anywhere}
 .pain .num{font-size:13px;font-weight:700;color:var(--signal);margin-bottom:10px;display:block}
 .pain p{color:var(--muted);margin:0}
 .features{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
-.feature{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:26px;transition:border-color .2s,transform .2s}
-.feature:hover{border-color:#c5cdf9;transform:translateY(-2px)}
+.feature{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:26px;transition:border-color var(--dur) var(--ease-snap)}
+.feature:hover{border-color:#c5cdf9}
 .feature .icon{width:44px;height:44px;border-radius:12px;background:var(--brand-soft);color:var(--brand);display:grid;place-items:center;margin-bottom:16px}
 .feature .icon svg{width:22px;height:22px}
 .feature p{color:var(--muted);margin:0;font-size:15px}
@@ -263,9 +277,9 @@ td a{overflow-wrap:anywhere}
 .faq details{border-bottom:1px solid var(--line);padding:4px 0}
 .faq summary{cursor:pointer;font-weight:650;font-size:17px;padding:18px 36px 18px 0;list-style:none;position:relative}
 .faq summary::-webkit-details-marker{display:none}
-.faq summary{transition:color var(--dur-fast) var(--ease-out)}
+.faq summary{transition:color var(--dur-fast) var(--ease-snap)}
 .faq summary:hover{color:var(--brand-ink)}
-.faq summary:after{content:"+";position:absolute;right:4px;top:14px;font-size:24px;font-weight:400;color:var(--muted);transition:transform var(--dur-fold) var(--ease-out),color var(--dur-fast) var(--ease-out)}
+.faq summary:after{content:"+";position:absolute;right:4px;top:14px;font-size:24px;font-weight:400;color:var(--muted);transition:transform var(--dur-fold) var(--ease-standard),color var(--dur-fast) var(--ease-snap)}
 .faq summary:hover:after{color:var(--brand-ink)}
 .faq details[open] summary:after{transform:rotate(45deg)}
 .faq details p{color:var(--muted);padding-right:36px}
@@ -422,12 +436,12 @@ td a{overflow-wrap:anywhere}
 .side-nav .nav-more summary svg{width:18px;height:18px;flex:none;opacity:.75}
 .side-nav .nav-more summary span{display:inline;width:auto;height:auto;background:none;position:static;border-radius:0}
 .side-nav .nav-more summary span:before,.side-nav .nav-more summary span:after{content:none}
-.side-nav .nav-more summary:after{content:"";margin-left:auto;width:7px;height:7px;border-right:1.6px solid currentColor;border-bottom:1.6px solid currentColor;transform:rotate(45deg);opacity:.6;transition:transform var(--dur-fold) var(--ease-out)}
+.side-nav .nav-more summary:after{content:"";margin-left:auto;width:7px;height:7px;border-right:1.6px solid currentColor;border-bottom:1.6px solid currentColor;transform:rotate(45deg);opacity:.6;transition:transform var(--dur-fold) var(--ease-standard)}
 .side-nav .nav-more[open] summary:after{transform:rotate(225deg)}
 .side-nav .nav-more a{padding-left:20px}
 details.fold>summary{list-style:none;cursor:pointer;font-weight:650;display:flex;align-items:center;gap:8px}
 details.fold>summary::-webkit-details-marker{display:none}
-details.fold>summary:before{content:"";width:7px;height:7px;border-right:1.6px solid var(--muted);border-bottom:1.6px solid var(--muted);transform:rotate(-45deg);transition:transform var(--dur-fold) var(--ease-out)}
+details.fold>summary:before{content:"";width:7px;height:7px;border-right:1.6px solid var(--muted);border-bottom:1.6px solid var(--muted);transform:rotate(-45deg);transition:transform var(--dur-fold) var(--ease-standard)}
 details.fold[open]>summary:before{transform:rotate(45deg)}
 details.fold[open]>summary{margin-bottom:12px}
 details.fold:not(.panel){margin:12px 0}
@@ -446,39 +460,105 @@ details.panel.fold>summary{font-size:18px}
 .results-widget h2{margin-top:4px}
 .ai-score{margin:8px 0;font-size:14px;overflow-wrap:anywhere}
 
-/* Motion: short ease-out entrances that answer user actions; transform/opacity only */
-@keyframes fade-in{from{opacity:0}to{opacity:1}}
-@keyframes rise-in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
-@keyframes drop-in{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
-@keyframes pop-in{from{opacity:0;transform:translateY(-6px) scale(.98)}to{opacity:1;transform:none}}
+/* ---------- Motion ----------
+   One system (tokens in :root): entrances decelerate on --ease-out-expo, state changes use --ease-standard,
+   presses and colors --ease-snap, exits leave on --ease-exit. Only transform and opacity move, apart from the
+   disclosure height (motion.js) and the headline masks. Keyframes without a "to" step settle on the element's
+   own resting style, so an entrance can never leave anything behind. */
+@keyframes fade-in{from{opacity:0}}
+@keyframes rise-in{from{opacity:0;transform:translateY(8px)}}
+@keyframes drop-in{from{opacity:0;transform:translateY(-6px)}}
+@keyframes menu-in{from{opacity:0;transform:scale(.94)}}
+@keyframes menu-out{to{opacity:0;transform:scale(.96)}}
+@keyframes sheet-in{from{opacity:0;transform:translateY(-12px)}}
+@keyframes sheet-out{to{opacity:0;transform:translateY(-8px)}}
+@keyframes item-in{from{opacity:0;transform:translateY(-6px)}}
+/* Stagger index for short cascades */
+:is(.lead-list,.menu .site-nav,.drawer .side-nav,.drawer)>*{--i:10}
+:is(.lead-list,.menu .site-nav,.drawer .side-nav)>:nth-child(1){--i:0}:is(.lead-list,.menu .site-nav,.drawer .side-nav)>:nth-child(2){--i:1}
+:is(.lead-list,.menu .site-nav,.drawer .side-nav)>:nth-child(3){--i:2}:is(.lead-list,.menu .site-nav,.drawer .side-nav)>:nth-child(4){--i:3}
+:is(.lead-list,.menu .site-nav,.drawer .side-nav)>:nth-child(5){--i:4}:is(.lead-list,.menu .site-nav,.drawer .side-nav)>:nth-child(6){--i:5}
+:is(.lead-list,.menu .site-nav,.drawer .side-nav)>:nth-child(7){--i:6}:is(.lead-list,.menu .site-nav,.drawer .side-nav)>:nth-child(8){--i:7}
+:is(.lead-list,.menu .site-nav,.drawer .side-nav)>:nth-child(9){--i:8}:is(.lead-list,.menu .site-nav,.drawer .side-nav)>:nth-child(10){--i:9}
 /* Flash messages after a form submit */
-.notice[role=status],.notice[role=alert]{animation:drop-in var(--dur) var(--ease-out) both}
-/* Disclosures: content eases in when opened */
-details.fold[open]>:not(summary),.side-nav .nav-more[open]>a,.faq details[open]>:not(summary){animation:drop-in var(--dur) var(--ease-out) both}
-/* Dropdown menus: public header menu and app mobile drawer */
-.menu[open] .site-nav{transform-origin:top right;animation:pop-in var(--dur) var(--ease-out) both}
-.mobile-top details[open] .drawer{transform-origin:top center;animation:pop-in var(--dur) var(--ease-out) both}
-/* The one orchestrated moment: lead cards settle in after opening the list or changing filters */
-.lead-list>*{animation:rise-in var(--dur-slow) var(--ease-out) both}
-.lead-list>:nth-child(2){animation-delay:30ms}.lead-list>:nth-child(3){animation-delay:60ms}
-.lead-list>:nth-child(4){animation-delay:90ms}.lead-list>:nth-child(5){animation-delay:120ms}
-.lead-list>:nth-child(n+6){animation-delay:150ms}
+.notice[role=status],.notice[role=alert]{animation:drop-in var(--dur-slow) var(--ease-out-expo) backwards}
 /* Login: waiting hint and "code expired" notice revealed by polling */
-[data-login-waiting],[data-login-expired]{animation:fade-in var(--dur) var(--ease-out) both}
-/* Disclosures with motion.js: height, content and icon animate together; CSS entrance is off to avoid a double animation */
+[data-login-waiting],[data-login-expired]{animation:fade-in var(--dur-slow) var(--ease-standard) backwards}
+/* Disclosures without motion.js: content eases in when opened */
+details.fold[open]>:not(summary),.side-nav .nav-more[open]>a,.faq details[open]>:not(summary){animation:drop-in var(--dur) var(--ease-out-expo) backwards}
+/* Disclosures with motion.js: height, content and icon move together on one curve; the CSS entrance would double it */
 .js-details .faq details[open]>:not(summary),.js-details details.fold[open]>:not(summary),.js-details .side-nav .nav-more[open]>a{animation:none}
 .faq details.is-closing summary:after{transform:none}
 details.fold.is-closing>summary:before{transform:rotate(-45deg)}
 .side-nav .nav-more.is-closing summary:after{transform:rotate(45deg)}
+/* Menus grow out of their trigger and items follow in a quick cascade; motion.js plays the exit.
+   Header menu: the panel scales from the burger button above its right edge. Cabinet drawer: a sheet from under the bar. */
+.menu[open] .site-nav{transform-origin:calc(100% - 21px) -31px;animation:menu-in var(--dur) var(--ease-out-expo) backwards}
+.menu[open] .site-nav>*{animation:item-in var(--dur-slow) var(--ease-out-expo) backwards;animation-delay:calc(40ms + var(--i)*16ms)}
+.menu.is-closing .site-nav{animation:menu-out var(--dur-fast) var(--ease-exit) forwards}
+.mobile-top details[open] .drawer{animation:sheet-in var(--dur-slow) var(--ease-out-expo) backwards}
+.mobile-top details[open] .drawer .side-nav>*,.mobile-top details[open] .drawer>:not(.side-nav){animation:item-in var(--dur-slow) var(--ease-out-expo) backwards;animation-delay:calc(30ms + var(--i)*14ms)}
+.mobile-top details.is-closing .drawer{animation:sheet-out var(--dur-fast) var(--ease-exit) forwards}
+/* Cabinet lead list: cards settle in after opening the list or changing filters */
+.lead-list>*{animation:rise-in var(--dur-slow) var(--ease-out-expo) backwards;animation-delay:calc(min(var(--i),6)*36ms)}
 /* Interactive surfaces: soft color changes on hover/focus */
-.side-nav a,.side-nav .nav-more summary,.quick-links a,.plan-chip,.site-footer a,.menu summary,.mobile-top details summary,details.fold>summary{transition:color var(--dur-fast) var(--ease-out),background-color var(--dur-fast) var(--ease-out),border-color var(--dur-fast) var(--ease-out)}
-.side-nav a svg{transition:opacity var(--dur-fast) var(--ease-out),color var(--dur-fast) var(--ease-out)}
-/* Scroll reveal (motion.js): blocks below the fold rise in once as they enter the viewport */
-.reveal{opacity:0;transform:translateY(16px)}
-.reveal.is-revealed{opacity:1;transform:none;transition:opacity 480ms var(--ease-out),transform 480ms var(--ease-out);transition-delay:var(--reveal-delay,0ms)}
+.side-nav a,.side-nav .nav-more summary,.quick-links a,.plan-chip,.site-footer a,.menu summary,.mobile-top details summary,details.fold>summary{transition:color var(--dur-fast) var(--ease-snap),background-color var(--dur-fast) var(--ease-snap),border-color var(--dur-fast) var(--ease-snap)}
+.side-nav a svg{transition:opacity var(--dur-fast) var(--ease-snap),color var(--dur-fast) var(--ease-snap)}
+/* Primary CTA only: a warm glow gathers under the button on hover */
+.hero .button.signal,.cta .button.signal{position:relative}
+.hero .button.signal:after,.cta .button.signal:after{content:"";position:absolute;inset:0;border-radius:inherit;box-shadow:0 14px 34px -12px rgba(255,90,44,.75);opacity:0;transition:opacity var(--dur-slow) var(--ease-out-expo);pointer-events:none}
+@media(hover:hover){.hero .button.signal:hover:after,.cta .button.signal:hover:after{opacity:1}}
+
+/* Signature moment: the landing hero, once per session. motion.js sets .intro on <html> before the first
+   paint. The headline rises word by word out of line masks; on the right the product story plays:
+   monitoring is live → a request arrives → its facts light up one by one → the temperature settles →
+   reply actions appear → the previous lead takes its place below. Nothing waits on it: links work
+   throughout and keyboard focus finishes it at once. */
+@keyframes intro-word{from{transform:translateY(118%)}}
+@keyframes intro-fade{from{opacity:0}}
+@keyframes intro-up{from{opacity:0;transform:translateY(10px)}}
+@keyframes intro-card{from{transform:translateY(-14px) scale(.97)}}
+@keyframes intro-chip{from{opacity:0;transform:translateY(4px)}}
+@keyframes intro-tint{0%{opacity:0}30%,50%{opacity:1}100%{opacity:0}}
+@keyframes intro-badge{from{opacity:0;transform:scale(.8)}}
+@keyframes intro-dim{from{opacity:0;transform:translateY(12px) scale(.97)}}
+.intro .hero h1 .w{clip-path:inset(-.3em -.15em -.18em)}
+.intro .hero h1 .w>span{animation:intro-word 1000ms var(--ease-out-expo) 80ms backwards}
+.intro .hero h1>.w+.w>span{animation-delay:130ms}
+.intro .hero h1 em .w:first-child>span{animation-delay:190ms}
+.intro .hero h1 em .w+.w>span{animation-delay:240ms}
+.intro .hero .eyebrow{animation:intro-up 700ms var(--ease-out-expo) backwards}
+.intro .hero .lead{animation:intro-up 900ms var(--ease-out-expo) 340ms backwards}
+.intro .hero .actions{animation:intro-up 900ms var(--ease-out-expo) 420ms backwards}
+.intro .hero .trust{animation:intro-fade 900ms var(--ease-standard) 520ms backwards}
+.intro .hero .mock-window{animation:intro-fade 600ms var(--ease-standard) 200ms backwards}
+.intro .hero .lead-card:not(.dim){transform-origin:50% 0;animation:intro-card 900ms var(--ease-out-expo) 480ms backwards,intro-fade 260ms var(--ease-standard) 480ms backwards}
+.intro .hero .lead-card .facts span{position:relative;isolation:isolate;animation:intro-chip 500ms var(--ease-out-expo) 780ms backwards}
+.intro .hero .lead-card .facts span:after{content:"";position:absolute;inset:0;z-index:-1;border-radius:inherit;background:var(--brand-soft);box-shadow:inset 0 0 0 1px rgba(54,84,245,.3);opacity:0;animation:intro-tint 760ms var(--ease-standard) 780ms backwards}
+.intro .hero .facts span:nth-child(2),.intro .hero .facts span:nth-child(2):after{animation-delay:840ms}
+.intro .hero .facts span:nth-child(3),.intro .hero .facts span:nth-child(3):after{animation-delay:900ms}
+.intro .hero .facts span:nth-child(4),.intro .hero .facts span:nth-child(4):after{animation-delay:960ms}
+.intro .hero .lead-card .badge{transform-origin:100% 50%;animation:intro-badge 700ms var(--ease-out-expo) 1000ms backwards}
+.intro .hero .lead-card .row{animation:intro-up 700ms var(--ease-out-expo) 1060ms backwards}
+.intro .hero .lead-card.dim{animation:intro-dim 900ms var(--ease-out-expo) 940ms backwards}
+/* Single-column layouts: the mock's story waits until it scrolls into view */
+.intro .hero .mock.is-waiting *,.intro .hero .mock.is-waiting :after{animation-play-state:paused!important}
+
+/* Scroll reveal (motion.js, public pages): blocks below the fold rise in once as they enter the viewport */
+.reveal{opacity:0;transform:translateY(10px)}
+.reveal.is-revealed{opacity:1;transform:none;transition:opacity var(--dur-reveal) var(--ease-standard),transform var(--dur-reveal) var(--ease-out-expo);transition-delay:var(--reveal-delay,0ms)}
 @media print{.reveal{opacity:1;transform:none}}
-/* No-reload navigation (nav.js): pages crossfade */
-::view-transition-old(root),::view-transition-new(root){animation-duration:200ms;animation-timing-function:var(--ease-out)}
+/* No-reload navigation (nav.js): the outgoing page clears out fast (front-loaded fade, so the two pages never
+   double-expose), then the new one rises in; the header and cabinet navigation are captured on their own,
+   so they stay put instead of crossfading with the page */
+.site-header{view-transition-name:site-header}
+.sidebar{view-transition-name:app-sidebar}
+.mobile-top{view-transition-name:app-top}
+@keyframes page-out{to{opacity:0;transform:scale(.99)}}
+@keyframes page-in{from{opacity:0;transform:translateY(10px)}}
+::view-transition-old(root){animation:page-out var(--dur-page-out) var(--ease-standard) both}
+::view-transition-new(root){animation:page-in var(--dur-page-in) var(--ease-out-expo) 70ms both}
+::view-transition-group(site-header),::view-transition-group(app-sidebar),::view-transition-group(app-top){animation-duration:var(--dur);animation-timing-function:var(--ease-standard)}
 /* In-page anchors (#faq, #pricing…) glide and stop below the sticky header */
 [id]{scroll-margin-top:84px}
 @media(prefers-reduced-motion:no-preference){html{scroll-behavior:smooth}}

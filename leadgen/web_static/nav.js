@@ -41,7 +41,7 @@
   }
 
   function closeMenus(){
-    Array.prototype.forEach.call(document.querySelectorAll('.menu[open],.mobile-top .bar>details[open]'),function(d){d.open=false});
+    Array.prototype.forEach.call(document.querySelectorAll('.menu[open],.mobile-top .bar>details[open]'),function(d){d.classList.remove('is-closing');d.open=false});
   }
 
   function saveScroll(){
@@ -49,6 +49,7 @@
   }
 
   function full(url){location.href=url}
+  function token(name){return getComputedStyle(document.documentElement).getPropertyValue(name).trim()}
 
   function scrollTo(hash,y){
     var el=null;
@@ -112,12 +113,16 @@
         }
         current=key(url);
         var run=function(){swap(doc,url,y);track(url,referrer)};
+        // View Transitions: the old page recedes and the new one rises in (app.css, ::view-transition-*);
+        // the header and cabinet navigation are captured separately and stay in place.
         if(!reduce.matches&&document.startViewTransition){
           document.startViewTransition(run);
         }else{
           run();
+          // Without View Transitions the new content makes the same entrance.
           var main=document.querySelector('main');
-          if(!reduce.matches&&main&&main.animate)main.animate({opacity:[0,1]},{duration:200,easing:'cubic-bezier(.2,.8,.2,1)'});
+          if(!reduce.matches&&main&&main.animate)main.animate({opacity:[0,1],transform:['translateY(10px)','none']},{
+            duration:parseFloat(token('--dur-page-in'))||380,easing:token('--ease-out-expo')||'ease-out'});
         }
       })
       .catch(function(err){
