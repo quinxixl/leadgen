@@ -76,9 +76,10 @@ class DbCase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); self.path = Path(self.tmp.name)/'reader.sqlite'
         self.db = db_open(self.path); self.logs = []
+        self.store = tm.MonitorStore(self.path, thread_name='test-reader-db')
 
     def tearDown(self):
-        self.db.close(); self.tmp.cleanup()
+        self.store.close(); self.db.close(); self.tmp.cleanup()
 
     def source(self, username):
         return self.db.execute('SELECT * FROM telegram_sources WHERE username=?', (username,)).fetchone()
@@ -145,10 +146,10 @@ class Registration(DbCase):
                     (username, 'https://t.me/'+username, username, NOT_JOINED_REASON))
         dialogs = [SimpleNamespace(is_user=False, entity=chat(name, name, broadcast=False))
                    for name in ('Synced_Chat', 'Blocked_Chat')]
-        self.assertEqual(asyncio.run(tm.sync_dialogs(FakeClient(dialogs=dialogs), self.path, tm.new_state())), (2, 1))
+        self.assertEqual(asyncio.run(tm.sync_dialogs(FakeClient(dialogs=dialogs), self.store, tm.new_state())), (2, 1))
         state = tm.new_state()
         for name in ('Live_Chat', 'Blocked_Chat'):
-            ok = asyncio.run(tm.process_event(event(chat(name, name), msg_id=3), self.path, CONFIG, state, self.logs.append))
+            ok = asyncio.run(tm.process_event(event(chat(name, name), msg_id=3), self.store, CONFIG, state, self.logs.append))
             self.assertFalse(ok, name)
         expected = {'blocked_chat': 'отключён вручную', 'synced_chat': NOT_JOINED_REASON, 'live_chat': NOT_JOINED_REASON}
         for username, reason in expected.items():
@@ -161,7 +162,7 @@ class Registration(DbCase):
 
     def test_new_chat_waits_for_moderation_and_is_not_ingested(self):
         state = tm.new_state()
-        ok = asyncio.run(tm.process_event(event(chat('New_Chat', 'Новый чат')), self.path, CONFIG, state, self.logs.append))
+        ok = asyncio.run(tm.process_event(event(chat('New_Chat', 'Новый чат')), self.store, CONFIG, state, self.logs.append))
         self.assertFalse(ok)
         row = self.source('new_chat')
         self.assertEqual((row['status'], row['enabled'], row['check_reason']), ('moderation', 0, MODERATION_REASON))
@@ -176,25 +177,25 @@ class Registration(DbCase):
 
     def test_approved_chat_is_read(self):
         state = tm.new_state(); known = set()
-        self.assertFalse(asyncio.run(tm.process_event(event(chat('Ok_Chat'), msg_id=1), self.path, CONFIG, state, self.logs.append, known)))
+        self.assertFalse(asyncio.run(tm.process_event(event(chat('Ok_Chat'), msg_id=1), self.store, CONFIG, state, self.logs.append, known)))
         self.assertTrue(approve_source(self.db, 'ok_chat'))
         self.assertFalse(approve_source(self.db, 'ok_chat'))  # only a waiting chat can be approved
         row = self.source('ok_chat')
         self.assertEqual((row['status'], row['enabled'], row['check_reason']), ('active', 1, APPROVED_REASON))
         self.assertEqual(moderation_queue(self.db), [])
-        self.assertTrue(asyncio.run(tm.process_event(event(chat('Ok_Chat'), msg_id=2), self.path, CONFIG, state, self.logs.append, known)))
+        self.assertTrue(asyncio.run(tm.process_event(event(chat('Ok_Chat'), msg_id=2), self.store, CONFIG, state, self.logs.append, known)))
         self.assertEqual(self.db.execute('SELECT url FROM leads').fetchone()['url'], 'https://t.me/ok_chat/2')
 
     def test_rejected_chat_stays_disabled_and_is_not_queued_again(self):
         state = tm.new_state()
         dialogs = [SimpleNamespace(is_user=False, entity=chat('Spam_Chat', broadcast=False))]
-        self.assertEqual(asyncio.run(tm.sync_dialogs(FakeClient(dialogs=dialogs), self.path, state)), (1, 1))
+        self.assertEqual(asyncio.run(tm.sync_dialogs(FakeClient(dialogs=dialogs), self.store, state)), (1, 1))
         self.assertTrue(reject_source(self.db, 'spam_chat'))
         self.assertFalse(reject_source(self.db, 'spam_chat'))
         self.assertFalse(approve_source(self.db, 'spam_chat'))  # a rejected chat is not waiting any more
         # A fresh reader process (empty known set) syncs dialogs and receives messages again.
-        self.assertEqual(asyncio.run(tm.sync_dialogs(FakeClient(dialogs=dialogs), self.path, state)), (1, 0))
-        self.assertFalse(asyncio.run(tm.process_event(event(chat('Spam_Chat'), msg_id=5), self.path, CONFIG, state, self.logs.append)))
+        self.assertEqual(asyncio.run(tm.sync_dialogs(FakeClient(dialogs=dialogs), self.store, state)), (1, 0))
+        self.assertFalse(asyncio.run(tm.process_event(event(chat('Spam_Chat'), msg_id=5), self.store, CONFIG, state, self.logs.append)))
         apply_monitor_policy(self.db)
         row = self.source('spam_chat')
         self.assertEqual((row['status'], row['enabled'], row['check_reason']), ('rejected', 0, REJECTED_REASON))
@@ -211,13 +212,13 @@ class Registration(DbCase):
         with mock.patch.object(tm, 'register_joined_chat', counting):
             for msg_id in (1, 2, 3):
                 ev = event(chat('Busy_Chat', 'Занятой'), msg_id=msg_id)
-                self.assertFalse(asyncio.run(tm.process_event(ev, self.path, CONFIG, state, self.logs.append, known)))
+                self.assertFalse(asyncio.run(tm.process_event(ev, self.store, CONFIG, state, self.logs.append, known)))
             approve_source(self.db, 'busy_chat')
             for msg_id in (4, 5, 6):
                 ev = event(chat('Busy_Chat', 'Занятой'), msg_id=msg_id)
-                self.assertTrue(asyncio.run(tm.process_event(ev, self.path, CONFIG, state, self.logs.append, known)))
+                self.assertTrue(asyncio.run(tm.process_event(ev, self.store, CONFIG, state, self.logs.append, known)))
             dialogs = [SimpleNamespace(is_user=False, entity=chat('Busy_Chat', 'Занятой'))]
-            self.assertEqual(asyncio.run(tm.sync_dialogs(FakeClient(dialogs=dialogs), self.path, state, known=known)), (1, 0))
+            self.assertEqual(asyncio.run(tm.sync_dialogs(FakeClient(dialogs=dialogs), self.store, state, known=known)), (1, 0))
         self.assertEqual(calls, ['busy_chat'])
         self.assertEqual(known, {'busy_chat'})
         self.assertEqual(state['ingested'], 3)
@@ -232,20 +233,127 @@ class Registration(DbCase):
     def test_uncached_chat_is_fetched_and_post_ingested(self):
         self.approved('fresh_orders', 'Свежие заказы')
         state = tm.new_state()
-        ok = asyncio.run(tm.process_event(event(chat('Fresh_Orders', 'Свежие заказы')), self.path, CONFIG, state, self.logs.append))
+        ok = asyncio.run(tm.process_event(event(chat('Fresh_Orders', 'Свежие заказы')), self.store, CONFIG, state, self.logs.append))
         self.assertTrue(ok)
         lead = self.db.execute('SELECT url,payload FROM leads').fetchone()
         self.assertEqual(lead['url'], 'https://t.me/fresh_orders/7')
         self.assertEqual(json.loads(lead['payload'])['source'], 'Telegram: Свежие заказы')
         row = self.source('fresh_orders')
         self.assertEqual((row['enabled'], row['check_reason'], row['last_message_id']), (1, 'получено в реальном времени', 7))
-        self.assertEqual(self.heartbeat()['ingested'], 1)
+        self.assertEqual((state['ingested'], state['messages']), (1, 1))
+        self.assertIsNone(self.heartbeat())  # the timer writes the heartbeat, not every message
+
+    def test_messages_share_one_connection_off_the_event_loop(self):
+        self.approved('shared_chat', 'Общий')
+        opened = []; threads = []
+
+        def opener(target):
+            opened.append(target)
+            return db_open(target)
+        store = tm.MonitorStore(self.path, opener=opener, thread_name='test-reader-db')
+        original = tm.store_public_message
+
+        def recording(db, *args):
+            threads.append(threading.get_ident())
+            return original(db, *args)
+
+        async def burst():
+            known = set(); state = tm.new_state()
+            results = await asyncio.gather(*(tm.process_event(event(chat('Shared_Chat', 'Общий'), msg_id=i), store, CONFIG,
+                                                              state, self.logs.append, known) for i in range(1, 6)))
+            return threading.get_ident(), results, state
+        try:
+            with mock.patch.object(tm, 'store_public_message', recording):
+                loop_thread, results, state = asyncio.run(burst())
+        finally:
+            store.close()
+        self.assertEqual(results, [True]*5)
+        self.assertEqual(opened, [self.path])  # one connection for every message
+        self.assertEqual(len(set(threads)), 1); self.assertNotIn(loop_thread, threads)
+        self.assertEqual(state['ingested'], 5)
+        self.assertEqual(self.db.execute('SELECT count(*) AS n FROM leads').fetchone()['n'], 5)
+        self.assertIsNone(self.heartbeat())
+
+    def test_disabled_chat_messages_are_dropped_without_db_access(self):
+        calls = []; original = tm.store_public_message
+
+        def counting(db, *args):
+            calls.append(args[0].username)
+            return original(db, *args)
+        known, gate, state = set(), tm.SourceGate(), tm.new_state()
+        with mock.patch.object(tm, 'store_public_message', counting):
+            for msg_id in (1, 2, 3):  # a new chat: registered for moderation once, then dropped in memory
+                ev = event(chat('Wait_Chat'), msg_id=msg_id)
+                self.assertFalse(asyncio.run(tm.process_event(ev, self.store, CONFIG, state, self.logs.append, known, gate)))
+            self.assertEqual(calls, ['wait_chat'])
+            approve_source(self.db, 'wait_chat')
+            asyncio.run(tm.refresh_sources(self.store, gate, self.logs.append))
+            self.assertTrue(asyncio.run(tm.process_event(event(chat('Wait_Chat'), msg_id=4), self.store, CONFIG, state,
+                                                         self.logs.append, known, gate)))
+            with self.db:
+                self.db.execute("UPDATE telegram_sources SET enabled=0 WHERE username='wait_chat'")
+            # Disabled before the next refresh: the stale snapshot sends it to the DB, which refuses it.
+            self.assertFalse(asyncio.run(tm.process_event(event(chat('Wait_Chat'), msg_id=5), self.store, CONFIG, state,
+                                                          self.logs.append, known, gate)))
+            self.assertFalse(asyncio.run(tm.process_event(event(chat('Wait_Chat'), msg_id=6), self.store, CONFIG, state,
+                                                          self.logs.append, known, gate)))
+        self.assertEqual(calls, ['wait_chat']*3)
+        self.assertEqual((state['messages'], state['ingested']), (6, 1))
+        self.assertEqual(self.db.execute('SELECT count(*) AS n FROM leads').fetchone()['n'], 1)
+
+        class NoDb:
+            def run(self, work):
+                raise AssertionError('the database must not be touched')
+        gate = tm.SourceGate({'off_chat': False})
+        self.assertFalse(asyncio.run(tm.process_event(event(chat('Off_Chat')), NoDb(), CONFIG, state, self.logs.append,
+                                                      {'off_chat'}, gate)))
+
+    def test_message_is_retried_on_a_new_connection_after_it_drops(self):
+        import psycopg
+        self.approved('flaky_chat', 'Нестабильный')
+
+        class Dropped:
+            def __init__(self, db):
+                self.db, self.connection = db, SimpleNamespace(closed=False)
+            def __enter__(self): return self
+            def __exit__(self, *exc): return False
+            def execute(self, *args):
+                self.connection.closed = True
+                raise psycopg.OperationalError('server closed the connection unexpectedly')
+            def close(self): self.db.close()
+        opened = []
+
+        def opener(target):
+            db = db_open(target)
+            opened.append(Dropped(db) if not opened else db)
+            return opened[-1]
+        store = tm.MonitorStore(self.path, opener=opener, thread_name='test-reader-db')
+        state = tm.new_state()
+        try:
+            ok = asyncio.run(tm.process_event(event(chat('Flaky_Chat'), msg_id=9), store, CONFIG, state, self.logs.append))
+            self.assertTrue(ok)
+            self.assertTrue(asyncio.run(tm.process_event(event(chat('Flaky_Chat'), msg_id=10), store, CONFIG, state,
+                                                         self.logs.append)))
+        finally:
+            store.close()
+        self.assertEqual(len(opened), 2)  # replaced once, then reused
+        self.assertEqual(state['ingested'], 2)
+        self.assertEqual(self.db.execute('SELECT count(*) AS n FROM leads').fetchone()['n'], 2)
+
+    def test_database_error_is_logged_and_message_skipped(self):
+        def broken(db, *args):
+            raise RuntimeError('db down')
+        state = tm.new_state()
+        with mock.patch.object(tm, 'store_public_message', broken):
+            ok = asyncio.run(tm.process_event(event(chat('Down_Chat')), self.store, CONFIG, state, self.logs.append))
+        self.assertFalse(ok); self.assertEqual(state['ingested'], 0)
+        self.assertIn('сообщение из @down_chat не сохранено: RuntimeError: db down', self.logs[-1])
 
     def test_private_chat_and_failed_get_chat_are_ignored(self):
         state = tm.new_state()
-        self.assertFalse(asyncio.run(tm.process_event(event(chat(None, 'Закрытый')), self.path, CONFIG, state, self.logs.append)))
+        self.assertFalse(asyncio.run(tm.process_event(event(chat(None, 'Закрытый')), self.store, CONFIG, state, self.logs.append)))
         failing = event(None, fail=ConnectionError('dc down'))
-        self.assertFalse(asyncio.run(tm.process_event(failing, self.path, CONFIG, state, self.logs.append)))
+        self.assertFalse(asyncio.run(tm.process_event(failing, self.store, CONFIG, state, self.logs.append)))
         self.assertEqual(self.db.execute('SELECT count(*) AS n FROM leads').fetchone()['n'], 0)
         self.assertEqual(self.db.execute('SELECT count(*) AS n FROM telegram_sources').fetchone()['n'], 0)
         self.assertIn('ConnectionError', self.logs[-1])
@@ -329,6 +437,28 @@ class Monitor(DbCase):
         info = tm.reader_status(self.db)
         self.assertEqual(info['realtime_sources_24h'], 1); self.assertEqual(info['joined_sources'], 1)
         self.assertIsNotNone(info['last_event_at']); self.assertLess(info['heartbeat_age_seconds'], 5)
+
+    def test_heartbeat_is_not_written_per_message(self):
+        public = chat('Busy_Channel', 'Поток')
+        dialogs = [SimpleNamespace(is_user=False, entity=public)]
+        with self.db:
+            tm.register_joined_chat(self.db, 'busy_channel', 'Поток', 'channel')
+        approve_source(self.db, 'busy_channel')
+        beats = []; original = tm.write_heartbeat
+
+        def counting(db, state, now=None):
+            beats.append(state.get('ingested'))
+            return original(db, state, now)
+
+        def run(messages):
+            beats.clear()
+            incoming = [event(public, msg_id=100*messages+i) for i in range(messages)]
+            with mock.patch.object(tm, 'write_heartbeat', counting):
+                state = tm.run_monitor(self.path, CONFIG, client_factory=lambda: FakeClient(dialogs=dialogs, incoming=incoming),
+                                       sleep=lambda s: None, max_attempts=1, log=self.logs.append)
+            self.assertEqual(state['ingested'], messages)
+            return len(beats)
+        self.assertEqual(run(1), run(20))
 
     def test_unauthorized_session_is_visible_in_status(self):
         tm.run_monitor(self.path, CONFIG, client_factory=lambda: FakeClient(authorized=False), sleep=lambda s: None,

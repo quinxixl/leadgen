@@ -14,6 +14,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from .core import Lead, UTC
+from .db_store import MonitorStore
 from .source_registry import JOINED, MODERATION, MODERATION_REASON, joined_metadata
 
 ROOT = Path(__file__).resolve().parent
@@ -347,6 +348,45 @@ def store_public_message(db, chat, message, config, now, known=False):
     return StoreResult(stored=True, inserted=inserted)
 
 
+class SourceGate:
+    """In-memory snapshot of which known public chats are read (status='active' AND enabled=1).
+
+    It lets the reader drop messages of disabled, rejected or moderated chats without touching the
+    database. The snapshot is replaced wholesale by the reader's timer (every HEARTBEAT_SECONDS); between
+    refreshes the result of each stored message updates the one chat it concerns. Only a definite "not
+    read" blocks a message: an unknown chat, or one the snapshot says is active, still goes to the
+    database, where store_public_message re-checks the row. So disabling a chat takes effect at once,
+    and an admin's approval within one refresh interval."""
+
+    def __init__(self, active=None):
+        self.active = dict(active or {})  # username -> bool, for every row in telegram_sources
+
+    def blocks(self, username):
+        return self.active.get(username) is False
+
+    def remember(self, username, active):
+        if self.active.get(username) is not active:
+            self.active = {**self.active, username: active}
+
+    def replace(self, active):
+        self.active = dict(active)
+
+
+def load_source_flags(db):
+    """username -> True when the source is read, for every registered Telegram source."""
+    rows = db.execute('SELECT username,status,enabled FROM telegram_sources').fetchall()
+    return {row['username']: bool(row['enabled'] and row['status'] == 'active') for row in rows}
+
+
+async def refresh_sources(store, gate, log=_log):
+    """Reload the gate's snapshot on the DB thread. On failure the old snapshot stays (it only drops
+    messages of chats known to be off; anything else is checked against the database)."""
+    try:
+        gate.replace(await store.run(load_source_flags))
+    except Exception as exc:
+        log('Монитор Telegram: список источников не обновлён: '+safe_error(exc))
+
+
 def new_state():
     return {'state': 'starting', 'connected': False, 'authorized': None, 'chats': 0, 'registered': 0,
             'last_event_at': None, 'last_ingest_at': None, 'messages': 0, 'ingested': 0,
@@ -361,24 +401,33 @@ def write_heartbeat(db, state, now=None):
             ON CONFLICT(key) DO UPDATE SET value=excluded.value''', (HEARTBEAT_KEY, json.dumps(payload, ensure_ascii=False)))
 
 
-def _beat(db_target, state, log=_log):
-    from .database import db_open
+def _beat(store, state, log=_log):
+    """Heartbeat from synchronous code (the supervisor between connection attempts)."""
+    snapshot = dict(state)
     try:
-        db = db_open(db_target)
-        try:
-            write_heartbeat(db, state)
-        finally:
-            db.close()
+        store.submit(lambda db: write_heartbeat(db, snapshot))
     except Exception as exc:
         log('Монитор Telegram: heartbeat не записан: '+safe_error(exc))
 
 
-async def process_event(event, db_target, config, state, log=_log, known=None):
+async def _beat_async(store, state, log=_log):
+    """Heartbeat from the event loop: the write runs on the DB thread."""
+    snapshot = dict(state)
+    try:
+        await store.run(lambda db: write_heartbeat(db, snapshot))
+    except Exception as exc:
+        log('Монитор Telegram: heartbeat не записан: '+safe_error(exc))
+
+
+async def process_event(event, store, config, state, log=_log, known=None, gate=None):
     """Ingest one new message from a public chat; register the chat when it has no source row yet.
 
-    `known` caches usernames already registered by this process, so their messages skip registration."""
-    from .app import db_open
+    Telegram work first; then one short transaction on the store's DB thread, off the event loop.
+    `known` caches usernames already registered by this process, so their messages skip registration.
+    A message of a registered chat the `gate` snapshot says is not read is dropped without any DB access.
+    The heartbeat is written by the reader's timer, not per message."""
     known = set() if known is None else known
+    gate = SourceGate() if gate is None else gate
     chat = getattr(event, 'chat', None)
     if chat is None:
         # Entities missing from the update cache must not drop the message.
@@ -394,32 +443,30 @@ async def process_event(event, db_target, config, state, log=_log, known=None):
     state['messages'] = state.get('messages', 0)+1; state['last_event_at'] = now
     if not (event.message.message or '').strip():
         return False
+    message, marked = event.message, username in known
+    if marked and gate.blocks(username):
+        return False  # registered this connection and not read: nothing to write
     public = PublicChat(username, getattr(chat, 'title', None) or username, chat_kind(chat))
-    db = db_open(db_target)
     try:
-        with db:
-            result = store_public_message(db, public, event.message, config, now, username in known)
+        result = await store.run(lambda db: store_public_message(db, public, message, config, now, marked))
         known.add(username)
+        gate.remember(username, result.stored)
         if result.inserted:
             log(f'Монитор Telegram: новый публичный источник @{username} ждёт одобрения в /admin.')
         if not result.stored:
             return False
         state['ingested'] = state.get('ingested', 0)+1; state['last_ingest_at'] = now
-        write_heartbeat(db, state)
         return True
     except Exception as exc:
         log(f'Монитор Telegram: сообщение из @{username} не сохранено: {safe_error(exc)}')
         return False
-    finally:
-        db.close()
 
 
-async def sync_dialogs(client, db_target, state, log=_log, known=None):
+async def sync_dialogs(client, store, state, log=_log, known=None):
     """Register every public group and channel the account follows. Reads the dialog list, not history.
 
     Listing the dialogs also caches channel access hashes, so Telethon can recover update gaps.
     Chats in `known` were registered earlier by this process and are not written again."""
-    from .database import db_open
     known = set() if known is None else known
     chats = {}
     async for dialog in client.iter_dialogs():
@@ -430,41 +477,39 @@ async def sync_dialogs(client, db_target, state, log=_log, known=None):
         if username:
             chats[username] = (getattr(entity, 'title', None) or username, chat_kind(entity))
     fresh = {username: chat for username, chat in chats.items() if username not in known}
-    db = db_open(db_target)
-    try:
-        with db:
-            changed = sum(register_joined_chat(db, username, title, kind) for username, (title, kind) in fresh.items())
-    finally:
-        db.close()
+    changed = await store.run(
+        lambda db: sum(register_joined_chat(db, username, title, kind) for username, (title, kind) in fresh.items()))
     known.update(fresh)
     state.update(chats=len(chats), registered=changed, dialogs_synced_at=datetime.now(UTC).isoformat())
     return len(chats), changed
 
 
-async def read_once(client_factory, db_target, config, state, log=_log):
+async def read_once(client_factory, store, config, state, log=_log):
     """One connection lifetime. Returns when Telegram disconnects; raises on errors."""
     from telethon import events
     client = client_factory()
     known = set()  # usernames registered by this connection; their messages skip registration
+    gate = SourceGate()  # which of them are read; refreshed by the timer below
     try:
         await client.connect()
         if not await client.is_user_authorized():
             raise ReaderUnauthorized(UNAUTHORIZED_MESSAGE)
 
         async def live(event):
-            await process_event(event, db_target, config, state, log, known)
+            await process_event(event, store, config, state, log, known, gate)
         # incoming=True keeps channel posts: Telethon marks them out=False unless this account wrote them.
         client.add_event_handler(live, events.NewMessage(incoming=True))
         state.update(state='running', connected=True, authorized=True, last_error=None, next_retry_at=None,
                      connected_at=datetime.now(UTC).isoformat())
         try:
-            chats, changed = await sync_dialogs(client, db_target, state, log, known)
+            chats, changed = await sync_dialogs(client, store, state, log, known)
         except Exception as exc:
             chats, changed = state.get('chats', 0), 0
             log('Монитор Telegram: список чатов не прочитан: '+safe_error(exc))
+        await refresh_sources(store, gate, log)
         log(f'Мониторинг Telegram запущен в реальном времени без чтения истории: '
             f'публичных групп и каналов {chats}, новых источников {changed}.')
-        _beat(db_target, state, log)
+        await _beat_async(store, state, log)
 
         async def heartbeat():
             next_sync = time.monotonic()+DIALOG_SYNC_SECONDS
@@ -474,12 +519,13 @@ async def read_once(client_factory, db_target, config, state, log=_log):
                 if time.monotonic() >= next_sync:
                     next_sync = time.monotonic()+DIALOG_SYNC_SECONDS
                     try:
-                        _, changed = await sync_dialogs(client, db_target, state, log, known)
+                        _, changed = await sync_dialogs(client, store, state, log, known)
                         if changed:
                             log(f'Монитор Telegram: новых публичных источников {changed}.')
                     except Exception as exc:
                         log('Монитор Telegram: список чатов не обновлён: '+safe_error(exc))
-                _beat(db_target, state, log)
+                await refresh_sources(store, gate, log)
+                await _beat_async(store, state, log)
         beat = asyncio.ensure_future(heartbeat())
         try:
             await client.run_until_disconnected()
@@ -585,12 +631,17 @@ def run_monitor(db_path, config, *, client_factory=None, sleep=time.sleep, max_a
         def client_factory():
             return TelegramClient(str(SESSION), api_id, api_hash, retry_delay=5)
     state = new_state()
+    # One long-lived connection for the whole reader, used on its own thread (never per message).
+    store = MonitorStore(db_path, thread_name='telegram-reader-db')
     log('Монитор Telegram: запуск.')
 
     def attempt():
-        asyncio.run(read_once(client_factory, db_path, config, state, log))
-    supervise(attempt, state, heartbeat=lambda: _beat(db_path, state, log), sleep=sleep, log=log,
-              max_attempts=max_attempts)
+        asyncio.run(read_once(client_factory, store, config, state, log))
+    try:
+        supervise(attempt, state, heartbeat=lambda: _beat(store, state, log), sleep=sleep, log=log,
+                  max_attempts=max_attempts)
+    finally:
+        store.close()
     return state
 
 
