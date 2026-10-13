@@ -1,4 +1,5 @@
 {% extends 'base.html' %}{% from '_plans.html' import plans_grid, pay_grid, pay_summary, rub, rubles, day %}{% block title %}Подписка — Сигналид{% endblock %}
+{% block head_extra %}<script src="{{ url_for('static',filename='confirm.js') }}" defer></script>{% endblock %}
 {% block content %}
 {% set online = payments_enabled and can_pay and not service_plan %}
 {% set paid = subscription and not service_plan and subscription.provider=='yookassa' and subscription.status in ('active','past_due') and current_plan in ('start','pro','team') %}
@@ -14,19 +15,19 @@
 {% if payments_enabled and subscription and not service_plan %}
 {% if subscription.status=='past_due' and subscription.grace_until %}<p class="notice warn" role="alert">Не удалось списать оплату за продление тарифа «{{ plan_names.get(subscription.plan_code, subscription.plan_code) }}». Мы повторим попытку автоматически, тариф работает до {{ day(subscription.grace_until) }}. Проверьте карту{% if online %} или оплатите тариф ниже{% endif %}.</p>{% endif %}
 {% if open_payment %}<p class="notice">Оплата тарифа «{{ plan_names[open_payment.plan_code] }}» ещё не подтверждена. <a href="/app/billing/return?payment={{ open_payment.id }}">Проверить статус</a></p>{% endif %}
-{% if subscription.scheduled_plan %}<div class="notice split pay-scheduled"><span>С {{ day(subscription.ends_at) }} тариф сменится на «{{ plan_names[subscription.scheduled_plan] }}» ({{ period_names[subscription.scheduled_period] }}). До этого действует «{{ plan_names.get(subscription.plan_code, subscription.plan_code) }}».</span>{% if can_pay %}<form method="post" action="/app/billing/scheduled/cancel"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="quiet">Отменить смену тарифа</button></form>{% endif %}</div>{% endif %}
 {% endif %}
 {% if payments_enabled and paid %}
+{% set until = day(subscription.grace_until if subscription.status=='past_due' and subscription.grace_until else subscription.ends_at) %}{% set plan_title = plan_names.get(subscription.plan_code, subscription.plan_code) %}
 <section class="panel renew" id="autorenew">
 <div class="renew-info"><h2>Автопродление</h2>
 {% if subscription.autorenew %}<p><span class="badge ok">Включено</span>{% if subscription.payment_method_title %}<span class="pay-method">{{ subscription.payment_method_title }}</span>{% endif %}</p>
 <p class="muted">{% if subscription.status=='past_due' %}Повторим списание автоматически; если оно не пройдёт, аккаунт перейдёт на бесплатный тариф.{% elif next_charge %}Следующее списание — {{ day(next_charge.at) }}: {{ rubles(next_charge.amount) }} ₽ за «{{ next_charge.plan_name }}» на {{ period_names[next_charge.period] }}. Спишем не раньше чем за сутки до конца периода.{% else %}Продлим тариф в конце оплаченного периода.{% endif %}</p>
-{% else %}<p><span class="badge">Выключено</span>{% if subscription.payment_method_title %}<span class="pay-method">{{ subscription.payment_method_title }}</span>{% endif %}</p>
-<p class="muted">Тариф действует до {{ day(subscription.ends_at) }}, затем аккаунт перейдёт на бесплатный тариф — лиды и настройки сохранятся.</p>{% endif %}
+{% else %}<p><span class="badge">Подписка отменена</span>{% if subscription.payment_method_title %}<span class="pay-method">{{ subscription.payment_method_title }}</span>{% endif %}</p>
+<p class="muted">Подписка отменена, тариф действует до {{ until }}. Затем аккаунт перейдёт на бесплатный тариф — лиды и настройки сохранятся. Деньги больше не спишутся.</p>{% endif %}
 </div>
-{% if can_pay %}{% if subscription.autorenew %}<form method="post" action="/app/billing/autorenew" class="renew-form"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="enabled" value="0"><button class="quiet">Отключить автопродление</button></form>
-{% elif subscription.payment_method_title %}<form method="post" action="/app/billing/autorenew" class="renew-form"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="enabled" value="1"><label class="check"><input type="checkbox" name="consent" value="1" required><span>Согласен с <a href="/terms#autorenew" target="_blank" rel="noopener">условиями автоматического продления</a></span></label><button>Включить автопродление</button></form>
-{% else %}<p class="muted renew-form">Чтобы включить автопродление, оплатите тариф картой ниже.</p>{% endif %}{% endif %}
+{% if can_pay %}{% if subscription.autorenew %}<form method="post" action="/app/billing/autorenew" class="renew-form" data-confirm="Подписка не продлится. Тариф «{{ plan_title }}» действует до {{ until }}, после этого — бесплатный тариф. Деньги больше не спишутся."><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="enabled" value="0"><button class="quiet">Отменить подписку</button></form>
+{% elif subscription.payment_method_title %}<form method="post" action="/app/billing/autorenew" class="renew-form"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="enabled" value="1"><label class="check"><input type="checkbox" name="consent" value="1" required><span>Согласен с <a href="/terms#autorenew" target="_blank" rel="noopener">условиями автоматического продления</a></span></label><button>Возобновить подписку</button></form>
+{% else %}<p class="muted renew-form">Чтобы возобновить подписку, оплатите тариф картой ниже.</p>{% endif %}{% endif %}
 </section>
 {% endif %}
 {% if current_plan=='free' and subscription and subscription.plan_code!='free' %}<p class="notice">Пробный период или оплаченный срок закончился — аккаунт работает на бесплатном тарифе. Лиды и настройки сохранены. Выберите тариф, чтобы получать заказы сразу и без ограничений бесплатного тарифа.</p>{% endif %}
@@ -34,11 +35,11 @@
 {% set period = (subscription.billing_period or 'month') if paid else 'month' %}{% set renewing = paid and subscription.status=='active' %}
 <form class="pay" method="post" action="/app/billing/checkout" data-checkout data-base="/app/billing">
 <input type="hidden" name="csrf" value="{{ csrf }}">
-<div class="pay-bar"><div><h2>Тарифы</h2><p class="muted">{% if renewing %}При переходе на тариф дороже засчитаем неиспользованные дни; тариф дешевле включится со следующего периода.{% else %}Оплата картой через ЮKassa. При оплате за год — скидка {{ annual_discount }}%.{% endif %}</p></div>
+<div class="pay-bar"><div><h2>Тарифы</h2><p class="muted">{% if renewing %}Можно перейти на тариф выше или на оплату за год — засчитаем неиспользованные дни. Понизить тариф нельзя: можно отменить подписку, и тариф будет действовать до конца оплаченного срока.{% else %}Оплата картой через ЮKassa. При оплате за год — скидка {{ annual_discount }}%.{% endif %}</p></div>
 <fieldset class="period-switch"><legend class="sr-only">Период оплаты</legend>
 <label><input type="radio" name="period" value="month"{% if period=='month' %} checked{% endif %}><span>Месяц</span></label>
 <label><input type="radio" name="period" value="year"{% if period=='year' %} checked{% endif %}><span>Год <em>−{{ annual_discount }}%</em></span></label></fieldset></div>
-{{ pay_grid(plans, current_plan, subscription, founder_price, period, annual_discount, paid and subscription.status=='active') }}
+{{ pay_grid(plans, current_plan, subscription, founder_price, period, annual_discount, paid and subscription.status=='active', options=plan_options) }}
 {{ pay_summary(payment_email) }}
 </form>
 <script src="{{ url_for('static',filename='billing.js') }}"></script>

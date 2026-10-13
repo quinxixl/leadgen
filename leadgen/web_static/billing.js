@@ -9,7 +9,7 @@
   var reduce=window.matchMedia?window.matchMedia('(prefers-reduced-motion: reduce)'):{matches:false};
   var EMAIL=/^[^@\s]+@[^@\s]+\.[^@\s]+$/;
   var POLL_EVERY=2000,POLL_FOR=60000;
-  var KINDS={initial:'Новая подписка',upgrade:'Переход на тариф выше',downgrade:'Смена тарифа',same:'Текущий тариф'};
+  var KINDS={initial:'Новая подписка',upgrade:'Переход на тариф выше',same:'Текущий тариф'};
   var OFFLINE='Нет соединения. Проверьте интернет и попробуйте ещё раз.';
   var dateFormat=null;
   try{dateFormat=new Intl.DateTimeFormat('ru-RU',{day:'2-digit',month:'2-digit',year:'numeric',timeZone:'Europe/Moscow'})}catch(err){}
@@ -132,7 +132,6 @@
     var submit=form.querySelector('[data-submit]');
     var wait=form.querySelector('[data-wait]');
     var email=form.elements.email,consent=form.elements.consent;
-    var paid=grid.getAttribute('data-paid')==='1';
     var main=tg&&tg.MainButton;
     var state={plan:null,data:null,seq:0,busy:false,payment:null,url:null,waiting:false};
     form.noValidate=true;
@@ -150,20 +149,24 @@
       if(target){target.setAttribute('aria-invalid','true');target.focus()}
     }
 
+    // data-state-month / data-state-year: buy (nothing paid now), upgrade, same (current plan) or downgrade
+    // (not allowed: the only way down is cancelling the subscription). Only buy and upgrade can be picked.
+    function stateOf(card,p){return card.getAttribute('data-state-'+(p||period()))||'buy'}
+    function pickable(card){var s=stateOf(card);return s==='buy'||s==='upgrade'}
     function labels(){
-      var p=period();
       cards().forEach(function(card){
-        var button=card.querySelector('[data-pick]');
-        var same=card.getAttribute('data-current-period')===p;
         var selected=card.getAttribute('data-plan')===state.plan;
-        button.disabled=same&&!selected;
-        button.setAttribute('aria-pressed',selected?'true':'false');
-        button.textContent=selected?'Выбран':same?'Подключён':paid?'Перейти':'Оплатить';
+        card.classList.toggle('is-locked',!pickable(card));
+        Array.prototype.forEach.call(card.querySelectorAll('[data-pick]'),function(button){
+          var box=button.closest('[data-for]');
+          var upgrade=stateOf(card,box&&box.getAttribute('data-for'))==='upgrade';
+          button.setAttribute('aria-pressed',selected?'true':'false');
+          button.textContent=selected?'Выбран':upgrade?'Перейти':'Оплатить';
+        });
       });
     }
     function submitText(data){
       if(!data)return 'Оплатить';
-      if(data.kind==='downgrade')return 'Запланировать смену тарифа';
       if(data.kind==='same')return 'Тариф уже подключён';
       return 'Оплатить '+rub(data.amount);
     }
@@ -179,7 +182,7 @@
       state.busy=on;
       submit.disabled=on||!state.data||state.data.kind==='same';
       submit.classList.toggle('is-busy',on);
-      submit.textContent=on?(state.data&&state.data.kind==='downgrade'?'Сохраняем…':'Переходим к оплате…'):submitText(state.data);
+      submit.textContent=on?'Переходим к оплате…':submitText(state.data);
       syncMain();
     }
 
@@ -191,15 +194,12 @@
       row('credit',Number(d.credit)>0);
       set('credit','− '+rub(d.credit));
       set('amount',rub(d.amount));
-      var down=d.kind==='downgrade';
-      row('starts',down);
-      set('starts',day(d.starts_at));
-      set('ends-label',down?'Новый период до':d.kind==='same'?'Оплачено до':'Тариф будет действовать до');
+      row('starts',false);
+      set('ends-label',d.kind==='same'?'Оплачено до':'Тариф будет действовать до');
       set('ends',day(d.ends_at));
       var message=field('message');
-      if(down)message.textContent='Тариф сменится '+day(d.starts_at)+', сейчас ничего не списываем.';
-      else if(d.kind==='same')message.textContent=d.message||'Этот тариф уже подключён.';
-      message.hidden=!(down||d.kind==='same');
+      if(d.kind==='same')message.textContent=d.message||'Этот тариф уже подключён.';
+      message.hidden=d.kind!=='same';
       busy(false);
     }
     function load(){
@@ -225,7 +225,7 @@
     function pick(card){
       if(!card||state.busy)return;
       var code=card.getAttribute('data-plan');
-      if(card.getAttribute('data-current-period')===period()&&code!==state.plan)return;
+      if(!pickable(card))return;
       var first=!state.plan;
       if(state.waiting)leaveWaiting();
       state.plan=code;
@@ -244,7 +244,7 @@
       if(wait)wait.hidden=true;
       summary.hidden=false;
     }
-    function reset(){
+    function reset(stay){
       leaveWaiting();
       state.plan=null;state.data=null;state.seq++;
       cards().forEach(function(c){c.classList.remove('is-selected')});
@@ -252,7 +252,7 @@
       showError('');
       labels();
       syncMain();
-      scrollIntoView(grid,'start');
+      if(!stay)scrollIntoView(grid,'start');
     }
 
     grid.addEventListener('click',function(e){
@@ -266,8 +266,10 @@
       if(e.target.name!=='period')return;
       grid.setAttribute('data-period',period());
       grid.classList.add('is-live');
-      labels();
-      if(state.plan)load();
+      // The chosen plan is not available for the new period (e.g. year→month of a paid subscription): unselect it.
+      var chosen=state.plan&&grid.querySelector('[data-plan="'+state.plan+'"]');
+      if(chosen&&!pickable(chosen))reset(true);
+      else{labels();if(state.plan)load()}
     });
     form.addEventListener('input',function(e){
       if(e.target===email||e.target===consent)showError('');
@@ -291,14 +293,6 @@
       postJSON(base+'/checkout',{csrf:form.elements.csrf.value,plan:state.plan,period:period(),
         email:email.value,consent:'1'}).then(function(d){
         if(!d.ok){busy(false);showError(d.error);haptic('error');return}
-        if(d.status==='scheduled'){
-          var message=field('message');
-          message.textContent=d.message||'Смена тарифа запланирована.';
-          message.hidden=false;
-          haptic('success');
-          setTimeout(function(){location.reload()},1400);
-          return;
-        }
         if(d.status==='redirect'&&d.confirmation_url){
           state.payment=d.payment_id;state.url=d.confirmation_url;
           if(tg&&wait)openInTelegram();

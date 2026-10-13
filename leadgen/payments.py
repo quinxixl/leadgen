@@ -41,6 +41,8 @@ REASONS = {'insufficient_funds': 'недостаточно средств', 'car
            'issuer_unavailable': 'банк временно недоступен', 'internal_timeout': 'технический сбой'}
 EMAIL_RE = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
 SITE = 'Сигналид'
+DOWNGRADE_ERROR = ('Понизить тариф нельзя. Можно отменить подписку — тариф будет действовать '
+                   'до конца оплаченного срока.')
 
 
 class PaymentError(ValueError):
@@ -80,14 +82,40 @@ def paid_running(current, now):
                 and subscription_active(current, now))
 
 
+def change_kind(current_plan, current_period, plan, period):
+    """How a running YooKassa-paid plan/period may change: 'same', 'upgrade' or 'downgrade' (not allowed).
+
+    Upgrades only: a strictly higher plan with the same or a longer period, or the same plan month→year.
+    A lower or equal plan with the same period and any year→month change are downgrades."""
+    if plan == current_plan and period == current_period:
+        return 'same'
+    rank, current_rank = PAID_PLANS.index(plan), PAID_PLANS.index(current_plan)
+    longer = current_period == 'month' and period == 'year'
+    if (period == current_period and rank > current_rank) or (longer and rank >= current_rank):
+        return 'upgrade'
+    return 'downgrade'
+
+
+def plan_options(current, now):
+    """Per paid plan and period, what the billing cards offer: {'pro': {'month': 'same', 'year': 'upgrade'}, ...}.
+
+    None when nothing was paid through YooKassa for the running period: every paid plan can be bought."""
+    if not paid_running(current, now):
+        return None
+    current_plan, current_period = current['plan_code'], _get(current, 'billing_period') or 'month'
+    return {plan: {period: change_kind(current_plan, current_period, plan, period) for period in PERIODS}
+            for plan in PAID_PLANS}
+
+
 def proration(current, plan, period, now, paid=None, founder_price=None):
     """What switching to plan/period costs now. Pure: no database, no clock.
 
     current: subscription row (status, plan_code, billing_period, ends_at, provider) or None.
     paid: the succeeded YooKassa payment covering the current period, as
         {'value': rubles applied to the period, 'period_start', 'period_end'}, or None.
-    Returns kind (initial | upgrade | downgrade | same), price, credit, amount to charge now,
-    and starts_at/ends_at of the new period (for a downgrade: the date it applies, no charge)."""
+    Returns kind (initial | upgrade | same), price, credit, amount to charge now and starts_at/ends_at
+    of the new period. A downgrade of a running paid period raises PaymentError: the only way down is
+    cancelling the subscription (autorenewal off), after which the plan runs out and the account goes Free."""
     if plan not in PAID_PLANS or period not in PERIODS:
         raise PaymentError('Выберите платный тариф и период.')
     price = plan_price(plan, period, founder_price)
@@ -101,12 +129,8 @@ def proration(current, plan, period, now, paid=None, founder_price=None):
     current_end = _dt(current['ends_at'])
     if plan == current_plan and period == current_period:
         return result | {'kind': 'same', 'amount': money(0), 'starts_at': current_end, 'ends_at': current_end}
-    current_price = plan_price(current_plan, current_period, founder_price)
-    upgrade = (current_period == 'month' and period == 'year') or (period == current_period and price > current_price)
-    if not upgrade:
-        # Cheaper plan or year→month: nothing is charged now, the next renewal bills the new plan.
-        return result | {'kind': 'downgrade', 'amount': money(0), 'starts_at': current_end,
-                         'ends_at': add_months(current_end, months)}
+    if change_kind(current_plan, current_period, plan, period) != 'upgrade':
+        raise PaymentError(DOWNGRADE_ERROR)
     credit = money(0)
     if paid and paid.get('period_end') is not None and abs((_dt(paid['period_end']) - current_end).total_seconds()) < 1:
         start, end = _dt(paid['period_start']), _dt(paid['period_end'])
@@ -125,10 +149,7 @@ def preview_json(result):
             'period_name': PERIODS[period], 'currency': 'RUB', 'price': amount_str(result['price']),
             'credit': amount_str(result['credit']), 'amount': amount_str(result['amount']),
             'starts_at': result['starts_at'].isoformat(), 'ends_at': result['ends_at'].isoformat()}
-    if result['kind'] == 'downgrade':
-        data['message'] = (f"«{PLAN_NAMES[plan]}» подключится {result['starts_at'].astimezone(MSK):%d.%m.%Y} "
-                           'при следующем продлении; сейчас ничего не спишется.')
-    elif result['kind'] == 'same':
+    if result['kind'] == 'same':
         data['message'] = 'Этот тариф уже подключён.'
     return data
 
@@ -207,9 +228,9 @@ def payment_body(row, return_url=None):
 
 # --- checkout ----------------------------------------------------------------------------------
 def checkout(db, client, user, owner_id, plan, period, email, consent, return_url, now=None):
-    """Start a payment for plan/period or schedule a downgrade.
+    """Start a payment for a new plan/period or an upgrade (downgrades raise PaymentError in preview).
 
-    Returns {'status': 'redirect', 'confirmation_url', 'payment_id', 'preview'} or {'status': 'scheduled', 'preview'}.
+    Returns {'status': 'redirect', 'confirmation_url', 'payment_id', 'preview'}.
     return_url gets ?payment=<our payment id> appended."""
     now = now or datetime.now(timezone.utc)
     if plan not in PAID_PLANS or period not in PERIODS:
@@ -222,11 +243,6 @@ def checkout(db, client, user, owner_id, plan, period, email, consent, return_ur
         db.execute('UPDATE app_users SET email=? WHERE id=?', (email, user['id']))
     if result['kind'] == 'same':
         raise PaymentError('Этот тариф уже подключён. Продление произойдёт автоматически, если включено автопродление.')
-    if result['kind'] == 'downgrade':
-        with db:
-            db.execute('''UPDATE subscriptions SET scheduled_plan=?,scheduled_period=?,autorenew_consent_at=?,
-                autorenew=(payment_method_id IS NOT NULL),updated_at=now() WHERE user_id=?''', (plan, period, now, owner_id))
-        return {'status': 'scheduled', 'preview': result}
     with db:
         reuse = db.execute('''SELECT * FROM payments WHERE user_id=? AND status='pending' AND kind=? AND plan_code=?
             AND billing_period=? AND amount=? AND confirmation_url IS NOT NULL AND created_at>? AND email=?
@@ -448,7 +464,8 @@ def handle_notification(db, client, data, now=None):
 
 # --- autorenew --------------------------------------------------------------------------------
 def set_autorenew(db, owner_id, enabled, consent=False, now=None):
-    """Turn autorenewal on (needs a saved payment method and consent) or off (the plan stays until the period ends)."""
+    """Resume (autorenewal on: needs a saved payment method and consent) or cancel the subscription (autorenewal
+    off: the plan stays until the paid period ends, then the account goes Free; the saved method is kept)."""
     now = now or datetime.now(timezone.utc)
     with db:
         sub = db.execute('SELECT * FROM subscriptions WHERE user_id=? FOR UPDATE', (owner_id,)).fetchone()
@@ -462,22 +479,8 @@ def set_autorenew(db, owner_id, enabled, consent=False, now=None):
             db.execute('UPDATE subscriptions SET autorenew=true,autorenew_consent_at=?,updated_at=now() WHERE user_id=?',
                        (now, owner_id))
         else:
-            db.execute('''UPDATE subscriptions SET autorenew=false,scheduled_plan=NULL,scheduled_period=NULL,updated_at=now()
-                WHERE user_id=?''', (owner_id,))
+            db.execute('UPDATE subscriptions SET autorenew=false,updated_at=now() WHERE user_id=?', (owner_id,))
     return enabled
-
-
-def cancel_scheduled(db, owner_id):
-    """Drop a scheduled cheaper plan (or year→month): the current plan and period stay as they are.
-
-    Returns the plan code that was scheduled."""
-    with db:
-        sub = db.execute('SELECT * FROM subscriptions WHERE user_id=? FOR UPDATE', (owner_id,)).fetchone()
-        if not sub or not sub['scheduled_plan']:
-            raise PaymentError('Смена тарифа не запланирована.')
-        db.execute('UPDATE subscriptions SET scheduled_plan=NULL,scheduled_period=NULL,updated_at=now() WHERE user_id=?',
-                   (owner_id,))
-    return sub['scheduled_plan']
 
 
 # --- renewal job -------------------------------------------------------------------------------
@@ -488,8 +491,9 @@ def _renewal_row(db, sub, now):
         AND status IN ('canceled','failed')''', (owner, period_start)).fetchone()['n']
     if failures >= len(RENEW_SCHEDULE) or now < period_start + RENEW_SCHEDULE[failures]:
         return None
-    plan = sub['scheduled_plan'] or sub['plan_code']
-    period = sub['scheduled_period'] or sub['billing_period'] or 'month'
+    # Always the current plan and period. scheduled_plan/scheduled_period (left from removed scheduled downgrades)
+    # are ignored.
+    plan, period = sub['plan_code'], sub['billing_period'] or 'month'
     amount = plan_price(plan, period, sub['founder_price'])
     email = db.execute('SELECT email FROM app_users WHERE id=?', (owner,)).fetchone()['email']
     if not email:
@@ -638,13 +642,13 @@ def billing_context(db, app):
     from flask import current_app, g
     from .teams import EDIT_SETTINGS
     enabled = bool(current_app.config.get('YOOKASSA_CLIENT_FACTORY')) or yookassa.enabled()
-    last = next_charge = None
+    last = next_charge = options = None
     if enabled and g.get('owner_id'):
         last = db.execute('SELECT * FROM payments WHERE user_id=? ORDER BY created_at DESC LIMIT 1', (g.owner_id,)).fetchone()
         sub = subscription(db, g.owner_id)
+        options = plan_options(sub, datetime.now(timezone.utc)) if sub else None
         if sub and sub['autorenew'] and sub['provider'] == 'yookassa' and sub['ends_at'] is not None:
-            plan = sub['scheduled_plan'] or sub['plan_code']
-            period = sub['scheduled_period'] or sub['billing_period'] or 'month'
+            plan, period = sub['plan_code'], sub['billing_period'] or 'month'
             if plan in PAID_PLANS:
                 next_charge = {'plan': plan, 'plan_name': PLAN_NAMES[plan], 'period': period, 'at': _dt(sub['ends_at']),
                                'amount': plan_price(plan, period, sub['founder_price'])}
@@ -655,7 +659,7 @@ def billing_context(db, app):
         open_payment = last
     return {'payments_enabled': enabled, 'payment_email': (g.user['email'] if g.get('user') else None) or '',
             'can_pay': bool(g.get('workspace')) and g.get('role') in EDIT_SETTINGS, 'last_payment': last,
-            'next_charge': next_charge, 'open_payment': open_payment, 'period_names': PERIODS}
+            'next_charge': next_charge, 'open_payment': open_payment, 'period_names': PERIODS, 'plan_options': options}
 
 
 CHECKOUT_LIMIT = (10, 3600)
@@ -725,13 +729,8 @@ def register_payment_routes(app, db):
                               request.form.get('consent') in ('1', 'on', 'true', 'yes'), public_root() + back + '/return')
         except (RateLimited, PaymentError) as exc:
             return fail(str(exc), back)
-        data = preview_json(result['preview']) | {'status': result['status']}
-        if result['status'] == 'scheduled':
-            if wants_json():
-                return jsonify(data)
-            flash(data['message'], 'success')
-            return redirect(back)
-        data |= {'confirmation_url': result['confirmation_url'], 'payment_id': result['payment_id']}
+        data = preview_json(result['preview']) | {'status': result['status'], 'confirmation_url': result['confirmation_url'],
+                                                  'payment_id': result['payment_id']}
         if wants_json():
             return jsonify(data)
         return redirect(result['confirmation_url'], 303)
@@ -742,7 +741,11 @@ def register_payment_routes(app, db):
         plan, period = request.args.get('plan', ''), request.args.get('period', 'month')
         if plan not in PAID_PLANS or period not in PERIODS:
             return jsonify({'ok': False, 'error': 'Выберите платный тариф и период.'}), 400
-        return jsonify(preview_json(preview(db(), g.owner_id, plan, period)))
+        try:
+            result = preview(db(), g.owner_id, plan, period)
+        except PaymentError as exc:
+            return jsonify({'ok': False, 'error': str(exc)}), 400
+        return jsonify(preview_json(result))
 
     def return_view(tg):
         if not enabled():
@@ -779,24 +782,14 @@ def register_payment_routes(app, db):
             set_autorenew(db(), g.owner_id, on, request.form.get('consent') in ('1', 'on', 'true', 'yes'))
         except PaymentError as exc:
             return fail(str(exc), back)
-        message = ('Автопродление включено.' if on else
-                   'Автопродление отключено: тариф действует до конца оплаченного периода, списаний больше не будет.')
+        sub = subscription(db(), g.owner_id)
+        until = f"{_dt(sub['ends_at']).astimezone(MSK):%d.%m.%Y}" if sub and sub['ends_at'] else None
+        if on:
+            message = 'Подписка возобновлена: продлим тариф в конце оплаченного периода.'
+        else:
+            message = 'Подписка отменена' + (f', тариф действует до {until}' if until else '') + '. Деньги больше не спишутся.'
         if wants_json():
             return jsonify({'ok': True, 'autorenew': on, 'message': message})
-        flash(message, 'success')
-        return redirect(back)
-
-    def cancel_scheduled_view(tg):
-        back = base(tg)
-        if not can_pay():
-            return fail('Подпиской управляет владелец или администратор команды.', back, 403)
-        try:
-            cancel_scheduled(db(), g.owner_id)
-        except PaymentError as exc:
-            return fail(str(exc), back)
-        message = 'Смена тарифа отменена: текущий тариф остаётся.'
-        if wants_json():
-            return jsonify({'ok': True, 'message': message})
         flash(message, 'success')
         return redirect(back)
 
@@ -831,14 +824,6 @@ def register_payment_routes(app, db):
     @app.post('/tg/billing/autorenew')
     def tg_billing_autorenew():
         return autorenew_view(True)
-
-    @app.post('/app/billing/scheduled/cancel')
-    def billing_scheduled_cancel():
-        return cancel_scheduled_view(False)
-
-    @app.post('/tg/billing/scheduled/cancel')
-    def tg_billing_scheduled_cancel():
-        return cancel_scheduled_view(True)
 
     @app.post('/webhooks/yookassa')
     def yookassa_webhook():

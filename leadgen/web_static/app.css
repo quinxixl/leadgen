@@ -611,6 +611,8 @@ details.fold.is-closing>summary:before{transform:rotate(-45deg)}
 .pay-plans.is-live [data-for]{animation:rise-in var(--dur) var(--ease-out-expo) backwards}
 .pay-plans .plan{transition:box-shadow var(--dur) var(--ease-standard),opacity var(--dur) var(--ease-standard),transform var(--dur) var(--ease-out-expo)}
 .pay.is-js .pay-plans .plan:not(.current){cursor:pointer}
+.pay.is-js .pay-plans .plan.is-locked{cursor:default}
+.pay-locked{margin:0;padding:10px 0;text-align:center;font-size:14px}
 .pay.has-plan .pay-plans .plan:not(.is-selected){opacity:.66}
 .pay.has-plan .pay-plans .plan:not(.is-selected):hover{opacity:1}
 .pay-plans .plan.is-selected{box-shadow:0 0 0 2px var(--brand),0 20px 50px rgba(54,84,245,.16)}
@@ -652,7 +654,6 @@ details.fold.is-closing>summary:before{transform:rotate(-45deg)}
 .renew-form{display:flex;align-items:center;gap:10px 16px;flex-wrap:wrap;flex:0 1 420px;justify-content:flex-end}
 .renew-form .check{margin:0;font-size:14px}
 .renew-form>button{margin-top:0}
-.pay-scheduled span{flex:1 1 320px}
 .pay-result{text-align:center;padding:44px 32px}
 .pay-result h1{font-size:clamp(24px,3vw,30px)}
 .pay-result [data-state]{animation:rise-in var(--dur-slow) var(--ease-out-expo) backwards}
