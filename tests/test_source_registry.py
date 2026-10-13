@@ -5,8 +5,9 @@ import unittest
 from unittest.mock import patch
 
 from leadgen.app import db_open
-from leadgen.source_registry import (NOT_JOINED_REASON, apply_monitor_policy, import_selection, inspect_public_page,
-                                     is_joined, read_count, verify_pending)
+from leadgen.source_registry import (APPROVED_REASON, MODERATION_REASON, NOT_JOINED_REASON, REJECTED_REASON,
+                                     apply_monitor_policy, approve_source, import_selection, inspect_public_page,
+                                     is_joined, moderation_queue, read_count, reject_source, verify_pending)
 
 
 class Registry(unittest.TestCase):
@@ -40,12 +41,13 @@ class Registry(unittest.TestCase):
         self.assertEqual(inspect_public_page('ivan_public')['status'],'not_chat')
 
     def add(self,username,group='Потенциальные клиенты',segment='Бизнес',metadata='{}',status='active',
-            enabled=1,members=100,online=5):
+            enabled=1,members=100,online=5,reason='83 онлайн при проверке'):
         with self.db:
             self.db.execute('''INSERT INTO telegram_sources
                 (username,url,title,segment,selection_group,members,online,status,enabled,check_reason,metadata)
-                VALUES(?,?,?,?,?,?,?,?,?,'83 онлайн при проверке',?)''',
-                (username,'https://t.me/'+username,username.title(),segment,group,members,online,status,enabled,metadata))
+                VALUES(?,?,?,?,?,?,?,?,?,?,?)''',
+                (username,'https://t.me/'+username,username.title(),segment,group,members,online,status,enabled,
+                 reason,metadata))
 
     def row(self,username):
         return self.db.execute('SELECT * FROM telegram_sources WHERE username=?',(username,)).fetchone()
@@ -55,36 +57,66 @@ class Registry(unittest.TestCase):
         self.assertTrue(is_joined('x','{"joined":true}'));self.assertFalse(is_joined('x','{"joined":false}'))
         self.assertFalse(is_joined('Потенциальные клиенты','not json'))
 
-    def test_monitor_policy_enables_only_joined_chats(self):
+    def test_monitor_policy_keeps_only_joined_chats_and_never_enables(self):
         # A live public group the service account does not follow is never read, so it is disabled.
         self.add('live_unjoined')
-        self.add('joined_channel',group='Требуют проверки',metadata=json.dumps({'joined':True,'kind':'channel'}),
-                 enabled=0,members=1000,online=None)
         self.add('joined_group',group='joined',segment='joined',online=0,members=3)
-        self.add('joined_segment',segment='joined',enabled=0)
+        self.add('joined_channel',group='Требуют проверки',metadata=json.dumps({'joined':True,'kind':'channel'}),
+                 members=1000,online=None)
         self.add('joined_inactive',group='joined',status='inactive')
         self.add('old_off',enabled=0,status='inactive')
-        self.assertEqual(apply_monitor_policy(self.db),3)
-        enabled={row['username']:row['enabled'] for row in self.db.execute('SELECT username,enabled FROM telegram_sources')}
-        self.assertEqual(enabled,{'live_unjoined':0,'joined_channel':1,'joined_group':1,'joined_segment':1,
-                                  'joined_inactive':0,'old_off':0})
+        # Disabled by an admin while joined: the policy leaves it off.
+        self.add('admin_off',segment='joined',enabled=0,reason='отключён вручную')
+        self.add('rejected_chat',group='joined',status='rejected',enabled=0,reason=REJECTED_REASON)
+        # A catalog chat the registry disabled as unjoined, joined later: it goes to moderation, not on.
+        self.add('catalog_joined',metadata=json.dumps({'joined':True,'kind':'group'}),enabled=0,reason=NOT_JOINED_REASON)
+        self.assertEqual(apply_monitor_policy(self.db),2)
+        rows={row['username']:(row['status'],row['enabled'])
+              for row in self.db.execute('SELECT username,status,enabled FROM telegram_sources')}
+        self.assertEqual(rows,{'live_unjoined':('active',0),'joined_group':('active',1),'joined_channel':('active',1),
+                               'joined_inactive':('inactive',0),'old_off':('inactive',0),'admin_off':('active',0),
+                               'rejected_chat':('rejected',0),'catalog_joined':('moderation',0)})
         self.assertEqual(self.row('live_unjoined')['check_reason'],NOT_JOINED_REASON)
         self.assertEqual(self.row('old_off')['check_reason'],'83 онлайн при проверке')
-        self.assertEqual(read_count(self.db),3)
-        self.assertEqual(apply_monitor_policy(self.db),3)  # stable on re-run
+        self.assertEqual(self.row('admin_off')['check_reason'],'отключён вручную')
+        self.assertEqual(self.row('rejected_chat')['check_reason'],REJECTED_REASON)
+        self.assertEqual(self.row('catalog_joined')['check_reason'],MODERATION_REASON)
+        self.assertEqual(read_count(self.db),2)
+        self.assertEqual(apply_monitor_policy(self.db),2)  # stable on re-run
+        self.assertEqual([r['username'] for r in moderation_queue(self.db)],['catalog_joined'])
 
     @patch('leadgen.source_registry.time.sleep')
     @patch('leadgen.source_registry.inspect_public_page')
-    def test_verify_sources_does_not_enable_unjoined_live_pages(self,inspect,_sleep):
+    def test_verify_sources_sends_joined_catalog_chats_to_moderation(self,inspect,_sleep):
         inspect.return_value={'status':'active','reason':'83 онлайн при проверке','title':'Чат','members':1200,
                               'online':83,'last_message_at':None}
+        joined=json.dumps({'joined':True,'kind':'group'})
         self.add('pending_unjoined',status='pending',enabled=0)
-        self.add('pending_joined',status='pending',enabled=0,metadata=json.dumps({'joined':True,'kind':'group'}))
+        self.add('pending_joined',status='pending',enabled=0,metadata=joined)
+        self.add('retry_joined',status='retry',enabled=0,metadata=joined)
+        self.add('rejected_chat',group='joined',status='rejected',enabled=0,reason=REJECTED_REASON)
+        self.add('admin_off',status='active',enabled=0,metadata=joined,reason='отключён вручную')
         result=verify_pending(self.db,workers=1)
-        self.assertEqual(result['enabled'],1)
+        self.assertEqual(result['checked'],3)  # rejected and admin-disabled rows are not re-checked
+        self.assertEqual(result['enabled'],0)
+        self.assertEqual(result['counts'],{'active':1,'moderation':2})
         self.assertEqual((self.row('pending_unjoined')['enabled'],self.row('pending_unjoined')['check_reason']),
                          (0,NOT_JOINED_REASON))
-        self.assertEqual((self.row('pending_joined')['enabled'],self.row('pending_joined')['status']),(1,'active'))
+        for username in ('pending_joined','retry_joined'):
+            row=self.row(username)
+            self.assertEqual((row['status'],row['enabled'],row['check_reason']),('moderation',0,MODERATION_REASON))
+        self.assertEqual((self.row('rejected_chat')['status'],self.row('rejected_chat')['enabled']),('rejected',0))
+        self.assertEqual((self.row('admin_off')['status'],self.row('admin_off')['enabled'],
+                          self.row('admin_off')['check_reason']),('active',0,'отключён вручную'))
+        self.assertEqual(sorted(r['username'] for r in moderation_queue(self.db)),['pending_joined','retry_joined'])
+        # The admin decides as for chats the reader registered on its own.
+        self.assertTrue(approve_source(self.db,'pending_joined'))
+        self.assertTrue(reject_source(self.db,'retry_joined'))
+        self.assertEqual((self.row('pending_joined')['status'],self.row('pending_joined')['enabled'],
+                          self.row('pending_joined')['check_reason']),('active',1,APPROVED_REASON))
+        self.assertEqual(apply_monitor_policy(self.db),1)  # an approved catalog chat stays on
+        self.assertEqual((self.row('retry_joined')['status'],self.row('retry_joined')['enabled']),('rejected',0))
+        self.assertEqual(read_count(self.db),1)
 
     def test_reimport_keeps_joined_marker(self):
         self.add('good_chat',metadata=json.dumps({'joined':True,'kind':'channel'}))

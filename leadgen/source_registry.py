@@ -17,9 +17,20 @@ NUMBER = re.compile(r'([\d\s.,]+)\s*(members?|subscribers?|участник\w*|�
 ONLINE = re.compile(r'([\d\s.,]+)\s*(?:online|онлайн)', re.I)
 # Public chats the shared reader account is subscribed to. The reader receives messages only from
 # these chats, so they are the only enabled sources; the rest of the imported catalog is never read.
+# No chat is enabled automatically: a joined chat is read only after the platform admin approves it.
 JOINED = 'joined'
 JOINED_REASON = 'подписан служебный аккаунт'
 NOT_JOINED_REASON = 'служебный аккаунт не подписан'
+# A chat the service account joined waits for the platform admin: it is stored disabled with this
+# status and is read only after approval. This covers chats the reader registers on its own and joined
+# catalog chats found by verify_pending / apply_monitor_policy. A rejected chat keeps its row, so it is
+# never queued again; the registry checks never change a 'moderation' or 'rejected' row.
+MODERATION = 'moderation'
+REJECTED = 'rejected'
+MODERATION_REASON = 'ждёт одобрения администратора'
+APPROVED_REASON = 'одобрен администратором'
+REJECTED_REASON = 'отклонён администратором'
+MODERATION_LIMIT = 100
 
 
 def _metadata(value):
@@ -48,6 +59,30 @@ def monitor_enabled(status, selection_group, metadata, segment=None):
 def read_count(db):
     """Chats the shared service account reads in real time (what the cabinet catalog lists)."""
     return db.execute("SELECT count(*) AS total FROM telegram_sources WHERE enabled=1 AND status='active'").fetchone()['total']
+
+
+def moderation_queue(db, limit=MODERATION_LIMIT):
+    """Chats the service account joined that wait for the admin's decision, oldest first."""
+    return db.execute('''SELECT username,title,checked_at,metadata FROM telegram_sources
+        WHERE status=? ORDER BY checked_at,username LIMIT ?''', (MODERATION, limit)).fetchall()
+
+
+def _decide(db, username, status, enabled, reason):
+    with db:
+        row = db.execute('''UPDATE telegram_sources SET status=?,enabled=?,checked_at=?,check_reason=?
+            WHERE username=? AND status=? RETURNING username''',
+            (status, enabled, datetime.now(UTC).isoformat(), reason, username, MODERATION)).fetchone()
+    return row is not None
+
+
+def approve_source(db, username):
+    """Start reading a chat waiting for moderation. False when it is not waiting."""
+    return _decide(db, username, 'active', 1, APPROVED_REASON)
+
+
+def reject_source(db, username):
+    """Keep a chat waiting for moderation disabled for good. False when it is not waiting."""
+    return _decide(db, username, REJECTED, 0, REJECTED_REASON)
 
 
 def _number(value):
@@ -87,17 +122,22 @@ def import_selection(db, path: Path):
 
 
 def apply_monitor_policy(db):
-    """enabled=1 only for active chats the service account follows; everything else stays disabled.
+    """Disable every source the service account cannot read; never enable one. Returns the enabled count.
 
-    Members, online audience and the workbook segment no longer enable a source: the reader gets
-    messages only from joined chats, so an unjoined catalog row would look active but never be read."""
-    rows=db.execute('SELECT username,segment,selection_group,metadata,status,enabled FROM telegram_sources').fetchall();enabled=0
+    Members, online audience and the workbook segment do not enable a source: the reader gets
+    messages only from joined chats, so an unjoined catalog row would look active but never be read.
+    A chat the registry disabled only because it was not joined goes to admin moderation once it is
+    joined; any other disabled row (e.g. switched off by an admin) is left as is."""
+    rows=db.execute('SELECT username,segment,selection_group,metadata,status,enabled,check_reason FROM telegram_sources').fetchall();enabled=0
     with db:
         for row in rows:
             allow=monitor_enabled(row['status'],row['selection_group'],row['metadata'],row['segment'])
             if allow and not row['enabled']:
-                db.execute('UPDATE telegram_sources SET enabled=1 WHERE username=?',(row['username'],))
-            elif row['enabled'] and not allow:
+                if row['check_reason']==NOT_JOINED_REASON:
+                    db.execute('UPDATE telegram_sources SET status=?,checked_at=?,check_reason=? WHERE username=?',
+                               (MODERATION,datetime.now(UTC).isoformat(),MODERATION_REASON,row['username']))
+                continue
+            if row['enabled'] and not allow:
                 if row['status']=='active':
                     db.execute('UPDATE telegram_sources SET enabled=0,check_reason=? WHERE username=?',
                                (NOT_JOINED_REASON,row['username']))
@@ -167,13 +207,15 @@ def verify_pending(db, workers=14, limit=None):
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
         for i,(row,result) in enumerate(pool.map(check,rows),1):
             status=result['status']; now=datetime.now(UTC).isoformat(); username=row['username']
-            # A live public page does not mean the service account reads the chat: joined chats only.
-            enabled=monitor_enabled(status,row['selection_group'],row['metadata'],row['segment'])
-            reason=NOT_JOINED_REASON if status=='active' and not enabled else result['reason']
+            # A live public page does not mean the service account reads the chat: joined chats only,
+            # and even those wait for the admin's approval instead of being enabled here.
+            joined=monitor_enabled(status,row['selection_group'],row['metadata'],row['segment'])
+            reason=NOT_JOINED_REASON if status=='active' and not joined else result['reason']
+            if joined: status,reason=MODERATION,MODERATION_REASON
             with db:
                 db.execute('''UPDATE telegram_sources SET title=COALESCE(?,title),members=?,online=?,
-                    status=?,enabled=?,checked_at=?,last_message_at=?,check_reason=? WHERE username=?''',
-                    (result.get('title'),result.get('members'),result.get('online'),status,int(enabled),
+                    status=?,enabled=0,checked_at=?,last_message_at=?,check_reason=? WHERE username=?''',
+                    (result.get('title'),result.get('members'),result.get('online'),status,
                      now,result.get('last_message_at'),reason,username))
             counts[status]=counts.get(status,0)+1
             if i%250==0:
