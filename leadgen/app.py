@@ -1,4 +1,4 @@
-"""python -m leadgen.app scan|run|status|setup. Sending requires --send."""
+"""python -m leadgen.app scan|run|status|healthcheck|setup. Sending requires --send."""
 import argparse
 import getpass
 import json
@@ -182,14 +182,32 @@ def deliver(db, config, sender=telegram, limit=20):
                 db.execute("UPDATE leads SET status='sent', sent_at=? WHERE url=?",(datetime.now(UTC).isoformat(),lead.url))
             time.sleep(1.1)
 
-def status(db):
+APPROX_COUNTS = """SELECT s.most_common_vals::text::text[] AS vals, s.most_common_freqs AS freqs, c.reltuples
+    FROM pg_stats s JOIN pg_namespace n ON n.nspname=s.schemaname
+    JOIN pg_class c ON c.relnamespace=n.oid AND c.relname=s.tablename
+    WHERE s.schemaname='leadgen' AND s.tablename='leads' AND s.attname='status'"""
+
+def lead_counts(db, exact=False):
+    """Leads per status. On Postgres a full GROUP BY over leads takes minutes on a small
+    instance, so by default the planner's statistics (pg_stats MCV x reltuples, refreshed by
+    autovacuum ANALYZE) give an approximate answer from the catalog; `status --exact` scans."""
+    if exact or db.backend != 'postgres':
+        rows = db.execute('SELECT status,count(*) AS total FROM leads GROUP BY status')
+        return {row['status']:row['total'] for row in rows}, 'exact'
+    row = db.execute(APPROX_COUNTS).fetchone()
+    if not row or row['reltuples'] is None or row['reltuples'] < 0 or not row['vals']:
+        return {}, 'approximate: no statistics yet (ANALYZE leads or use status --exact)'
+    return {v:int(round(f*row['reltuples'])) for v,f in zip(row['vals'],row['freqs'])}, 'approximate'
+
+def status(db, exact=False):
     from .telegram_monitor import SESSION_FILE, reader_status
-    counts = {row['status']:row['total'] for row in db.execute('SELECT status,count(*) AS total FROM leads GROUP BY status')}
+    from .heartbeat import status as worker_status
+    counts, counts_mode = lead_counts(db, exact)
     registry = {row['status']:row['total'] for row in db.execute('SELECT status,count(*) AS total FROM telegram_sources GROUP BY status')}
     from .source_registry import read_count
     enabled = read_count(db)  # chats the service account reads; registry statuses are public-page checks
     reader = reader_status(db) | {'session_file': SESSION_FILE.exists()}
-    print(json.dumps({'counts':counts,'sources':[dict(r) for r in db.execute('SELECT * FROM health')],
+    print(json.dumps({'counts':counts,'counts_mode':counts_mode,'worker':worker_status(db),'sources':[dict(r) for r in db.execute('SELECT * FROM health')],
                       'telegram_registry':registry,'telegram_enabled':enabled,'telegram_reader':reader},ensure_ascii=False,indent=2))
 
 def setup():
@@ -221,12 +239,17 @@ def setup():
 def main():
     env_load()
     parser = argparse.ArgumentParser(description='IT-лиды от 5 000 ₽')
-    parser.add_argument('command',choices=['scan','run','bot','status','export','setup','import-sources','verify-sources','setup-telegram','monitor-telegram'])
+    parser.add_argument('command',choices=['scan','run','bot','status','healthcheck','export','setup','import-sources','verify-sources','setup-telegram','monitor-telegram'])
     parser.add_argument('--send',action='store_true',help='Отправлять подходящие объявления в ваш Telegram')
     parser.add_argument('--fixtures',action='store_true',help='Проверка на ранее сохранённых страницах, без сети')
     parser.add_argument('--qr',action='store_true',help='setup-telegram: вход по QR-коду вместо кода из SMS/Telegram')
+    parser.add_argument('--exact',action='store_true',help='status: точный подсчёт лидов (полный проход по таблице, медленно)')
     parser.add_argument('--db',type=Path,help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.command == 'healthcheck':
+        # Docker healthcheck: one settings lookup, own short-timeout connection, no config/Sentry.
+        from .heartbeat import healthcheck
+        raise SystemExit(healthcheck(args.db if args.db else database_url()))
     if args.command in ('bot','run','scan','monitor-telegram') and not args.fixtures:
         from .observability import init_alerts, init_sentry
         service='bot' if args.command=='bot' else 'cli-'+args.command
@@ -263,7 +286,7 @@ def main():
             run_bot(db,config)
             return
         if args.command == 'status':
-            status(db); return
+            status(db, exact=args.exact); return
         if args.command == 'export':
             for row in db.execute("SELECT payload,status,reason FROM leads WHERE status IN ('ready','review','sent','uncertain')"):
                 print(json.dumps({**json.loads(row['payload']),'status':row['status'],'reason':row['reason']},ensure_ascii=False))

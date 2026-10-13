@@ -9,6 +9,7 @@ from datetime import datetime
 from .adapters import collect, error_label
 from .app import telegram, ingest, deliver, send_lead, classify_for_config, env_load, notification_chat_ids
 from .core import TOPICS, Lead, UTC, classify
+from .heartbeat import beat
 from .observability import capture_exception
 
 MENU = {'keyboard':[[{'text':'▶️ Начать'},{'text':'⏸ Остановить'}],
@@ -195,14 +196,36 @@ def re_amount(text):
     value=text.replace(' ','').replace('\u00a0','')
     return int(value) if value.isascii() and value.isdigit() and len(value)<=9 and int(value)<=100000000 else None
 
+DB_RETRY_MAX_SECONDS=30
+
+
+def db_retry_delay(failures):
+    """Back-off after consecutive database errors in the worker loop: 2, 4, 8 ... up to 30 s."""
+    return min(DB_RETRY_MAX_SECONDS,2**max(1,failures))
+
+
+def releasing(db,send):
+    """Telegram sender that first ends the implicit read transaction (Database.release).
+
+    Every network call of the loop goes through it, so the worker is never idle in transaction while waiting
+    for Telegram; inside `with db:` blocks it changes nothing."""
+    def sender(method,payload):
+        db.release()
+        return send(method,payload)
+    return sender
+
+
 def run_bot(db,config):
     product_mode=db.backend=='postgres'
+    from .database import transient_errors
+    send=releasing(db,telegram)
     if product_mode:
-        from .product import ProductController
-        ui=ProductController(db,config,telegram)
+        from .product import DeliveryGate, ProductController
+        ui=ProductController(db,config,send)
+        gate=DeliveryGate()
     else:
-        ui=Controller(db,config)
-    webhook=telegram('getWebhookInfo',{})
+        ui=Controller(db,config,send)
+    webhook=send('getWebhookInfo',{})
     if webhook.get('url'):
         raise ValueError('У бота настроен webhook. Используйте отдельного бота без webhook для локального запуска.')
     print('Бот работает. Откройте Telegram и отправьте /start. Ctrl+C — выход.',flush=True)
@@ -239,14 +262,14 @@ def run_bot(db,config):
         threading.Thread(target=run_scorer, args=(db_target,), daemon=True).start()
     elif product_mode:
         print('AI-оценка лидов отключена: задайте GROQ_API_KEY.', flush=True)
-    future=None;next_scan=0;telegram_retry_delay=2;next_subscription_check=0;next_first_run_check=0
+    future=None;next_scan=0;telegram_retry_delay=2;next_subscription_check=0;next_first_run_check=0;db_failures=0
     with ThreadPoolExecutor(max_workers=1) as pool:
         while True:
             try:
                 # The setup wizard can finish while the bot is already running.
                 if start_reader_if_ready():print('Сессия найдена, чтение групп подключается.',flush=True)
                 try:
-                    updates=telegram('getUpdates',{'offset':ui.get('offset',0),'timeout':1,'allowed_updates':['message','callback_query']})
+                    updates=send('getUpdates',{'offset':ui.get('offset',0),'timeout':1,'allowed_updates':['message','callback_query']})
                     telegram_retry_delay=2
                 except RuntimeError as exc:
                     # Short network interruptions must not restart the container and
@@ -254,6 +277,7 @@ def run_bot(db,config):
                     if not str(exc).startswith('Telegram: '):
                         raise
                     print(f'{exc}; повтор через {telegram_retry_delay} с.',flush=True)
+                    beat(db_target)  # the loop itself is alive; Telegram is unreachable
                     time.sleep(telegram_retry_delay)
                     telegram_retry_delay=min(60,telegram_retry_delay*2)
                     continue
@@ -282,60 +306,79 @@ def run_bot(db,config):
                     future=pool.submit(collect_batch,ui.config())
                 if product_mode:
                     from .reminders import deliver_due
-                    deliver_due(db,telegram)
+                    deliver_due(db,send)
                     from .integrations import integrations_enabled
                     if integrations_enabled() and os.getenv('TELEGRAM_SESSION_ENCRYPTION_KEY'):
                         from .integrations import deliver_webhooks
                         deliver_webhooks(db,os.environ['TELEGRAM_SESSION_ENCRYPTION_KEY'],limit=2)
                     from .team_notifications import deliver_assignments
-                    deliver_assignments(db,telegram,limit=2)
+                    deliver_assignments(db,send,limit=2)
                     if time.monotonic()>=next_subscription_check:
                         next_subscription_check=time.monotonic()+300
                         try:
                             from .product import notify_subscriptions
-                            notify_subscriptions(db,telegram)
+                            notify_subscriptions(db,send)
                         except Exception as exc:
                             # Trial reminders are optional; only RuntimeError is survivable in this loop.
                             capture_exception(exc,component='subscription_reminders')
                             print('Напоминания о подписке: '+type(exc).__name__,flush=True)
-                            db.connection.rollback()
+                            db.recover()
                         try:
                             from .feedback import send_surveys
-                            send_surveys(db,telegram)
+                            send_surveys(db,send)
                         except Exception as exc:
                             # Beta surveys are optional and must never stop lead delivery.
                             capture_exception(exc,component='beta_surveys')
                             print('Опрос беты: '+type(exc).__name__,flush=True)
-                            db.connection.rollback()
+                            db.recover()
                     if time.monotonic()>=next_first_run_check:
                         # Before the live stream: monitoring enabled on the site gets the welcome batch too.
                         next_first_run_check=time.monotonic()+10
                         try:
                             from .product import backfill_pending
-                            backfill_pending(db,config,telegram)
+                            backfill_pending(db,config,send)
                         except RuntimeError:raise
                         except Exception as exc:
                             capture_exception(exc,component='first_leads')
                             print('Первые лиды: '+type(exc).__name__,flush=True)
-                            db.connection.rollback()
+                            db.recover()
                         try:
                             from .feedback import deliver_notifications
-                            deliver_notifications(db,telegram)
+                            deliver_notifications(db,send)
                         except Exception as exc:
                             # Feedback is already saved; only the owner notification is skipped.
                             capture_exception(exc,component='feedback_notifications')
                             print('Уведомление об обратной связи: '+type(exc).__name__,flush=True)
-                            db.connection.rollback()
+                            db.recover()
                 if ui.get('active',False) or ui.drain:
                     if product_mode:
-                        from .product import deliver_registered
-                        deliver_registered(db,config,telegram,limit_per_user=1)
+                        # Cadence: only when new leads arrived, a backlog drains, a scan finished or the idle interval passed.
+                        if gate.due(db,force=ui.drain):
+                            from .product import deliver_registered
+                            gate.ran(deliver_registered(db,config,send,limit_per_user=1))
                         ui.drain=False
                     else:
                         deliver(db,ui.config(),limit=1)
                         ui.drain=bool(db.execute("SELECT 1 FROM leads WHERE status='ready' AND next_attempt<=? LIMIT 1",(time.time(),)).fetchone())
+                db.release()
+                db_failures=0
+                # Only after a full pass: a loop failing every iteration (DB errors, crashes) goes stale and unhealthy.
+                beat(db_target)  # throttled, own autocommit connection, never raises
             except RuntimeError as exc:
                 # Telegram network/API errors are expected here; report only unexpected ones.
                 if not str(exc).startswith('Telegram'):capture_exception(exc,component='bot_loop')
                 print(str(exc),flush=True)
+                try:db.release()
+                except transient_errors():pass  # the next iteration reports and recovers
                 time.sleep(3)
+            except transient_errors() as exc:
+                # statement_timeout (QueryCanceled), a dropped or closed connection, deadlocks: roll back or
+                # reconnect and continue instead of exiting and making Docker restart the whole worker.
+                # Programming errors (ProgrammingError, IntegrityError...) still stop the loop.
+                db_failures+=1;delay=db_retry_delay(db_failures)
+                capture_exception(exc,component='bot_loop')
+                print(f'База данных: {type(exc).__name__}: {str(exc).strip()[:300]}; повтор через {delay} с.',flush=True)
+                try:db.recover()
+                except (RuntimeError,*transient_errors()) as again:
+                    print('База данных недоступна: '+type(again).__name__,flush=True)
+                time.sleep(delay)

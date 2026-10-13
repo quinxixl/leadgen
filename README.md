@@ -94,8 +94,11 @@ python3 -m venv .venv
 # Однократный сбор без отправки сообщений:
 .venv/bin/python -m leadgen.app scan
 
-# Статистика источников и базы:
+# Статистика источников и базы (число лидов в Postgres — приблизительное, по pg_stats; --exact — полный подсчёт, медленно):
 .venv/bin/python -m leadgen.app status
+
+# Проверка живости воркера по heartbeat (код выхода 0/1; используется как Docker healthcheck):
+.venv/bin/python -m leadgen.app healthcheck
 
 # Подходящие и требующие проверки объявления, JSON Lines:
 .venv/bin/python -m leadgen.app export
@@ -107,12 +110,24 @@ python3 -m venv .venv
 Остановка — `Ctrl+C`. На Mac процесс работает, пока компьютер включён, не спит и команда запущена. Для круглосуточной работы предусмотрен запуск на Linux-сервере с Docker. На сервер нужно безопасно скопировать `.env` и файл `leadgen/data/telegram_reader.session`:
 
 ```sh
-docker compose up -d --build
+docker compose build
+docker compose run --rm --no-deps leadfinder python -m leadgen.web_migrate  # до запуска нового кода
+docker compose up -d --wait
 docker compose logs --tail 100
 docker compose down
 ```
 
-Том `leadgen/data` сохраняет MTProto-сессию Telegram. База и настройки находятся в Supabase. Контейнер запускается непривилегированным пользователем, автоматически перезапускается и проверяет соединение с базой раз в минуту.
+Миграции нужно применить до старта нового воркера: код читает новые колонки (например, `user_preferences.delivery_cursor`). `deploy/leadfinder-update.sh` делает это в том же порядке.
+
+Том `leadgen/data` сохраняет MTProto-сессию Telegram. База и настройки находятся в Supabase. Контейнер запускается непривилегированным пользователем и автоматически перезапускается; healthcheck раз в 30 с проверяет свежесть heartbeat воркера (`healthcheck`).
+
+Необязательные переменные `.env` (секунды):
+
+- `WORKER_HEARTBEAT_MAX_AGE` — после какого возраста heartbeat воркер считается зависшим, по умолчанию 300.
+- `LEAD_DELIVERY_MIN_SECONDS` — минимальный интервал между проходами доставки лидов, по умолчанию 2 (0–300).
+- `LEAD_DELIVERY_IDLE_SECONDS` — проход доставки не реже этого интервала, даже без новых лидов, по умолчанию 15 (1–3600).
+- `LEAD_CURSOR_LAG_SECONDS` — насколько старым должен быть лид, чтобы курсор доставки пользователя прошёл его, по умолчанию 600 (60–86400).
+- `LEADGEN_MIGRATE_*` — `web_migrate` при занятых блокировках: `LOCK_ATTEMPTS` (5), `RETRY_BASE_SECONDS` (2), `RETRY_MAX_SECONDS` (30), `LOCK_TIMEOUT` (15s), `STATEMENT_TIMEOUT` (120s), `CONCURRENT_LOCK_TIMEOUT` (60s), `CONCURRENT_STATEMENT_TIMEOUT` (0 — без ограничения) для `CREATE INDEX CONCURRENTLY`.
 
 ## Правила отбора
 

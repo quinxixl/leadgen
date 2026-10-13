@@ -4,7 +4,9 @@ import base64
 import json
 import os
 import re
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 from cryptography.fernet import Fernet, InvalidToken
@@ -370,6 +372,15 @@ class TelethonGateway:
             await client.disconnect()
 
 
+def _end_transaction(db):
+    """Close the implicit read transaction before a slow Telegram call.
+
+    psycopg opens a transaction on the first SELECT; holding it across a network call
+    leaves the session idle in transaction (it pins a pooler slot and is killed by
+    idle_in_transaction_session_timeout)."""
+    db.commit()
+
+
 def auth_record(db, user_id, cipher):
     row = db.execute('SELECT * FROM telegram_connection_auth WHERE user_id=?', (user_id,)).fetchone()
     if not row or row['expires_at'] <= datetime.now(timezone.utc) or row['attempts'] >= 5:
@@ -380,6 +391,7 @@ def auth_record(db, user_id, cipher):
 def begin_connection(db, user_id, phone, cipher, gateway):
     if not PHONE.fullmatch(phone):
         raise TelegramAccountError('Введите номер в международном формате, например +79991234567.')
+    _end_transaction(db)
     state = gateway.begin(phone)
     now = datetime.now(timezone.utc)
     with db:
@@ -403,6 +415,7 @@ def resend_connection(db, user_id, cipher, gateway):
     wait = int(state.get('resend_after', 0) - time.time())
     if wait > 0:
         raise TelegramAccountError(f'Резервный способ станет доступен через {wait} с.')
+    _end_transaction(db)
     state = gateway.resend(state)
     with db:
         db.execute('''UPDATE telegram_connection_auth SET state_cipher=?,expires_at=?,updated_at=now()
@@ -411,6 +424,7 @@ def resend_connection(db, user_id, cipher, gateway):
 
 
 def begin_qr_connection(db, user_id, cipher, gateway):
+    _end_transaction(db)
     state = gateway.begin_qr()
     state.setdefault('deadline', (datetime.now(timezone.utc) + AUTH_TTL).isoformat())
     expires = datetime.fromisoformat(state['deadline'])
@@ -443,6 +457,7 @@ def wait_qr_connection(db, user_id, cipher, gateway):
     if not row or row['stage'] != 'qr':
         raise TelegramAccountError('QR-подключение не запущено.')
     state = cipher.decrypt(row['state_cipher'])
+    _end_transaction(db)
     result = gateway.wait_qr(state)
     # Polls may overlap (two tabs, retries): never let a stale 'pending' overwrite a
     # row that another poll already moved to 'password' or replaced with a new flow.
@@ -518,6 +533,7 @@ def sync_dialogs(db, user_id, cipher, gateway):
     row = db.execute("SELECT session_cipher FROM telegram_connections WHERE user_id=? AND status='active'", (user_id,)).fetchone()
     if not row:
         raise TelegramAccountError('Telegram-аккаунт не подключён.')
+    _end_transaction(db)
     dialogs = gateway.dialogs(cipher.decrypt(row['session_cipher'])['session'])
     with db:
         for dialog in dialogs:
@@ -532,6 +548,7 @@ def sync_dialogs(db, user_id, cipher, gateway):
 def disconnect(db, user_id, cipher, gateway):
     row = db.execute('SELECT session_cipher FROM telegram_connections WHERE user_id=?', (user_id,)).fetchone()
     remote = False
+    _end_transaction(db)
     if row and row['session_cipher']:
         try:
             remote = gateway.logout(cipher.decrypt(row['session_cipher'])['session'])
@@ -551,59 +568,160 @@ def personal_message_link(entity, message_id):
     return f'https://t.me/c/{entity.id}/{message_id}'
 
 
-def run_personal_monitors(db_target, config):
-    """Keep one event-only Telethon client per active encrypted connection."""
-    from .app import db_open, ingest
+def _connection_lost(db, exc):
+    """True when the connection behind `db` is unusable and must be replaced."""
+    connection = getattr(db, 'connection', None)
+    if getattr(connection, 'closed', False) or getattr(connection, 'broken', False):
+        return True
+    try:
+        import psycopg
+    except ImportError:
+        return False
+    return isinstance(exc, (psycopg.OperationalError, psycopg.InterfaceError))
+
+
+class MonitorStore:
+    """The one database connection shared by every personal monitor of the process.
+
+    The Supavisor session pool is small, so monitors never open a connection per Telegram
+    message. All work runs on a single worker thread: off the event loop, and the psycopg
+    connection is never used from two threads at once. Each unit of work is one short
+    transaction, committed or rolled back before control returns to the event loop, so no
+    transaction (and no checked-out connection) ever stays open across an await. A
+    connection the server closed (idle_in_transaction_session_timeout, pooler restart,
+    network) is replaced and the unit of work retried once."""
+
+    def __init__(self, db_target, opener=None):
+        self.db_target, self.opener = db_target, opener
+        self.db = None
+        self.lock = threading.Lock()
+        self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='personal-monitors-db')
+
+    def _drop(self):
+        db, self.db = self.db, None
+        if db is not None:
+            try:
+                db.close()
+            except Exception:
+                pass
+
+    def call(self, work):
+        """Run work(db) in one transaction on the shared connection (blocking)."""
+        with self.lock:
+            for attempt in (0, 1):
+                if self.db is None:
+                    if self.opener is None:
+                        from .app import db_open
+                        self.opener = db_open
+                    self.db = self.opener(self.db_target)
+                db = self.db
+                try:
+                    with db:
+                        return work(db)
+                except Exception as exc:
+                    if not _connection_lost(db, exc):
+                        raise
+                    self._drop()
+                    if attempt:
+                        raise
+
+    async def run(self, work):
+        """Run work(db) on the DB thread; the transaction has ended when this returns."""
+        return await asyncio.get_running_loop().run_in_executor(self.executor, self.call, work)
+
+    def close(self):
+        def drop():
+            with self.lock:
+                self._drop()
+        try:
+            self.executor.submit(drop).result(timeout=10)
+        except Exception:
+            pass
+        self.executor.shutdown(wait=False)
+
+
+def _load_monitor_targets(db):
+    connections = [dict(row) for row in db.execute("""SELECT user_id,session_cipher,updated_at FROM telegram_connections
+        WHERE status='active' AND session_cipher<>''""").fetchall()]
+    enabled = {(row['user_id'], row['peer_id']) for row in db.execute(
+        'SELECT user_id,peer_id FROM user_telegram_dialogs WHERE enabled=true').fetchall()}
+    return connections, enabled
+
+
+def store_personal_message(db, user_id, chat_id, entity, message, config):
+    """Ingest one group message. Synchronous DB work only: never awaits."""
+    from .app import ingest
     from .core import Lead, UTC
+    # Re-checked inside the write transaction: the manager's cache may be up to one cycle old.
+    source = db.execute('''SELECT title,username FROM user_telegram_dialogs
+        WHERE user_id=? AND peer_id=? AND enabled=true''', (user_id, chat_id)).fetchone()
+    if not source:
+        return False
+    text = message.message.strip()
+    title = next((line.strip() for line in text.splitlines() if len(line.strip()) >= 8), text)[:220]
+    lead = Lead(source='Telegram · ' + source['title'],
+                url=personal_message_link(entity, message.id), title=title, text=text,
+                published=message.date.astimezone(UTC).isoformat(), budget_text=text)
+    ingest(db, lead, config, origin_user_id=user_id)
+    db.execute('''UPDATE user_telegram_dialogs SET last_message_at=now(),updated_at=now()
+        WHERE user_id=? AND peer_id=?''', (user_id, chat_id))
+    return True
+
+
+async def handle_personal_message(event, user_id, store, enabled, config):
+    """Telegram work first (no DB held), then one short DB transaction on the DB thread."""
+    if event.is_private or not event.is_group or not event.message.message:
+        return False
+    # Selected groups are cached by the manager: messages from other groups cost no DB call.
+    if (user_id, event.chat_id) not in enabled:
+        return False
+    entity = await event.get_chat()
+    if getattr(entity, 'broadcast', False) or not getattr(entity, 'megagroup', False):
+        return False
+    chat_id, message = event.chat_id, event.message
+    return await store.run(lambda db: store_personal_message(db, user_id, chat_id, entity, message, config))
+
+
+def run_personal_monitors(db_target, config, store=None):
+    """Keep one event-only Telethon client per active encrypted connection."""
     from telethon import TelegramClient, events
     from telethon.sessions import StringSession
 
     api_id, api_hash = telegram_credentials()
     cipher = SessionCipher(os.environ.get('TELEGRAM_SESSION_ENCRYPTION_KEY', ''))
+    store = store or MonitorStore(db_target)
+    enabled = set()
 
     async def connection_task(user_id, session_string):
         client = TelegramClient(StringSession(session_string), api_id, api_hash)
 
         @client.on(events.NewMessage(incoming=True))
         async def live(event):
-            if event.is_private or not event.is_group or not event.message.message:
-                return
-            live_db = db_open(db_target)
-            try:
-                source = live_db.execute('''SELECT title,username FROM user_telegram_dialogs
-                    WHERE user_id=? AND peer_id=? AND enabled=true''',
-                    (user_id, event.chat_id)).fetchone()
-                if not source:
-                    return
-                entity = await event.get_chat()
-                if getattr(entity, 'broadcast', False) or not getattr(entity, 'megagroup', False):
-                    return
-                text = event.message.message.strip()
-                title = next((line.strip() for line in text.splitlines() if len(line.strip()) >= 8), text)[:220]
-                lead = Lead(source='Telegram · ' + source['title'],
-                            url=personal_message_link(entity, event.message.id), title=title, text=text,
-                            published=event.message.date.astimezone(UTC).isoformat(), budget_text=text)
-                with live_db:
-                    ingest(live_db, lead, config, origin_user_id=user_id)
-                    live_db.execute('''UPDATE user_telegram_dialogs SET last_message_at=now(),updated_at=now()
-                        WHERE user_id=? AND peer_id=?''', (user_id, event.chat_id))
-            finally:
-                live_db.close()
+            await handle_personal_message(event, user_id, store, enabled, config)
 
         await client.connect()
         if not await client.is_user_authorized():
             raise TelegramAccountError('Telegram-сессия отозвана.')
         await client.run_until_disconnected()
 
+    def mark_error(user_id, error):
+        def work(db):
+            db.execute("""UPDATE telegram_connections SET status='error',last_error=?,updated_at=now()
+                WHERE user_id=?""", ('Соединение остановлено: ' + type(error).__name__, user_id))
+        return store.run(work)
+
     async def manager():
         tasks = {}
         while True:
-            live_db = db_open(db_target)
             try:
-                rows = live_db.execute("""SELECT user_id,session_cipher,updated_at FROM telegram_connections
-                    WHERE status='active' AND session_cipher<>''""").fetchall()
-            finally:
-                live_db.close()
+                rows, selected = await store.run(_load_monitor_targets)
+            except Exception as exc:
+                # Database unavailable: keep the running clients and retry on the next cycle.
+                print('Личные Telegram-подключения: база недоступна (' + type(exc).__name__ + '), повтор через 15 с.', flush=True)
+                await asyncio.sleep(15)
+                continue
+            enabled.clear()
+            enabled.update(selected)
             wanted = {}
             for row in rows:
                 try:
@@ -615,13 +733,10 @@ def run_personal_monitors(db_target, config):
                     error = tasks[user_id][1].exception() if not tasks[user_id][1].cancelled() else None
                     del tasks[user_id]
                     if error:
-                        error_db = db_open(db_target)
                         try:
-                            with error_db:
-                                error_db.execute("""UPDATE telegram_connections SET status='error',last_error=?,updated_at=now()
-                                    WHERE user_id=?""", ('Соединение остановлено: ' + type(error).__name__, user_id))
-                        finally:
-                            error_db.close()
+                            await mark_error(user_id, error)
+                        except Exception as exc:
+                            print('Личные Telegram-подключения: статус ошибки не сохранён (' + type(exc).__name__ + ').', flush=True)
                         wanted.pop(user_id, None)
             for user_id, (version, session_string) in wanted.items():
                 current = tasks.get(user_id)
@@ -637,4 +752,7 @@ def run_personal_monitors(db_target, config):
                     del tasks[user_id]
             await asyncio.sleep(15)
 
-    asyncio.run(manager())
+    try:
+        asyncio.run(manager())
+    finally:
+        store.close()

@@ -7,12 +7,16 @@ services:
     volumes:
       - ./leadgen/data:/app/leadgen/data
       - ./leadgen/sources.json:/app/leadgen/sources.json:ro
+    # Worker heartbeat freshness (one settings lookup, 3 s statement_timeout), not `status`.
+    # Until this container's worker writes its first heartbeat the check fails; start_period
+    # keeps that from counting, and `up --wait` in the updater waits for the first pass.
+    # Threshold: WORKER_HEARTBEAT_MAX_AGE in .env (seconds, default 300).
     healthcheck:
-      test: ["CMD", "python", "-m", "leadgen.app", "status"]
-      interval: 60s
+      test: ["CMD", "python", "-m", "leadgen.app", "healthcheck"]
+      interval: 30s
       timeout: 15s
       retries: 3
-      start_period: 30s
+      start_period: 120s
     logging:
       driver: json-file
       options:
