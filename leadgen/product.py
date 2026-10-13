@@ -291,7 +291,7 @@ def _send_card(db,sender,prefs,lead_id,lead,reason,matches,prefix='',ai=''):
 
 # Every active account receives leads: an ended trial or paid period continues on the Free plan.
 RECIPIENTS='''SELECT u.id,u.telegram_chat_id,u.telegram_user_id,u.registered_at,s.status AS sub_status,s.plan_code AS sub_plan,
-    s.ends_at AS sub_ends_at,p.* FROM app_users u
+    s.ends_at AS sub_ends_at,s.grace_until AS sub_grace_until,p.* FROM app_users u
     JOIN user_preferences p ON p.user_id=u.id
     JOIN subscriptions s ON s.user_id=u.id
     WHERE u.status='active' AND p.monitoring_active=true'''
@@ -305,7 +305,8 @@ def recipient_limits(prefs):
     """Plan limits of a RECIPIENTS row; admin and service accounts always get the top plan."""
     if "telegram_user_id" in prefs.keys() and is_unlimited(prefs["telegram_user_id"]):return plan_limits(effective_plan(service_subscription()))
     return plan_limits(effective_plan({'status':prefs['sub_status'],'plan_code':prefs['sub_plan'],
-                                       'ends_at':prefs['sub_ends_at']}))
+                                       'ends_at':prefs['sub_ends_at'],
+                                       'grace_until':prefs['sub_grace_until'] if 'sub_grace_until' in prefs.keys() else None}))
 
 
 def active_projects(db,user_id,limits):
@@ -395,7 +396,9 @@ def notify_subscriptions(db,sender,limit=20):
                 ||':'||floor(extract(epoch FROM s.ends_at))::bigint AS marker
             FROM app_users u JOIN subscriptions s ON s.user_id=u.id
             WHERE u.status='active' AND s.status IN ('stub_active','trial','active')
-              AND s.ends_at IS NOT NULL AND s.ends_at>now() AND s.ends_at<=now()+interval '2 days') due
+              AND s.ends_at IS NOT NULL AND s.ends_at>now() AND s.ends_at<=now()+interval '2 days'
+              -- Autorenewing subscriptions are charged instead; leadgen.payments reports the outcome.
+              AND NOT (s.autorenew AND s.payment_method_id IS NOT NULL AND s.provider='yookassa')) due
         WHERE NOT EXISTS (SELECT 1 FROM settings WHERE key=due.marker) ORDER BY ends_at LIMIT ?''',(limit,)).fetchall()
     sent=0
     for row in rows:

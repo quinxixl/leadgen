@@ -95,6 +95,7 @@ class WebPostgres(unittest.TestCase):
         cls.db.connection.execute(Path('supabase/migrations/20261011120000_user_feedback.sql').read_text(),prepare=False)
         cls.db.connection.execute(Path('supabase/migrations/20261012120000_plan_requests.sql').read_text(),prepare=False)
         cls.db.connection.execute(Path('supabase/migrations/20261012130000_ai_prompt_admin.sql').read_text(),prepare=False)
+        cls.db.connection.execute(Path('supabase/migrations/20261013120000_yookassa_payments.sql').read_text(),prepare=False)
         cls.db.commit()
         cls.app=create_app({'TESTING':True,'SECRET_KEY':'test-'*10,'BOT_USERNAME':'test_bot',
             'SESSION_COOKIE_SECURE':False,'DB_FACTORY':lambda:db_open(DSN),

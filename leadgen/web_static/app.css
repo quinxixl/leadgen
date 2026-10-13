@@ -582,3 +582,104 @@ details.fold.is-closing>summary:before{transform:rotate(-45deg)}
 .ai-actions form>button{margin-top:0}
 #sandbox>h3{margin-top:28px}
 @media(max-width:760px){.ai-compare{grid-template-columns:1fr}}
+/* «Подписка»: online payment (billing.js). Period switch, plan cards with live prices, checkout summary,
+   autorenewal and the return page. Motion follows the system above: prices swap on a short rise,
+   the summary rises in once a plan is chosen, the result icon draws itself. */
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes shimmer{to{background-position:-200% 0}}
+@keyframes draw{from{stroke-dashoffset:24}}
+@keyframes pop-in{from{opacity:0;transform:scale(.7)}}
+.pay [hidden],.pay-result [hidden],.renew [hidden]{display:none!important}
+.spinner{display:inline-block;width:26px;height:26px;border:3px solid rgba(54,84,245,.18);border-top-color:var(--brand);border-radius:50%;animation:spin .8s linear infinite}
+.status-card .status-until{display:block;margin-top:4px}
+.pay-bar{display:flex;justify-content:space-between;align-items:flex-end;gap:14px 24px;flex-wrap:wrap;margin:28px 0 22px}
+.pay-bar h2{margin:0 0 4px}
+.pay-bar p{margin:0;max-width:560px}
+.period-switch{display:inline-flex;gap:2px;padding:4px;margin:0;border:1px solid var(--line);border-radius:999px;background:var(--surface);box-shadow:var(--shadow)}
+.period-switch label{position:relative;margin:0;cursor:pointer}
+.period-switch input{position:absolute;inset:0;width:100%;height:100%;margin:0;opacity:0;cursor:pointer}
+.period-switch span{display:flex;align-items:center;gap:8px;min-height:38px;padding:0 18px;border-radius:999px;font-size:14px;font-weight:650;color:var(--muted);
+  transition:background-color var(--dur) var(--ease-standard),color var(--dur-fast) var(--ease-snap)}
+.period-switch label:hover span{color:var(--ink)}
+.period-switch input:checked+span{background:var(--ink);color:#fff}
+.period-switch input:focus-visible+span{outline:3px solid rgba(54,84,245,.35);outline-offset:2px}
+.period-switch em{font-style:normal;font-size:12px;font-weight:700;color:var(--ok);background:var(--ok-soft);border-radius:999px;padding:1px 8px;transition:background-color var(--dur) var(--ease-standard),color var(--dur) var(--ease-standard)}
+.period-switch input:checked+span em{background:rgba(79,208,147,.18);color:#7ee2ae}
+.plans.pay-plans{grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}
+.pay-plans[data-period=month] [data-for=year],.pay-plans[data-period=year] [data-for=month]{display:none}
+.pay-plans .price b{font-weight:inherit}
+.pay-plans.is-live [data-for]{animation:rise-in var(--dur) var(--ease-out-expo) backwards}
+.pay-plans .plan{transition:box-shadow var(--dur) var(--ease-standard),opacity var(--dur) var(--ease-standard),transform var(--dur) var(--ease-out-expo)}
+.pay.is-js .pay-plans .plan:not(.current){cursor:pointer}
+.pay.has-plan .pay-plans .plan:not(.is-selected){opacity:.66}
+.pay.has-plan .pay-plans .plan:not(.is-selected):hover{opacity:1}
+.pay-plans .plan.is-selected{box-shadow:0 0 0 2px var(--brand),0 20px 50px rgba(54,84,245,.16)}
+.plan .tag.ok{background:var(--ok)}
+.pay.is-js:not(.has-plan) .pay-summary{display:none}
+.pay.has-plan .pay-summary{animation:rise-in var(--dur-slow) var(--ease-out-expo) backwards}
+.pay-summary{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px 40px;margin-top:24px;padding:28px}
+.pay-summary h2{font-size:22px;margin:0}
+.pay-lines{margin:16px 0 0}
+.pay-lines>div{display:flex;justify-content:space-between;align-items:baseline;gap:16px;padding:10px 0;border-bottom:1px dashed var(--line-2)}
+.pay-lines dt{color:var(--muted);font-size:14.5px}
+.pay-lines dd{margin:0;font-weight:650;font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
+.pay-lines .credit dd{color:var(--ok)}
+.pay-lines .total{border-bottom:0;padding:16px 0 8px}
+.pay-lines .total dt{color:var(--ink);font-weight:650;font-size:15px}
+.pay-lines .total dd{font-size:32px;font-weight:800;letter-spacing:-.03em;line-height:1}
+.pay-lines>div:last-child{border-top:1px solid var(--line);border-bottom:0}
+.pay-preview.is-loading [data-field]:not([data-field=kind]):not([data-field=ends-label]){color:transparent;border-radius:6px;min-width:72px;display:inline-block;
+  background:linear-gradient(90deg,var(--surface-2) 25%,var(--line) 50%,var(--surface-2) 75%);background-size:200% 100%;animation:shimmer 1.1s linear infinite}
+.pay-preview.is-loading h2[data-field]{min-width:220px}
+.pay-message{margin:14px 0 0}
+.pay-side label:first-child{margin-top:0}
+.pay-consent{font-size:14px;line-height:1.5}
+.pay-consent a{font-weight:600}
+.form-error{color:var(--danger);font-size:14px;font-weight:600;margin:4px 0 0;animation:drop-in var(--dur) var(--ease-out-expo) backwards}
+[aria-invalid=true]{border-color:var(--danger)}
+.check input[aria-invalid=true]{outline:2px solid var(--danger);outline-offset:2px}
+.pay-actions{display:flex;align-items:center;gap:12px 18px;flex-wrap:wrap;margin-top:18px}
+.pay-actions .button{flex:1 1 220px}
+.pay-note{margin:14px 0 0}
+.button.is-busy:before{content:"";width:14px;height:14px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:spin .7s linear infinite}
+.button.is-busy{opacity:.85}
+.renew{display:flex;justify-content:space-between;align-items:center;gap:16px 28px;flex-wrap:wrap}
+.renew h2{font-size:18px;margin:0 0 8px}
+.renew p{margin:4px 0}
+.renew-info{flex:1 1 320px;min-width:0}
+.pay-method{display:inline-flex;align-items:center;gap:6px;margin-left:10px;font-size:14px;font-weight:600;color:var(--ink-2)}
+.pay-method:before{content:"";width:22px;height:15px;border-radius:3px;border:1.5px solid currentColor;opacity:.55;background:linear-gradient(currentColor,currentColor) 0 4px/100% 2px no-repeat}
+.renew-form{display:flex;align-items:center;gap:10px 16px;flex-wrap:wrap;flex:0 1 420px;justify-content:flex-end}
+.renew-form .check{margin:0;font-size:14px}
+.renew-form>button{margin-top:0}
+.pay-scheduled span{flex:1 1 320px}
+.pay-result{text-align:center;padding:44px 32px}
+.pay-result h1{font-size:clamp(24px,3vw,30px)}
+.pay-result [data-state]{animation:rise-in var(--dur-slow) var(--ease-out-expo) backwards}
+.pay-result p{margin:0 auto 10px;max-width:460px}
+.pay-icon{display:grid;place-items:center;width:64px;height:64px;margin:0 auto 18px;border-radius:50%}
+.pay-icon svg{width:30px;height:30px}
+.pay-icon.ok{background:var(--ok-soft);color:var(--ok);animation:pop-in var(--dur-slow) var(--ease-out-expo) backwards}
+.pay-icon.fail{background:#fdeeed;color:var(--danger);animation:pop-in var(--dur-slow) var(--ease-out-expo) backwards}
+.pay-icon.wait{background:var(--brand-soft);color:var(--brand)}
+.pay-icon .draw{stroke-dasharray:24;animation:draw 560ms var(--ease-out-expo) 160ms backwards}
+.pay-result-actions{display:flex;justify-content:center;gap:10px;flex-wrap:wrap;margin-top:24px}
+.payments-table code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;overflow-wrap:anywhere}
+.payments-table td{white-space:normal}
+.payments-table .num{white-space:nowrap;font-variant-numeric:tabular-nums}
+.refund-form{display:flex;gap:6px;align-items:center;min-width:180px}
+.refund-form input{margin:0;width:96px;padding:7px 9px;font-size:13.5px}
+.refund-form button{margin:0;padding:7px 12px;font-size:13px}
+@media(max-width:760px){
+  .pay-bar{align-items:stretch}
+  .period-switch{width:100%}
+  .period-switch label{flex:1}
+  .period-switch span{justify-content:center}
+  .pay-summary{grid-template-columns:1fr;padding:20px}
+  .pay-lines .total dd{font-size:28px}
+  .pay-actions .button{flex-basis:100%}
+  .pay-actions .link-button{margin:0 auto}
+  .renew-form{justify-content:flex-start;flex-basis:100%}
+  .renew-form button{width:100%}
+  .pay-result{padding:32px 18px}
+}

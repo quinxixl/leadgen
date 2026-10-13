@@ -1,4 +1,4 @@
-"""Subscription plans, quotas and access checks. Payment provider integration is not connected yet."""
+"""Subscription plans, quotas and access checks. YooKassa payments live in leadgen/payments.py."""
 import os
 from datetime import date, datetime, timedelta, timezone
 
@@ -85,15 +85,23 @@ LIMITS['trial'] = LIMITS['stub'] = LIMITS['pro']
 ACTIVE_STATUSES = ('stub_active', 'trial', 'active')
 
 
+def _moment(value):
+    return datetime.fromisoformat(value) if isinstance(value, str) else value
+
+
 def subscription_active(row, now=None):
-    """A paid, trial or free period is running. Free rows never end."""
-    if not row or row['status'] not in ACTIVE_STATUSES:
+    """A paid, trial or free period is running. Free rows never end.
+
+    After a failed autorenewal (status past_due) the paid plan keeps working until grace_until."""
+    if not row or (row['status'] not in ACTIVE_STATUSES and row['status'] != 'past_due'):
         return False
-    ends_at = row['ends_at'] if 'ends_at' in row.keys() else None
+    keys = row.keys()
+    ends_at = _moment(row['ends_at']) if 'ends_at' in keys else None
+    grace = _moment(row['grace_until']) if 'grace_until' in keys else None
     if ends_at is None:
-        return True
-    if isinstance(ends_at, str):
-        ends_at = datetime.fromisoformat(ends_at)
+        return row['status'] != 'past_due'
+    if grace is not None and grace > ends_at:
+        ends_at = grace
     return ends_at > (now or datetime.now(timezone.utc))
 
 
@@ -141,7 +149,8 @@ def is_service(row):
 
 def owner_subscription(db, owner_id):
     """Subscription whose plan applies to the owner's workspace; admin and service accounts get «Команда»."""
-    row = db.execute('''SELECT s.status,s.plan_code,s.ends_at,s.founder_price,s.billing_period,u.telegram_user_id
+    row = db.execute('''SELECT s.status,s.plan_code,s.ends_at,s.founder_price,s.billing_period,s.provider,s.starts_at,
+            s.grace_until,s.autorenew,s.payment_method_title,s.scheduled_plan,s.scheduled_period,u.telegram_user_id
         FROM app_users u LEFT JOIN subscriptions s ON s.user_id=u.id WHERE u.id=?''', (owner_id,)).fetchone()
     if row and is_unlimited(row['telegram_user_id']):
         return service_subscription(row)
@@ -207,7 +216,7 @@ def support_contact():
     return os.environ.get('SUPPORT_TELEGRAM', '').strip().lstrip('@')
 
 
-# --- manual plan management (payments are not integrated) -------------------------------------
+# --- plan management: manual grants and YooKassa activations ------------------------------------
 PAID_PLANS = tuple(plan['code'] for plan in PLANS if plan['price'])
 PLAN_CODES = tuple(plan['code'] for plan in PLANS)
 PERIODS = {'month': 'месяц', 'year': 'год'}
@@ -267,28 +276,39 @@ def find_user(db, ident):
 
 def set_plan(db, user_id, code, ends_at, period='month', founder=None, changed_by=None, source='admin', note=''):
     """Store a plan granted by hand and log the change. founder: None keeps, True/False sets the founder price."""
+    with db:
+        return write_plan(db, user_id, code, ends_at, period, founder, changed_by, source, note)
+
+
+def write_plan(db, user_id, code, ends_at, period='month', founder=None, changed_by=None, source='admin', note='',
+               provider='manual'):
+    """set_plan without its own transaction, for callers that update more rows atomically.
+
+    A manual grant also ends autorenewal and clears a scheduled change and a grace period."""
     if code not in PLAN_CODES:
         raise ValueError('Неизвестный тариф.')
     if period not in PERIODS:
         raise ValueError('Неизвестный период.')
     if code == 'free':
         ends_at = None
-    with db:
-        old = db.execute('SELECT plan_code,ends_at,founder_price FROM subscriptions WHERE user_id=? FOR UPDATE',
-                         (user_id,)).fetchone()
-        if founder is None:
-            founder_value = old['founder_price'] if old else None
-        else:
-            founder_value = FOUNDER_START_PRICE if founder else None
-        db.execute('''INSERT INTO subscriptions(user_id,status,plan_code,ends_at,billing_period,founder_price,provider,updated_at)
-            VALUES(?,'active',?,?,?,?,'manual',now()) ON CONFLICT(user_id) DO UPDATE SET status='active',
-            plan_code=excluded.plan_code,ends_at=excluded.ends_at,billing_period=excluded.billing_period,
-            founder_price=excluded.founder_price,provider='manual',updated_at=now()''',
-                   (user_id, code, ends_at, period, founder_value))
-        db.execute('''INSERT INTO plan_changes(user_id,changed_by,source,old_plan,old_ends_at,new_plan,new_ends_at,
-            billing_period,founder_price,note) VALUES(?,?,?,?,?,?,?,?,?,?)''',
-                   (user_id, changed_by, source, old['plan_code'] if old else None, old['ends_at'] if old else None,
-                    code, ends_at, period, founder_value, (note or '')[:500]))
+    old = db.execute('SELECT plan_code,ends_at,founder_price FROM subscriptions WHERE user_id=? FOR UPDATE',
+                     (user_id,)).fetchone()
+    if founder is None:
+        founder_value = old['founder_price'] if old else None
+    else:
+        founder_value = FOUNDER_START_PRICE if founder else None
+    db.execute('''INSERT INTO subscriptions(user_id,status,plan_code,ends_at,billing_period,founder_price,provider,updated_at)
+        VALUES(?,'active',?,?,?,?,?,now()) ON CONFLICT(user_id) DO UPDATE SET status='active',
+        plan_code=excluded.plan_code,ends_at=excluded.ends_at,billing_period=excluded.billing_period,
+        founder_price=excluded.founder_price,provider=excluded.provider,grace_until=NULL,
+        scheduled_plan=NULL,scheduled_period=NULL,
+        autorenew=CASE WHEN excluded.provider='manual' THEN false ELSE subscriptions.autorenew END,
+        updated_at=now()''',
+               (user_id, code, ends_at, period, founder_value, provider))
+    db.execute('''INSERT INTO plan_changes(user_id,changed_by,source,old_plan,old_ends_at,new_plan,new_ends_at,
+        billing_period,founder_price,note) VALUES(?,?,?,?,?,?,?,?,?,?)''',
+               (user_id, changed_by, source, old['plan_code'] if old else None, old['ends_at'] if old else None,
+                code, ends_at, period, founder_value, (note or '')[:500]))
     return ends_at
 
 

@@ -1,0 +1,9 @@
+[Unit]
+Description=Renew IT Lead Finder subscriptions via YooKassa
+Wants=docker.service
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/leadfinder
+ExecStart=/opt/leadfinder/deploy/leadfinder-renew.sh

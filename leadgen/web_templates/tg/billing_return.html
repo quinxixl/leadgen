@@ -1,0 +1,28 @@
+{% extends 'tg/base.html' %}{% from '_plans.html' import day %}{% block title %}Оплата — Сигналид{% endblock %}{% block page %}billing-return{% endblock %}
+{% block content %}
+{% set status = 'canceled' if payment.status in ('canceled','failed') else payment.status %}
+{% set reason = payment.reason or 'платёж отклонён' %}
+<section class="tg-card pay-result" data-payment-return data-base="{{ back }}" data-payment-id="{{ payment.payment_id }}" data-status="{{ status }}" aria-live="polite">
+<div data-state="checking"{% if status!='pending' %} hidden{% endif %}>
+<span class="pay-icon wait" aria-hidden="true"><span class="spinner"></span></span>
+<h1>Проверяем оплату…</h1><p class="hint">ЮKassa подтверждает платёж — обычно это несколько секунд.</p>
+</div>
+<div data-state="succeeded"{% if status!='succeeded' %} hidden{% endif %}>
+<span class="pay-icon ok" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path class="draw" d="M5 12.5l4.2 4.2L19 7"/></svg></span>
+<p class="hint small">Оплата прошла</p><h1>Тариф «<span data-field="plan_name">{{ payment.plan_name }}</span>» активен<span data-field="ends-wrap"{% if not payment.ends_at %} hidden{% endif %}> до <span data-field="ends">{{ day(payment.ends_at) if payment.ends_at else '' }}</span></span></h1>
+<p class="hint">Тариф подключён — все возможности уже доступны. <span data-field="autorenew-note"{% if not payment.autorenew %} hidden{% endif %}>Автопродление можно отключить в «Подписке».</span></p>
+</div>
+<div data-state="canceled"{% if status!='canceled' %} hidden{% endif %}>
+<span class="pay-icon fail" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path class="draw" d="M7 7l10 10M17 7L7 17"/></svg></span>
+<p class="hint small">Оплата не прошла</p><h1 data-field="reason">{{ reason[:1]|upper ~ reason[1:] }}</h1>
+<p class="hint">Деньги не списаны. Попробуйте другую карту или способ оплаты.</p>
+</div>
+<div data-state="pending" hidden>
+<span class="pay-icon wait" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg></span>
+<h1>Платёж ещё обрабатывается</h1><p class="hint">Тариф подключится автоматически, а мы пришлём сообщение в Telegram.</p>
+</div>
+<a class="btn quiet wide" href="{{ request.full_path }}" data-retry data-when="pending" hidden>Проверить ещё раз</a>
+<a class="btn wide" href="{{ back }}">Вернуться в «Подписку»</a>
+</section>
+<script src="{{ url_for('static',filename='billing.js') }}"></script>
+{% endblock %}

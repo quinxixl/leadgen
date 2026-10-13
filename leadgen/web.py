@@ -222,7 +222,8 @@ def create_app(test_config=None):
     def protect():
         tg=is_tg_path(request.path)
         session.setdefault('csrf',secrets.token_urlsafe(32))
-        if request.method=='POST' and not request.path.startswith('/api/'):
+        # /webhooks/* are server-to-server notifications (YooKassa): verified by source IP and an API re-fetch.
+        if request.method=='POST' and not request.path.startswith(('/api/','/webhooks/')):
             if request.path=='/tg/auth':
                 # Telegram signs initData, which replaces the form token; cross-site posts are still refused.
                 origin=request.headers.get('Origin')
@@ -275,7 +276,7 @@ def create_app(test_config=None):
             # Telegram Web's iframe styles into a <style> element, hence inline styles here and only here.
             response.headers['Content-Security-Policy']=("default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
                 "script-src 'self' https://telegram.org; connect-src 'self'; frame-ancestors https://web.telegram.org; "
-                "base-uri 'self'; form-action 'self'")
+                "base-uri 'self'; form-action 'self' https://yoomoney.ru https://yookassa.ru")
             response.headers['Cache-Control']='no-store'
             return response
         # Yandex Metrica runs on public pages only: the cabinet holds client data that must not reach analytics.
@@ -288,7 +289,7 @@ def create_app(test_config=None):
         styles="'self' 'unsafe-inline'" if public else "'self'"
         frames=f"; frame-src blob:{yandex}" if public else ''
         response.headers['Content-Security-Policy']=(f"default-src 'self'; style-src {styles}; img-src 'self' data:{yandex}; "
-            f"script-src 'self'{yandex}; connect-src 'self'{yandex}{frames}; frame-ancestors {ancestors}; base-uri 'self'; form-action 'self'")
+            f"script-src 'self'{yandex}; connect-src 'self'{yandex}{frames}; frame-ancestors {ancestors}; base-uri 'self'; form-action 'self' https://yoomoney.ru https://yookassa.ru")
         if not request.path.startswith('/web_static/'):
             response.headers['Cache-Control']='no-store'
         return response
@@ -370,8 +371,9 @@ def create_app(test_config=None):
     @app.get('/app/billing')
     def billing():
         from .plan_requests import open_request
+        from .payments import billing_context
         return render_template('billing.html',founder_price=g.subscription['founder_price'] if g.subscription else None,
-                               pending=open_request(db(),g.owner_id))
+                               pending=open_request(db(),g.owner_id),**billing_context(db(),app))
 
     @app.get('/healthz')
     def health():return {'status':'ok'}
@@ -681,9 +683,11 @@ def create_app(test_config=None):
         from . import plan_requests as pr
         from .billing import PERIODS,is_unlimited
         from .telegram_monitor import reader_status
+        from .payments import reason_text,recent_payments
         return render_template('admin.html',health=health,users=pr.admin_users(db()),feedback_rows=fb.recent(db()),fb=fb,
                                reader=reader_status(db()),plan_requests=pr.open_requests(db()),plan_changes=pr.recent_changes(db()),
-                               terms=pr.TERMS,periods=PERIODS,is_unlimited=is_unlimited)
+                               terms=pr.TERMS,periods=PERIODS,is_unlimited=is_unlimited,
+                               payments=recent_payments(db()),payment_reason=reason_text)
 
     @app.errorhandler(400)
     @app.errorhandler(403)
@@ -730,4 +734,6 @@ def create_app(test_config=None):
     register_plan_routes(app,db)
     from .ai_admin import register_ai_admin_routes
     register_ai_admin_routes(app,db)
+    from .payments import register_payment_routes
+    register_payment_routes(app,db)
     return app

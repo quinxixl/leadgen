@@ -344,5 +344,7 @@ def register_tg_routes(app, db):
     @app.get('/tg/billing')
     def tg_billing():
         from .plan_requests import open_request
+        from .payments import billing_context
         return render_template('tg/billing.html', pending=open_request(db(), g.owner_id),
-                               founder_price=g.subscription['founder_price'] if g.subscription else None)
+                               founder_price=g.subscription['founder_price'] if g.subscription else None,
+                               **billing_context(db(), app))

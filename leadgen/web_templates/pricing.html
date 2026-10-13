@@ -1,7 +1,7 @@
 {% extends 'base.html' %}{% from '_plans.html' import plans_grid %}{% block title %}Тарифы Сигналид — бесплатный тариф и 7 дней полного доступа{% endblock %}{% block description %}Тарифы сервиса «Сигналид»: бесплатный тариф навсегда, 7 дней полного доступа без привязки карты, платные тарифы от 990 ₽ в месяц и скидка {{ annual_discount }}% при оплате за год.{% endblock %}
 {% block content %}
 <section class="section">
-<div class="section-head center" data-goal-view="pricing_view"><p class="eyebrow">Тарифы</p><h1>Простые цены. Бесплатный тариф навсегда</h1><p class="muted">7 дней полного доступа без карты, затем бесплатный тариф — или платный, если нужно больше. При оплате за год — скидка {{ annual_discount }}%. Автоматических списаний нет.</p></div>
+<div class="section-head center" data-goal-view="pricing_view"><p class="eyebrow">Тарифы</p><h1>Простые цены. Бесплатный тариф навсегда</h1><p class="muted">7 дней полного доступа без карты, затем бесплатный тариф — или платный, если нужно больше. При оплате за год — скидка {{ annual_discount }}%. Автопродление платного тарифа — только с вашего согласия, отключается в один клик.</p></div>
 {{ plans_grid(plans, founder_price=founder_price) }}
 <p class="pricing-note">Цены указаны за месяц. Для агентств с большим числом участников — индивидуальные условия{% if support %}: <a href="https://t.me/{{ support }}" rel="noopener noreferrer">напишите нам</a>{% endif %}.</p>
 </section>

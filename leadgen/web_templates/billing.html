@@ -1,16 +1,56 @@
-{% extends 'base.html' %}{% from '_plans.html' import plans_grid %}{% block title %}Подписка — Сигналид{% endblock %}
+{% extends 'base.html' %}{% from '_plans.html' import plans_grid, pay_grid, pay_summary, rub, rubles, day %}{% block title %}Подписка — Сигналид{% endblock %}
 {% block content %}
+{% set online = payments_enabled and can_pay and not service_plan %}
+{% set paid = subscription and not service_plan and subscription.provider=='yookassa' and subscription.status in ('active','past_due') and current_plan in ('start','pro','team') %}
 <p class="eyebrow">Аккаунт</p><h1>Подписка</h1>
-{% if workspace and workspace.owner_user_id!=user.id %}<p class="notice">Вы работаете в команде «{{ workspace.name }}». Подпиской управляет владелец команды.</p>{% endif %}
+{% if workspace and workspace.owner_user_id!=user.id %}<p class="notice">Вы работаете в команде «{{ workspace.name }}». {% if can_pay and payments_enabled %}Оплата и смена тарифа применяются ко всей команде.{% else %}Подпиской управляет владелец команды.{% endif %}</p>{% endif %}
 <section class="panel status-card">
 <div><span class="muted">Текущий тариф</span><span class="big">{% if service_plan %}{{ plan_names[current_plan] }} (служебный){% else %}{{ plan_names.get(current_plan, current_plan) if subscription else 'Не подключён' }}{% endif %}</span>
-{% if service_plan %}<span class="badge ok">Без ограничения срока</span>{% elif beta_note %}<span class="badge ok">{{ beta_note }}</span>{% elif trial_days_left is not none %}<span class="badge {{ 'warm' if trial_days_left<=3 else 'ok' }}">Осталось дней: {{ trial_days_left }}</span>{% else %}<span class="badge ok">Активна</span>{% endif %}
+{% if service_plan %}<span class="badge ok">Без ограничения срока</span>{% elif paid and subscription.status=='past_due' %}<span class="badge warm">Не удалось продлить</span>{% elif beta_note %}<span class="badge ok">{{ beta_note }}</span>{% elif trial_days_left is not none %}<span class="badge {{ 'warm' if trial_days_left<=3 else 'ok' }}">Осталось дней: {{ trial_days_left }}</span>{% else %}<span class="badge ok">Активна</span>{% endif %}
+{% if paid and subscription.ends_at %}<span class="muted status-until">Оплачено до {{ day(subscription.ends_at) }} · {{ 'оплата за год' if subscription.billing_period=='year' else 'помесячная оплата' }}</span>{% endif %}
 {% if current_limits %}<span class="muted">Проектов: {{ current_limits.projects }} · AI-откликов в день: {{ current_limits.drafts }}{% if current_limits.members > 1 %} · участников: до {{ current_limits.members }}{% endif %} · {% if current_limits.delay_minutes %}заказы с задержкой ~{{ current_limits.delay_minutes }} мин{% else %}заказы сразу после публикации{% endif %}</span>{% endif %}</div>
 {% if support %}<a class="button quiet" href="https://t.me/{{ support }}" rel="noopener noreferrer">Написать в поддержку</a>{% endif %}
 </section>
+{% if payments_enabled and subscription and not service_plan %}
+{% if subscription.status=='past_due' and subscription.grace_until %}<p class="notice warn" role="alert">Не удалось списать оплату за продление тарифа «{{ plan_names.get(subscription.plan_code, subscription.plan_code) }}». Мы повторим попытку автоматически, тариф работает до {{ day(subscription.grace_until) }}. Проверьте карту{% if online %} или оплатите тариф ниже{% endif %}.</p>{% endif %}
+{% if open_payment %}<p class="notice">Оплата тарифа «{{ plan_names[open_payment.plan_code] }}» ещё не подтверждена. <a href="/app/billing/return?payment={{ open_payment.id }}">Проверить статус</a></p>{% endif %}
+{% if subscription.scheduled_plan %}<div class="notice split pay-scheduled"><span>С {{ day(subscription.ends_at) }} тариф сменится на «{{ plan_names[subscription.scheduled_plan] }}» ({{ period_names[subscription.scheduled_period] }}). До этого действует «{{ plan_names.get(subscription.plan_code, subscription.plan_code) }}».</span>{% if can_pay %}<form method="post" action="/app/billing/scheduled/cancel"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="quiet">Отменить смену тарифа</button></form>{% endif %}</div>{% endif %}
+{% endif %}
+{% if payments_enabled and paid %}
+<section class="panel renew" id="autorenew">
+<div class="renew-info"><h2>Автопродление</h2>
+{% if subscription.autorenew %}<p><span class="badge ok">Включено</span>{% if subscription.payment_method_title %}<span class="pay-method">{{ subscription.payment_method_title }}</span>{% endif %}</p>
+<p class="muted">{% if subscription.status=='past_due' %}Повторим списание автоматически; если оно не пройдёт, аккаунт перейдёт на бесплатный тариф.{% elif next_charge %}Следующее списание — {{ day(next_charge.at) }}: {{ rubles(next_charge.amount) }} ₽ за «{{ next_charge.plan_name }}» на {{ period_names[next_charge.period] }}. Спишем не раньше чем за сутки до конца периода.{% else %}Продлим тариф в конце оплаченного периода.{% endif %}</p>
+{% else %}<p><span class="badge">Выключено</span>{% if subscription.payment_method_title %}<span class="pay-method">{{ subscription.payment_method_title }}</span>{% endif %}</p>
+<p class="muted">Тариф действует до {{ day(subscription.ends_at) }}, затем аккаунт перейдёт на бесплатный тариф — лиды и настройки сохранятся.</p>{% endif %}
+</div>
+{% if can_pay %}{% if subscription.autorenew %}<form method="post" action="/app/billing/autorenew" class="renew-form"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="enabled" value="0"><button class="quiet">Отключить автопродление</button></form>
+{% elif subscription.payment_method_title %}<form method="post" action="/app/billing/autorenew" class="renew-form"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="enabled" value="1"><label class="check"><input type="checkbox" name="consent" value="1" required><span>Согласен с <a href="/terms#autorenew" target="_blank" rel="noopener">условиями автоматического продления</a></span></label><button>Включить автопродление</button></form>
+{% else %}<p class="muted renew-form">Чтобы включить автопродление, оплатите тариф картой ниже.</p>{% endif %}{% endif %}
+</section>
+{% endif %}
 {% if current_plan=='free' and subscription and subscription.plan_code!='free' %}<p class="notice">Пробный период или оплаченный срок закончился — аккаунт работает на бесплатном тарифе. Лиды и настройки сохранены. Выберите тариф, чтобы получать заказы сразу и без ограничений бесплатного тарифа.</p>{% endif %}
+{% if online %}
+{% set period = (subscription.billing_period or 'month') if paid else 'month' %}{% set renewing = paid and subscription.status=='active' %}
+<form class="pay" method="post" action="/app/billing/checkout" data-checkout data-base="/app/billing">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<div class="pay-bar"><div><h2>Тарифы</h2><p class="muted">{% if renewing %}При переходе на тариф дороже засчитаем неиспользованные дни; тариф дешевле включится со следующего периода.{% else %}Оплата картой через ЮKassa. При оплате за год — скидка {{ annual_discount }}%.{% endif %}</p></div>
+<fieldset class="period-switch"><legend class="sr-only">Период оплаты</legend>
+<label><input type="radio" name="period" value="month"{% if period=='month' %} checked{% endif %}><span>Месяц</span></label>
+<label><input type="radio" name="period" value="year"{% if period=='year' %} checked{% endif %}><span>Год <em>−{{ annual_discount }}%</em></span></label></fieldset></div>
+{{ pay_grid(plans, current_plan, subscription, founder_price, period, annual_discount, paid and subscription.status=='active') }}
+{{ pay_summary(payment_email) }}
+</form>
+<script src="{{ url_for('static',filename='billing.js') }}"></script>
+{% else %}
 <h2>Тарифы</h2>
+{% if payments_enabled and not service_plan %}
+<p class="muted">Тариф и оплату выбирает владелец или администратор команды.</p>
+{{ plans_grid(plans, 'billing', current_plan, founder_price, csrf, None, False) }}
+{% else %}
 {% if pending %}<p class="notice" id="plan-request">Заявка на тариф «{{ plan_names[pending.plan_code] }}» ({{ 'год' if pending.billing_period=='year' else 'месяц' }}, {{ '{:,}'.format(pending.price).replace(',', ' ') }} ₽) отправлена {{ pending.updated_at|dt }} — мы свяжемся с вами в Telegram в течение дня.</p>{% endif %}
 <p class="muted">Онлайн-оплата подключается. Выберите тариф и период и нажмите «Подключить» — мы свяжемся с вами в Telegram в течение дня и пришлём ссылку на оплату картой или счёт для ИП и юрлиц. При оплате за год — скидка {{ annual_discount }}%.</p>
 {{ plans_grid(plans, 'billing', current_plan, founder_price, csrf, pending, not workspace or workspace.owner_user_id==user.id) }}
+{% endif %}
+{% endif %}
 {% endblock %}
