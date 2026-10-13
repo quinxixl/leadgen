@@ -245,6 +245,7 @@ class WebMigrateParsing(unittest.TestCase):
         self.assertTrue(fk_indexes.no_transaction)
         names=[web_migrate.concurrent_index_name(statement) for statement in web_migrate.split_statements(fk_indexes.sql)]
         self.assertEqual([name for name in names if name],['lead_assignments_owner_lead','telegram_replies_owner_lead'])
+        self.assertFalse(migrations['20261014120000_filtered_cleanup_keeps_cursor.sql'].no_transaction)
 
 
 if __name__=='__main__':
