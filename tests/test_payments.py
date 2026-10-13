@@ -58,27 +58,55 @@ class PriceAndProration(unittest.TestCase):
 
     def test_month_to_year_is_an_upgrade_and_minimum_charge(self):
         end = NOW + timedelta(days=29, hours=23)
-        paid = {'value': D('4990.00'), 'period_start': end - timedelta(days=30), 'period_end': end}
-        result = payments.proration(sub('team', ends=end), 'start', 'year', NOW, paid)
+        paid = {'value': D('1990.00'), 'period_start': end - timedelta(days=30), 'period_end': end}
+        result = payments.proration(sub('pro', ends=end), 'pro', 'year', NOW, paid)
         self.assertEqual(result['kind'], 'upgrade')
         self.assertEqual(result['ends_at'], billing.add_months(NOW, 12))
-        self.assertGreater(result['credit'], D('4900'))
+        self.assertGreater(result['credit'], D('1900'))
+        self.assertEqual(result['amount'] + result['credit'], D(1592 * 12))
         # A credit larger than the new price still charges the 1 ₽ minimum.
         big = {'value': D('99999.00'), 'period_start': end - timedelta(days=30), 'period_end': end}
         result = payments.proration(sub('pro', ends=end), 'team', 'month', NOW, big)
         self.assertEqual(result['amount'], D('1.00'))
         self.assertEqual(result['credit'], D('4989.00'))
 
-    def test_downgrade_and_year_to_month_are_scheduled_and_same_is_rejected(self):
+    def test_only_upgrades_are_allowed_on_a_paid_period(self):
         end = NOW + timedelta(days=100)
-        for current, plan, period in ((sub('pro', ends=end), 'start', 'month'), (sub('pro', 'year', ends=end), 'team', 'month'),
-                                      (sub('pro', 'year', ends=end), 'start', 'year')):
-            result = payments.proration(current, plan, period, NOW, None)
-            self.assertEqual((result['kind'], result['amount'], result['starts_at']), ('downgrade', D('0.00'), end))
+        # Cheaper plan, a lower plan for a longer period, and any year→month change are rejected.
+        for (plan, period), (new_plan, new_period) in (
+                (('pro', 'month'), ('start', 'month')), (('pro', 'month'), ('start', 'year')),
+                (('team', 'month'), ('pro', 'month')), (('pro', 'year'), ('pro', 'month')),
+                (('pro', 'year'), ('team', 'month')), (('pro', 'year'), ('start', 'year')),
+                (('pro', 'year'), ('start', 'month'))):
+            self.assertEqual(payments.change_kind(plan, period, new_plan, new_period), 'downgrade')
+            with self.assertRaises(payments.PaymentError) as ctx:
+                payments.proration(sub(plan, period, ends=end), new_plan, new_period, NOW, None)
+            self.assertEqual(str(ctx.exception), payments.DOWNGRADE_ERROR)
+            self.assertIn('Понизить тариф нельзя', str(ctx.exception))
+        # A higher plan with the same or a longer period, or the same plan month→year.
+        for (plan, period), (new_plan, new_period) in (
+                (('start', 'month'), ('pro', 'month')), (('pro', 'month'), ('team', 'month')),
+                (('pro', 'month'), ('pro', 'year')), (('pro', 'month'), ('team', 'year')),
+                (('pro', 'year'), ('team', 'year')), (('start', 'year'), ('pro', 'year'))):
+            self.assertEqual(payments.change_kind(plan, period, new_plan, new_period), 'upgrade')
+            result = payments.proration(sub(plan, period, ends=end), new_plan, new_period, NOW, None)
+            self.assertEqual((result['kind'], result['starts_at']), ('upgrade', NOW))
+            self.assertGreater(result['amount'], D('0'))
         self.assertEqual(payments.proration(sub('pro', ends=end), 'pro', 'month', NOW)['kind'], 'same')
-        data = payments.preview_json(payments.proration(sub('pro', ends=end), 'start', 'month', NOW))
-        self.assertEqual((data['amount'], data['kind'], data['currency']), ('0.00', 'downgrade', 'RUB'))
-        self.assertIn('при следующем продлении', data['message'])
+        # Nothing paid through YooKassa for the period (manual grant, trial, ended period): any plan, full price.
+        for current in (sub('pro', 'year', provider='manual', ends=end), sub('team', ends=NOW - timedelta(days=1)), None):
+            result = payments.proration(current, 'start', 'month', NOW, None)
+            self.assertEqual((result['kind'], result['amount']), ('initial', D('990.00')))
+
+    def test_plan_options_offer_only_upgrades(self):
+        self.assertIsNone(payments.plan_options(sub('pro', provider='manual'), NOW))
+        self.assertIsNone(payments.plan_options(None, NOW))
+        self.assertEqual(payments.plan_options(sub('pro'), NOW), {
+            'start': {'month': 'downgrade', 'year': 'downgrade'}, 'pro': {'month': 'same', 'year': 'upgrade'},
+            'team': {'month': 'upgrade', 'year': 'upgrade'}})
+        self.assertEqual(payments.plan_options(sub('pro', 'year'), NOW), {
+            'start': {'month': 'downgrade', 'year': 'downgrade'}, 'pro': {'month': 'downgrade', 'year': 'same'},
+            'team': {'month': 'downgrade', 'year': 'upgrade'}})
 
     def test_past_due_keeps_plan_until_grace(self):
         row = {'status': 'past_due', 'plan_code': 'pro', 'ends_at': NOW - timedelta(days=1),
@@ -350,48 +378,68 @@ class PaymentsPostgres(unittest.TestCase):
         self.webhook(self.kassa.by_key[created['payment_id']])
         self.assertEqual(self.subscription()['plan_code'], 'team')
 
-    def test_downgrade_is_scheduled_and_applied_at_renewal(self):
+    def test_downgrade_is_rejected_in_preview_and_checkout(self):
         self.paid_pro()
-        data = self.checkout('start', 'month').get_json()
-        self.assertEqual((data['status'], data['amount']), ('scheduled', '0.00'))
-        row = self.subscription()
-        self.assertEqual((row['plan_code'], row['scheduled_plan'], row['scheduled_period']), ('pro', 'start', 'month'))
+        created = len(self.kassa.created)
+        for plan, period in (('start', 'month'), ('start', 'year')):
+            response = self.client.get(f'/app/billing/preview?plan={plan}&period={period}')
+            self.assertEqual(response.status_code, 400)
+            self.assertEqual(response.get_json()['error'], payments.DOWNGRADE_ERROR)
+            response = self.checkout(plan, period)
+            self.assertEqual((response.status_code, response.get_json()['error']), (400, payments.DOWNGRADE_ERROR))
+        # Without JSON: back to the page with the error.
+        response = self.checkout('start', 'month', json_=False)
+        self.assertEqual((response.status_code, response.headers['Location']), (302, '/app/billing'))
+        self.assertIn(payments.DOWNGRADE_ERROR, self.client.get('/app/billing').text)
         self.assertIn('уже подключён', self.checkout('pro', 'month').get_json()['error'])
-        end = row['ends_at']
-        results = payments.renew(self.db, self.kassa, lambda m, p: self.sent.append(p), now=end - timedelta(hours=23))
+        # Year → month is a downgrade too, also for a higher plan.
+        with self.db:
+            self.db.execute("UPDATE subscriptions SET billing_period='year' WHERE user_id=?", (self.u,))
+        self.tg_login()
+        for plan in ('pro', 'team'):
+            response = self.client.get(f'/tg/billing/preview?plan={plan}&period=month')
+            self.assertEqual((response.status_code, response.get_json()['error']), (400, payments.DOWNGRADE_ERROR))
+            response = self.client.post('/tg/billing/checkout', data={'csrf': 'tg-csrf', 'plan': plan, 'period': 'month',
+                                                                      'email': 'boss@example.ru', 'consent': '1'},
+                                        headers={'Accept': 'application/json'})
+            self.assertEqual((response.status_code, response.get_json()['error']), (400, payments.DOWNGRADE_ERROR))
+        self.assertEqual(self.client.get('/tg/billing/preview?plan=team&period=year').get_json()['kind'], 'upgrade')
+        self.assertEqual(len(self.kassa.created), created)
+        row = self.subscription()
+        self.assertEqual((row['plan_code'], row['scheduled_plan'], row['scheduled_period'], row['autorenew']), ('pro', None, None, True))
+
+    def test_upgrade_month_to_year_is_charged_now(self):
+        self.paid_pro()
+        data = self.client.get('/app/billing/preview?plan=pro&period=year').get_json()
+        self.assertEqual(data['kind'], 'upgrade')
+        self.assertEqual(D(data['amount']) + D(data['credit']), D(1592 * 12))
+        created = self.checkout('pro', 'year').get_json()
+        self.assertEqual((created['status'], created['kind']), ('redirect', 'upgrade'))
+        pid = self.kassa.by_key[created['payment_id']]
+        self.kassa.pay(pid)
+        self.webhook(pid)
+        row = self.subscription()
+        self.assertEqual((row['plan_code'], row['billing_period']), ('pro', 'year'))
+
+    def test_renewal_ignores_scheduled_plan_and_its_routes_are_gone(self):
+        self.paid_pro()
+        # Values left from the removed scheduled downgrades are ignored.
+        with self.db:
+            self.db.execute("UPDATE subscriptions SET scheduled_plan='start',scheduled_period='month' WHERE user_id=?", (self.u,))
+        page = self.client.get('/app/billing').text
+        self.assertNotIn('Отменить смену тарифа', page)
+        self.assertIn('1 990 ₽ за «Профи»', page.replace('\xa0', ' '))
+        self.assertEqual(self.client.post('/app/billing/scheduled/cancel', data={'csrf': 'test-csrf'}).status_code, 404)
+        self.tg_login()
+        self.assertEqual(self.client.post('/tg/billing/scheduled/cancel', data={'csrf': 'tg-csrf'}).status_code, 404)
+        self.assertFalse(hasattr(payments, 'cancel_scheduled'))
+        end = self.subscription()['ends_at']
+        results = payments.renew(self.db, self.kassa, None, now=end - timedelta(hours=23))
         self.assertEqual([r['event'] for r in results], ['activated'])
         body = self.kassa.created[-1][0]
-        self.assertEqual((body['amount']['value'], body['payment_method_id']), ('990.00', 'pm-1'))
-        self.assertNotIn('confirmation', body)
+        self.assertEqual((body['amount']['value'], body['metadata']['plan'], body['metadata']['period']), ('1990.00', 'pro', 'month'))
         row = self.subscription()
-        self.assertEqual((row['plan_code'], row['scheduled_plan'], row['ends_at']), ('start', None, billing.add_months(end, 1)))
-
-    def test_scheduled_downgrade_can_be_canceled(self):
-        json_ = {'Accept': 'application/json'}
-        response = self.client.post('/app/billing/scheduled/cancel', data={'csrf': 'test-csrf'}, headers=json_)
-        self.assertEqual((response.status_code, response.get_json()['error']), (400, 'Смена тарифа не запланирована.'))
-        self.paid_pro()
-        self.checkout('start', 'month')
-        self.assertIn('Отменить смену тарифа', self.client.get('/app/billing').text)
-        data = self.client.post('/app/billing/scheduled/cancel', data={'csrf': 'test-csrf'}, headers=json_).get_json()
-        self.assertTrue(data['ok'])
-        row = self.subscription()
-        self.assertEqual((row['plan_code'], row['scheduled_plan'], row['scheduled_period'], row['autorenew']),
-                         ('pro', None, None, True))
-        # The next renewal bills the current plan again.
-        results = payments.renew(self.db, self.kassa, None, now=row['ends_at'] - timedelta(hours=23))
-        self.assertEqual([r['event'] for r in results], ['activated'])
-        self.assertEqual(self.kassa.created[-1][0]['amount']['value'], '1990.00')
-        # Mini App route, form post with a redirect; a viewer may not change it.
-        self.checkout('start', 'month')
-        self.tg_login()
-        response = self.client.post('/tg/billing/scheduled/cancel', data={'csrf': 'tg-csrf'})
-        self.assertEqual((response.status_code, response.headers['Location']), (302, '/tg/billing'))
-        self.assertIsNone(self.subscription()['scheduled_plan'])
-        with self.db:
-            self.db.execute("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES(?,?,'viewer')", (self.ws, self.other))
-        with self.client.session_transaction() as state:state.update(user_id=self.other, workspace_id=self.ws, csrf='test-csrf')
-        self.assertEqual(self.client.post('/app/billing/scheduled/cancel', data={'csrf': 'test-csrf'}, headers=json_).status_code, 403)
+        self.assertEqual((row['plan_code'], row['billing_period'], row['ends_at']), ('pro', 'month', billing.add_months(end, 1)))
 
     def test_billing_pages_render_payment_ui(self):
         # Before any payment: plan cards with the checkout form, e-mail and consent.
@@ -406,8 +454,24 @@ class PaymentsPostgres(unittest.TestCase):
         with self.client.session_transaction() as state:state.update(user_id=self.u, csrf='test-csrf')
         data, pid = self.paid_pro()
         page = self.client.get('/app/billing').text
-        for text in ('Автопродление', 'Bank card *4444', 'Отключить автопродление', 'Перейти'):
+        until = self.subscription()['ends_at'].astimezone(billing.MSK).strftime('%d.%m.%Y')
+        for text in ('Автопродление', 'Bank card *4444', 'Отменить подписку', 'Перейти', 'Текущий тариф',
+                     'Недоступно — можно только повысить', 'data-state-month="downgrade"', 'confirm.js',
+                     f'data-confirm="Подписка не продлится. Тариф «Профи» действует до {until}, после этого — бесплатный тариф. '
+                     'Деньги больше не спишутся."'):
             self.assertIn(text, page)
+        for text in ('Отключить автопродление', 'К оплате 0', 'тариф дешевле', 'Запланировать'):
+            self.assertNotIn(text, page)
+        # Only upgrades get a button: «Старт» has none, «Pro» only for the year, «Команда» for both periods.
+        self.assertNotIn('value="start" data-pick', page)
+        self.assertEqual(page.count('value="pro" data-pick'), 1)
+        self.assertEqual(page.count('value="team" data-pick'), 2)
+        self.tg_login()
+        page = self.client.get('/tg/billing').text
+        for text in ('Отменить подписку', 'Текущий тариф', 'Недоступно — можно только повысить', 'data-confirm="Подписка не продлится.'):
+            self.assertIn(text, page)
+        self.assertNotIn('value="start" data-pick', page)
+        with self.client.session_transaction() as state:state.update(user_id=self.u, csrf='test-csrf')
         # A failed renewal shows the grace period.
         with self.db:
             self.db.execute("UPDATE subscriptions SET status='past_due',grace_until=now()+interval '2 days' WHERE user_id=?", (self.u,))
@@ -498,10 +562,24 @@ class PaymentsPostgres(unittest.TestCase):
         self.assertIn('после оплаты', self.client.post('/app/billing/autorenew', data={'csrf': 'test-csrf', 'enabled': '1', 'consent': '1'},
                                                        headers={'Accept': 'application/json'}).get_json()['error'])
         self.paid_pro()
+        until = self.subscription()['ends_at'].astimezone(billing.MSK).strftime('%d.%m.%Y')
         self.tg_login()
         response = self.client.post('/tg/billing/autorenew', data={'csrf': 'tg-csrf', 'enabled': '0'})
         self.assertEqual(response.status_code, 302)
-        self.assertFalse(self.subscription()['autorenew'])
+        row = self.subscription()
+        # Cancelling keeps the plan and the saved payment method (needed to resume).
+        self.assertEqual((row['autorenew'], row['plan_code'], row['payment_method_id']), (False, 'pro', 'pm-1'))
+        page = self.client.get('/tg/billing').text
+        for text in (f'Подписка отменена, тариф действует до {until}', 'Возобновить подписку'):
+            self.assertIn(text, page)
+        self.assertNotIn('>Отменить подписку<', page)
+        with self.client.session_transaction() as state:state.update(user_id=self.u, csrf='test-csrf')
+        page = self.client.get('/app/billing').text
+        self.assertIn(f'Подписка отменена, тариф действует до {until}', page)
+        self.assertIn('Возобновить подписку', page)
+        data = self.client.post('/app/billing/autorenew', data={'csrf': 'test-csrf', 'enabled': '0'},
+                                headers={'Accept': 'application/json'}).get_json()
+        self.assertEqual(data['message'], f'Подписка отменена, тариф действует до {until}. Деньги больше не спишутся.')
         self.assertEqual(payments.renew(self.db, self.kassa, None, now=self.subscription()['ends_at']), [])
         self.assertEqual(self.client.post('/app/billing/autorenew', data={'csrf': 'test-csrf', 'enabled': '1'},
                                           headers={'Accept': 'application/json'}).status_code, 400)

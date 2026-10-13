@@ -1,4 +1,5 @@
 {% extends 'tg/base.html' %}{% from '_plans.html' import pay_grid, pay_summary, rub, rubles, day %}{% block title %}Подписка — Сигналид{% endblock %}{% block page %}billing{% endblock %}
+{% block head_extra %}<script src="{{ url_for('static',filename='confirm.js') }}" defer></script>{% endblock %}
 {% block content %}
 {% set owner = not workspace or workspace.owner_user_id==user.id %}
 {% set online = payments_enabled and can_pay and not service_plan %}
@@ -19,21 +20,17 @@
 {% if payments_enabled and subscription and not service_plan %}
 {% if subscription.status=='past_due' and subscription.grace_until %}<p class="tg-flash warn" role="alert">Не удалось списать оплату за продление «{{ plan_names.get(subscription.plan_code, subscription.plan_code) }}». Повторим попытку автоматически, тариф работает до {{ day(subscription.grace_until) }}. Проверьте карту{% if online %} или оплатите тариф ниже{% endif %}.</p>{% endif %}
 {% if open_payment %}<p class="tg-flash">Оплата «{{ plan_names[open_payment.plan_code] }}» ещё не подтверждена. <a href="/tg/billing/return?payment={{ open_payment.id }}">Проверить статус</a></p>{% endif %}
-{% if subscription.scheduled_plan %}<section class="tg-card">
-<p class="hint small">Запланирована смена тарифа</p>
-<p>С {{ day(subscription.ends_at) }} — «{{ plan_names[subscription.scheduled_plan] }}» ({{ period_names[subscription.scheduled_period] }}). До этого действует «{{ plan_names.get(subscription.plan_code, subscription.plan_code) }}».</p>
-{% if can_pay %}<form method="post" action="/tg/billing/scheduled/cancel"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn quiet wide">Отменить смену тарифа</button></form>{% endif %}
-</section>{% endif %}
 {% endif %}
 {% if payments_enabled and paid %}
+{% set until = day(subscription.grace_until if subscription.status=='past_due' and subscription.grace_until else subscription.ends_at) %}{% set plan_title = plan_names.get(subscription.plan_code, subscription.plan_code) %}
 <section class="tg-card renew" id="autorenew">
-<div class="pay-plan-head"><h2>Автопродление</h2>{% if subscription.autorenew %}<span class="badge ok">Включено</span>{% else %}<span class="badge">Выключено</span>{% endif %}</div>
+<div class="pay-plan-head"><h2>Автопродление</h2>{% if subscription.autorenew %}<span class="badge ok">Включено</span>{% else %}<span class="badge">Подписка отменена</span>{% endif %}</div>
 {% if subscription.payment_method_title %}<p class="pay-method">{{ subscription.payment_method_title }}</p>{% endif %}
 {% if subscription.autorenew %}<p class="hint small">{% if subscription.status=='past_due' %}Повторим списание автоматически; если оно не пройдёт, аккаунт перейдёт на бесплатный тариф.{% elif next_charge %}Следующее списание — {{ day(next_charge.at) }}: {{ rubles(next_charge.amount) }} ₽ за «{{ next_charge.plan_name }}» на {{ period_names[next_charge.period] }}.{% else %}Продлим тариф в конце оплаченного периода.{% endif %}</p>
-{% else %}<p class="hint small">Тариф действует до {{ day(subscription.ends_at) }}, затем аккаунт перейдёт на бесплатный тариф — лиды и настройки сохранятся.</p>{% endif %}
-{% if can_pay %}{% if subscription.autorenew %}<form method="post" action="/tg/billing/autorenew"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="enabled" value="0"><button class="btn quiet wide">Отключить автопродление</button></form>
-{% elif subscription.payment_method_title %}<form method="post" action="/tg/billing/autorenew"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="enabled" value="1"><label class="check"><input type="checkbox" name="consent" value="1" required><span>Согласен с <a href="/terms#autorenew" target="_blank" rel="noopener">условиями автоматического продления</a></span></label><button class="btn wide">Включить автопродление</button></form>
-{% else %}<p class="hint small">Чтобы включить автопродление, оплатите тариф картой ниже.</p>{% endif %}{% endif %}
+{% else %}<p class="hint small">Подписка отменена, тариф действует до {{ until }}. Затем аккаунт перейдёт на бесплатный тариф — лиды и настройки сохранятся. Деньги больше не спишутся.</p>{% endif %}
+{% if can_pay %}{% if subscription.autorenew %}<form method="post" action="/tg/billing/autorenew" data-confirm="Подписка не продлится. Тариф «{{ plan_title }}» действует до {{ until }}, после этого — бесплатный тариф. Деньги больше не спишутся."><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="enabled" value="0"><button class="btn quiet wide">Отменить подписку</button></form>
+{% elif subscription.payment_method_title %}<form method="post" action="/tg/billing/autorenew"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="enabled" value="1"><label class="check"><input type="checkbox" name="consent" value="1" required><span>Согласен с <a href="/terms#autorenew" target="_blank" rel="noopener">условиями автоматического продления</a></span></label><button class="btn wide">Возобновить подписку</button></form>
+{% else %}<p class="hint small">Чтобы возобновить подписку, оплатите тариф картой ниже.</p>{% endif %}{% endif %}
 </section>
 {% endif %}
 {% if online %}
@@ -42,11 +39,11 @@
 <input type="hidden" name="csrf" value="{{ csrf }}">
 <section class="tg-section">
 <h2>Тарифы</h2>
-<p class="hint small">{% if renewing %}При переходе на тариф дороже засчитаем неиспользованные дни, тариф дешевле включится со следующего периода.{% else %}Оплата картой через ЮKassa. За год — скидка {{ annual_discount }}%.{% endif %}</p>
+<p class="hint small">{% if renewing %}Можно перейти на тариф выше или на оплату за год — засчитаем неиспользованные дни. Понизить тариф нельзя: можно отменить подписку, тариф будет действовать до конца оплаченного срока.{% else %}Оплата картой через ЮKassa. За год — скидка {{ annual_discount }}%.{% endif %}</p>
 <fieldset class="presets period-presets"><legend class="sr">Период оплаты</legend>
 <label class="preset"><input type="radio" name="period" value="month"{% if period=='month' %} checked{% endif %}><span>Месяц</span></label>
 <label class="preset"><input type="radio" name="period" value="year"{% if period=='year' %} checked{% endif %}><span>Год −{{ annual_discount }}%</span></label></fieldset>
-{{ pay_grid(plans, current_plan, subscription, founder_price, period, annual_discount, paid and subscription.status=='active', True) }}
+{{ pay_grid(plans, current_plan, subscription, founder_price, period, annual_discount, paid and subscription.status=='active', True, plan_options) }}
 </section>
 {{ pay_summary(payment_email, True) }}
 <section class="tg-card pay-wait" data-wait hidden aria-live="polite">

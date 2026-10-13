@@ -264,6 +264,7 @@ label.check.toggle input:focus-visible { outline: 3px solid var(--ring); outline
 .pay-plan .annual, .pay-plan .founder { margin: 0 0 4px; font-size: 13px; color: var(--muted); }
 .pay-plan .founder { color: var(--brand-ink); font-weight: 600; }
 .pay-plan .btn.wide { margin-top: 10px; }
+.pay-plan .pay-locked { margin: 10px 0 0; text-align: center; }
 .pay.is-js:not(.has-plan) .pay-summary { display: none; }
 .pay.has-plan .pay-summary { animation: tg-rise-in var(--dur-slow) var(--ease-out) both; }
 .pay-summary h2 { font-size: 18px; margin: 0; }

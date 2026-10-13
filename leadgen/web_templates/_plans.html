@@ -26,16 +26,17 @@
 {% macro day(value) -%}{{ (value|dt)[:10] }}{%- endmacro %}
 
 {# Online payment (YooKassa): paid plan cards whose prices follow the period switch (billing.js toggles
-   data-period). Without JS every button submits the surrounding checkout form for its plan. #}
-{% macro pay_grid(plans, current=None, sub=None, founder_price=None, period='month', discount=20, paid=False, tg=False) -%}
-<div class="{{ 'pay-plans' if tg else 'plans pay-plans' }}" data-pay-plans data-period="{{ period }}" data-paid="{{ '1' if paid else '0' }}">{% for plan in plans if plan.price %}
+   data-period). Without JS every button submits the surrounding checkout form for its plan.
+   options (payments.plan_options) is None when any paid plan can be bought; for a running YooKassa-paid
+   subscription it maps plan → period → same | upgrade | downgrade, and only upgrades get a button. #}
+{% macro pay_grid(plans, current=None, sub=None, founder_price=None, period='month', discount=20, paid=False, tg=False, options=None) -%}
+<div class="{{ 'pay-plans' if tg else 'plans pay-plans' }}" data-pay-plans data-period="{{ period }}" data-paid="{{ '1' if options else '0' }}">{% for plan in plans if plan.price %}
 {%- set founder = plan.code=='start' and founder_price is not none %}
 {%- set monthly = founder_price if founder else plan.price %}
 {%- set year_month = monthly * (100 - discount) // 100 %}
 {%- set mine = current==plan.code %}
-{%- set mine_period = (sub.billing_period or 'month') if (mine and paid) else '' %}
-{%- set same = mine_period == period %}
-<article class="{{ 'tg-card pay-plan' if tg else 'plan' }}{% if plan.featured %} featured{% endif %}{% if mine %} current{% endif %}" data-plan="{{ plan.code }}" data-plan-name="{{ plan.name }}"{% if mine_period %} data-current-period="{{ mine_period }}"{% endif %}>
+{%- set states = options[plan.code] if options else {'month': 'buy', 'year': 'buy'} %}
+<article class="{{ 'tg-card pay-plan' if tg else 'plan' }}{% if plan.featured %} featured{% endif %}{% if mine %} current{% endif %}" data-plan="{{ plan.code }}" data-plan-name="{{ plan.name }}" data-state-month="{{ states.month }}" data-state-year="{{ states.year }}">
 {% if tg %}<div class="pay-plan-head"><h3>{{ plan.name }}</h3>{% if mine %}<span class="badge ok">Ваш тариф</span>{% elif plan.featured %}<span class="badge">Популярный</span>{% endif %}</div>
 <p class="hint small">{{ plan.tagline }}</p>
 {% else %}{% if mine %}<span class="tag ok">Ваш тариф</span>{% elif plan.featured %}<span class="tag">Популярный</span>{% endif %}
@@ -45,7 +46,11 @@
 <p class="annual" data-for="year">{{ rub(year_month * 12) }} ₽ за год · экономия {{ rub((monthly - year_month) * 12) }} ₽</p>
 {% if founder %}<p class="founder">{% if tg %}Цена участника беты — навсегда{% else %}Для вас как участника беты: <strong>{{ rub(monthly) }} ₽ / месяц</strong> навсегда{% endif %}</p>{% endif %}
 {% if not tg %}<ul>{% for item in plan.features %}<li>{{ item }}</li>{% endfor %}</ul>{% endif %}
-<button class="{{ 'btn wide' if tg else 'button' }}{% if not plan.featured %} quiet{% endif %}" name="plan" value="{{ plan.code }}" data-pick{% if same %} disabled{% endif %}>{{ 'Подключён' if same else ('Перейти' if paid else 'Оплатить') }}</button>
+{% for p in ('month', 'year') %}{% set state = states[p] %}<div class="pay-action" data-for="{{ p }}">
+{%- if state=='same' %}<button type="button" class="{{ 'btn wide' if tg else 'button' }} quiet" disabled>Текущий тариф</button>
+{%- elif state=='downgrade' %}<p class="{{ 'hint small' if tg else 'muted' }} pay-locked">Недоступно — можно только повысить</p>
+{%- else %}<button class="{{ 'btn wide' if tg else 'button' }}{% if not plan.featured %} quiet{% endif %}" name="plan" value="{{ plan.code }}" data-pick>{{ 'Перейти' if state=='upgrade' else 'Оплатить' }}</button>
+{%- endif %}</div>{% endfor %}
 </article>{% endfor %}</div>
 {%- endmacro %}
 
