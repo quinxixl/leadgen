@@ -1,0 +1,79 @@
+{% macro rub(value) -%}{{ '{:,}'.format(value).replace(',', ' ') }}{%- endmacro %}
+{% macro plans_grid(plans, mode='public', current=None, founder_price=None, csrf='', pending=None, can_request=True) -%}
+<div class="plans">{% for plan in plans %}
+<article class="plan{% if plan.featured %} featured{% endif %}{% if current==plan.code %} current{% endif %}">
+{% if plan.featured %}<span class="tag">Популярный</span>{% endif %}
+<h3>{{ plan.name }}</h3><p class="tagline">{{ plan.tagline }}</p>
+<p class="price">{{ rub(plan.price) }} ₽<span> / месяц</span></p>
+{% if plan.price %}<p class="annual">{{ rub(plan.annual_month_price) }} ₽ / месяц при оплате за год — {{ rub(plan.annual_price) }} ₽</p>{% else %}<p class="annual">Бессрочно, без оплаты</p>{% endif %}
+{% if plan.code=='start' and founder_price is not none %}<p class="founder">Для вас как участника беты: <strong>{{ rub(founder_price) }} ₽ / месяц</strong> навсегда</p>{% endif %}
+<ul>{% for item in plan.features %}<li>{{ item }}</li>{% endfor %}</ul>
+{% if mode=='public' %}{% if plan.price %}<a class="button{% if not plan.featured %} quiet{% endif %}" href="/login" data-goal="plan_trial" data-plan="{{ plan.code }}">Начать 7 дней бесплатно</a>{% else %}<a class="button quiet" href="/login" data-goal="plan_trial" data-plan="{{ plan.code }}">Начать бесплатно</a>{% endif %}
+{% elif current==plan.code %}<span class="button quiet disabled">Ваш тариф</span>
+{% elif not plan.price %}<span class="button quiet disabled">Включается, когда закончится оплаченный срок</span>
+{% elif not can_request %}<span class="button quiet disabled">Тариф выбирает владелец команды</span>
+{% else %}{% set requested = pending and pending.plan_code==plan.code %}
+<form class="plan-request" method="post" action="/app/billing/request"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="plan" value="{{ plan.code }}">
+<fieldset class="period"><legend class="sr-only">Период оплаты</legend>
+<label><input type="radio" name="period" value="month"{% if not (requested and pending.billing_period=='year') %} checked{% endif %}> месяц</label>
+<label><input type="radio" name="period" value="year"{% if requested and pending.billing_period=='year' %} checked{% endif %}> год −20%</label></fieldset>
+{% if requested %}<p class="pending">Заявка отправлена</p>{% endif %}
+<button class="button{% if not plan.featured %} quiet{% endif %}">{{ 'Обновить заявку' if requested else 'Подключить «' ~ plan.name ~ '»' }}</button></form>{% endif %}
+</article>{% endfor %}</div>
+{%- endmacro %}
+{# Rubles from Decimal/int: «1 990» or «1 495,50». #}
+{% macro rubles(value) -%}{% set v = value|float %}{% if (v * 100)|round|int % 100 == 0 %}{{ rub(v|round|int) }}{% else %}{{ '{:,.2f}'.format(v).replace(',', ' ').replace('.', ',') }}{% endif %}{%- endmacro %}
+{% macro day(value) -%}{{ (value|dt)[:10] }}{%- endmacro %}
+
+{# Online payment (YooKassa): paid plan cards whose prices follow the period switch (billing.js toggles
+   data-period). Without JS every button submits the surrounding checkout form for its plan. #}
+{% macro pay_grid(plans, current=None, sub=None, founder_price=None, period='month', discount=20, paid=False, tg=False) -%}
+<div class="{{ 'pay-plans' if tg else 'plans pay-plans' }}" data-pay-plans data-period="{{ period }}" data-paid="{{ '1' if paid else '0' }}">{% for plan in plans if plan.price %}
+{%- set founder = plan.code=='start' and founder_price is not none %}
+{%- set monthly = founder_price if founder else plan.price %}
+{%- set year_month = monthly * (100 - discount) // 100 %}
+{%- set mine = current==plan.code %}
+{%- set mine_period = (sub.billing_period or 'month') if (mine and paid) else '' %}
+{%- set same = mine_period == period %}
+<article class="{{ 'tg-card pay-plan' if tg else 'plan' }}{% if plan.featured %} featured{% endif %}{% if mine %} current{% endif %}" data-plan="{{ plan.code }}" data-plan-name="{{ plan.name }}"{% if mine_period %} data-current-period="{{ mine_period }}"{% endif %}>
+{% if tg %}<div class="pay-plan-head"><h3>{{ plan.name }}</h3>{% if mine %}<span class="badge ok">Ваш тариф</span>{% elif plan.featured %}<span class="badge">Популярный</span>{% endif %}</div>
+<p class="hint small">{{ plan.tagline }}</p>
+{% else %}{% if mine %}<span class="tag ok">Ваш тариф</span>{% elif plan.featured %}<span class="tag">Популярный</span>{% endif %}
+<h3>{{ plan.name }}</h3><p class="tagline">{{ plan.tagline }}</p>{% endif %}
+<p class="price"><b data-for="month">{{ rub(monthly) }} ₽</b><b data-for="year">{{ rub(year_month) }} ₽</b><span> / месяц</span></p>
+<p class="annual" data-for="month">{{ rub(year_month) }} ₽ / месяц при оплате за год</p>
+<p class="annual" data-for="year">{{ rub(year_month * 12) }} ₽ за год · экономия {{ rub((monthly - year_month) * 12) }} ₽</p>
+{% if founder %}<p class="founder">{% if tg %}Цена участника беты — навсегда{% else %}Для вас как участника беты: <strong>{{ rub(monthly) }} ₽ / месяц</strong> навсегда{% endif %}</p>{% endif %}
+{% if not tg %}<ul>{% for item in plan.features %}<li>{{ item }}</li>{% endfor %}</ul>{% endif %}
+<button class="{{ 'btn wide' if tg else 'button' }}{% if not plan.featured %} quiet{% endif %}" name="plan" value="{{ plan.code }}" data-pick{% if same %} disabled{% endif %}>{{ 'Подключён' if same else ('Перейти' if paid else 'Оплатить') }}</button>
+</article>{% endfor %}</div>
+{%- endmacro %}
+
+{# Checkout summary under the plan cards: proration preview (filled by billing.js), e-mail for the receipt,
+   consent to autorenewal and the pay button. #}
+{% macro pay_summary(email='', tg=False) -%}
+<section class="{{ 'tg-card' if tg else 'panel' }} pay-summary" data-summary>
+<div class="pay-preview" data-preview>
+<p class="{{ 'hint small' if tg else 'eyebrow' }}" data-field="kind">Оформление</p>
+<h2 data-field="title">Выберите тариф</h2>
+<dl class="pay-lines">
+<div><dt>Стоимость</dt><dd data-field="price">—</dd></div>
+<div class="credit" data-row="credit" hidden><dt>Зачёт за неиспользованные дни</dt><dd data-field="credit"></dd></div>
+<div data-row="starts" hidden><dt>Начнёт действовать</dt><dd data-field="starts"></dd></div>
+<div class="total"><dt>К оплате сейчас</dt><dd data-field="amount">—</dd></div>
+<div><dt data-field="ends-label">Оплачено до</dt><dd data-field="ends">—</dd></div>
+</dl>
+<p class="{{ 'tg-flash' if tg else 'notice' }} pay-message" data-field="message" hidden></p>
+</div>
+<div class="pay-side">
+<label{% if tg %} class="field"{% endif %}>E-mail для чека<input type="email" name="email" value="{{ email }}" required maxlength="254" autocomplete="email" inputmode="email" autocapitalize="off" spellcheck="false" placeholder="name@example.ru"><small class="{{ 'hint small' if tg else '' }}">Пришлём кассовый чек — больше ни для чего не используем.</small></label>
+<label class="check pay-consent"><input type="checkbox" name="consent" value="1" required><span>Согласен с <a href="/terms#autorenew" target="_blank" rel="noopener">условиями автоматического продления</a>{% if tg %}<small class="hint">Отключить можно в любой момент в «Подписке».</small>{% else %}. Отключить его можно в любой момент в этом разделе.{% endif %}</span></label>
+<p class="{{ 'tg-flash error' if tg else 'form-error' }}" role="alert" data-error hidden></p>
+<div class="pay-actions" data-actions>
+<button type="submit" class="{{ 'btn wide' if tg else 'button large' }}" data-submit{% if tg %} data-main-fallback{% endif %}>Оплатить</button>
+<button type="button" class="link-button{% if tg %} btn quiet wide{% endif %}" data-reset>Выбрать другой тариф</button>
+</div>
+<p class="{{ 'hint small' if tg else 'muted' }} pay-note">Платёж принимает ЮKassa. Данные карты нам недоступны: для автопродления ЮKassa хранит только способ оплаты.</p>
+</div>
+</section>
+{%- endmacro %}

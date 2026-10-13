@@ -195,6 +195,21 @@ sudo docker compose exec leadfinder python -m leadgen.app status
 
 Контейнер использует `restart: unless-stopped`, а Docker включён в автозапуск. После перезагрузки сервера бот должен подняться автоматически.
 
+Алерты об ошибках в Telegram: с рабочего аккаунта отправьте боту `/start`, узнайте свой ID
+(например, у @userinfobot) и добавьте в `.env` `ERROR_ALERT_CHAT_ID=<ваш id>` (несколько — через запятую;
+`ALERT_ON_START=1` — сообщение при запуске). Пусто — выключено. Одна ошибка приходит не чаще раза в 10 минут
+(потом с числом повторов), не больше 20 алертов в час на процесс. Проверка — та же команда `--test` ниже.
+
+Необязательно: отправка ошибок в Sentry или self-hosted GlitchTip. Добавьте в `.env` `SENTRY_DSN`
+(и при желании `SENTRY_ENVIRONMENT`, `SENTRY_TRACES_SAMPLE_RATE`, `SENTRY_RELEASE`, см. `.env.example`),
+перезапустите контейнер и проверьте доставку тестового события:
+
+```sh
+sudo docker compose exec leadfinder python -m leadgen.observability --test
+```
+
+Без `SENTRY_DSN` ничего не отправляется. Персональные данные и токены вычищаются до отправки.
+
 ## 14. Автоматически обновлять код из GitHub
 
 После первого запуска установить `systemd`-таймер:
@@ -254,9 +269,23 @@ sudo docker compose up -d
 sudo docker compose restart
 ```
 
+### `Сессия служебного аккаунта не авторизована`
+
+Файл `leadgen/data/telegram_reader.session` есть, но Telegram отозвал сессию. Монитор не падает: он проверяет сессию раз в 10 минут, а `status` показывает `"telegram_reader": {"state": "unauthorized"}`. Войти заново по QR-коду (код по SMS на серверный IP часто не приходит):
+
+```sh
+cd /opt/leadfinder
+sudo docker compose stop leadfinder
+sudo docker compose run --rm --no-deps leadfinder python -m leadgen.app setup-telegram --qr
+sudo docker compose start leadfinder
+sudo docker compose run --rm --no-deps leadfinder python -m leadgen.app status
+```
+
+Отсканировать QR в Telegram служебного аккаунта: «Настройки → Устройства → Подключить устройство». QR обновляется каждые ~30 секунд; при двухэтапной проверке команда спросит облачный пароль. После запуска в логах должно появиться `Мониторинг Telegram запущен`, а в `status` — `"state": "running"`.
+
 ### `Монитор Telegram остановлен`
 
-Проверить наличие и права файла:
+Монитор перезапускается сам с паузой 5 с → 5 мин; причина (тип и текст ошибки) есть в той же строке лога и в `telegram_reader.last_error` команды `status`. Если строка повторяется постоянно, проверить наличие и права файла:
 
 ```sh
 ls -l leadgen/data/telegram_reader.session

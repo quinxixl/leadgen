@@ -1,0 +1,14 @@
+<fieldset class="service-picker" data-service-picker>
+  <legend>Услуги</legend>
+  <div class="service-picker-controls">
+    <label>Найти услугу<input type="search" data-service-search placeholder="Например: монтаж или юрист" autocomplete="off"></label>
+    <div class="service-picker-actions">
+      <button type="button" class="quiet" data-service-action="visible">Выбрать показанные</button>
+      <button type="button" class="quiet" data-service-action="clear">Снять выбор</button>
+    </div>
+    <p class="muted" data-service-summary></p>
+  </div>
+  <div class="service-groups">
+    {% for section,names in topic_categories %}<section data-service-group><h3>{{ section }}</h3><div class="service-options">{% for topic in names %}<label class="check" data-service-row data-name="{{ topic|lower }}"><input type="checkbox" name="topics" value="{{ topic }}" {% if topic in selected_topics %}checked{% endif %}><span>{{ topic }}</span></label>{% endfor %}</div></section>{% endfor %}
+  </div>
+</fieldset>

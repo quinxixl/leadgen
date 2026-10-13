@@ -1,0 +1,10 @@
+{% extends 'base.html' %}{% block title %}Безопасность — Сигналид{% endblock %}
+{% block content %}
+<p class="eyebrow">Аккаунт</p><h1>Безопасность входа</h1>
+<section class="panel narrow">
+<h2>Сеансы</h2>
+<p>Вход в кабинет действует 30 дней на каждом устройстве, мини-приложение в Telegram — 4 часа с автоматическим продлением.</p>
+<p class="muted">Если вы входили с чужого компьютера или потеряли телефон, завершите все сеансы. Кабинет и мини-приложение закроются на всех устройствах, включая это. Чтобы вернуться, войдите снова через Telegram.</p>
+<form method="post" action="/app/security/logout-all"><input type="hidden" name="csrf" value="{{ csrf }}"><button>Выйти на всех устройствах</button></form>
+</section>
+{% endblock %}

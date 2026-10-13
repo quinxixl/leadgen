@@ -1,0 +1,5 @@
+{% macro results_widget(results) -%}
+<section class="panel results-widget" aria-label="Результаты через Сигналид"><p class="eyebrow">Результаты</p><h2>Через Сигналид вы заработали ₽{{ results.month|money }} за месяц / ₽{{ results.total|money }} всего</h2>
+<div class="grid four metrics"><article class="panel"><span>За 30 дней</span><strong>₽{{ results.month|money }}</strong></article><article class="panel"><span>Всего</span><strong>₽{{ results.total|money }}</strong></article><article class="panel"><span>Сделок</span><strong>{{ results.won }}</strong></article><article class="panel"><span>Отклик → сделка</span><strong>{% if results.conversion is not none %}{{ results.conversion }}%{% else %}—{% endif %}</strong></article></div>
+<p class="muted">Сумма — по сделкам со статусом «Сделка» и указанной суммой. Конверсия — доля сделок среди лидов, которым вы написали.</p></section>
+{%- endmacro %}

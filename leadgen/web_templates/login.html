@@ -1,0 +1,26 @@
+{% extends 'base.html' %}{% block title %}Вход в Сигналид через Telegram{% endblock %}{% block description %}Вход и регистрация в сервисе «Сигналид» через Telegram без пароля. Новым пользователям — 7 дней бесплатного доступа.{% endblock %}
+{% block head_extra %}{% if session.get('login_token') %}<script src="{{ url_for('static',filename='login.js') }}" defer></script>{% endif %}{% endblock %}
+{% block content %}
+<section class="auth">
+<div class="auth-side glow night"><p class="eyebrow">Сигналид</p><h2>Один аккаунт для бота и кабинета</h2><p class="muted">Вход подтверждается в нашем Telegram-боте. Пароли не нужны, доступ к вашей переписке не предоставляется.</p>
+<ul><li><strong>7 дней бесплатно</strong>Полный доступ, без привязки карты.</li><li><strong>Заказы в Telegram</strong>Запросы на IT, дизайн, маркетинг и бизнес-услуги приходят в бот за минуты.</li><li><strong>Кабинет для сделок</strong>Воронка, AI-отклики с отправкой через ваш Telegram, аналитика и команда.</li></ul></div>
+<div class="auth-main"><div class="auth-card panel">
+<p class="eyebrow">Вход и регистрация</p><h1>Вход в Сигналид</h1>
+{% if session.get('login_token') %}
+<ol class="auth-steps"><li>Запомните код ниже.</li><li>Откройте бота и выберите <strong>этот же код</strong> среди вариантов.</li><li>Вернитесь сюда — вход завершится автоматически. Если нет, нажмите «Завершить вход».</li></ol>
+<p class="code" aria-label="Код входа" data-goal-view="login_code">{{ session.login_code }}</p>
+<a class="button large" href="https://t.me/{{ bot }}?start=web_{{ session.login_token }}" target="_blank" rel="noopener noreferrer" data-goal="bot_open">Открыть бота в Telegram</a>
+<form method="post" data-login-finish data-status-url="/login/status"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="action" value="finish"><button class="quiet">Завершить вход</button></form>
+<p class="fine" data-login-waiting hidden>Ждём подтверждения в Telegram — страница откроет кабинет сама.</p>
+<p class="notice warn" data-login-expired hidden>Код устарел. Получите новый код.</p>
+<form method="post"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="action" value="begin"><input type="hidden" name="consent" value="1"><button class="link-button">Получить новый код</button></form>
+<p class="fine">Код действует 5 минут. Никому не сообщайте его и не подтверждайте вход, который начинали не вы.</p>
+{% else %}
+<p class="muted">Подтвердите вход в Telegram — это займёт полминуты. Новые пользователи получают 7 дней бесплатного доступа.</p>
+<form method="post"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="action" value="begin">
+<label class="check"><input type="checkbox" name="consent" value="1" required><span>Я принимаю <a href="/terms" target="_blank">условия оферты</a> и даю согласие на обработку персональных данных в соответствии с <a href="/privacy" target="_blank">политикой конфиденциальности</a></span></label>
+<button class="large">Получить код входа</button></form>
+{% endif %}
+</div></div>
+</section>
+{% endblock %}

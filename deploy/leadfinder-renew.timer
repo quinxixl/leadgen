@@ -1,0 +1,11 @@
+[Unit]
+Description=Renew IT Lead Finder subscriptions every hour
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=5min
+Persistent=true
+Unit=leadfinder-renew.service
+
+[Install]
+WantedBy=timers.target

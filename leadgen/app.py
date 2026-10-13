@@ -10,7 +10,7 @@ from pathlib import Path
 import time
 from datetime import datetime
 from urllib.error import HTTPError, URLError
-from .adapters import collect, fetch, parse
+from .adapters import collect, error_label, fetch, parse
 from .core import Lead, UTC, classify, fingerprint, message, enrich
 from .database import db_open, database_url
 
@@ -57,28 +57,34 @@ def telegram(method, payload):
         raise RuntimeError('Telegram rejected request')
     return data['result']
 
-def ingest(db, lead, config):
+def ingest(db, lead, config, origin_user_id=None):
     status,reason = classify_for_config(lead,config)
     fp = fingerprint(lead)
     existing = db.execute('SELECT status FROM leads WHERE url=?',(lead.url,)).fetchone()
     if existing and existing['status'] in ('sent','uncertain','sending'):
         return
-    duplicate = db.execute("SELECT url FROM leads WHERE fingerprint=? AND url<>? AND status IN ('ready','sent','sending','uncertain') LIMIT 1",(fp,lead.url)).fetchone()
+    duplicate = db.execute("""SELECT url FROM leads WHERE fingerprint=? AND url<>?
+        AND status IN ('ready','sent','sending','uncertain')
+        AND (origin_user_id=? OR (origin_user_id IS NULL AND CAST(? AS BIGINT) IS NULL)) LIMIT 1""",
+        (fp,lead.url,origin_user_id,origin_user_id)).fetchone()
     if duplicate:
         status,reason = 'duplicate','совпадает с '+duplicate['url']
-    db.execute('''INSERT INTO leads(url,fingerprint,payload,status,reason,first_seen)
-                  VALUES(?,?,?,?,?,?) ON CONFLICT(url) DO UPDATE SET
+    db.execute('''INSERT INTO leads(url,fingerprint,payload,status,reason,first_seen,origin_user_id)
+                  VALUES(?,?,?,?,?,?,?) ON CONFLICT(url) DO UPDATE SET
                   fingerprint=excluded.fingerprint,payload=excluded.payload,
                   status=excluded.status,reason=excluded.reason''',
-               (lead.url,fp,json.dumps(lead.data(),ensure_ascii=False),status,reason,datetime.now(UTC).isoformat()))
+               (lead.url,fp,json.dumps(lead.data(),ensure_ascii=False),status,reason,
+                datetime.now(UTC).isoformat(),origin_user_id))
 
-def classify_for_config(lead,config):
-    enrich(lead,config['min_budget'])
-    status, reason, _ = classify(lead,config['min_budget'],config['max_age_hours'])
+def classify_for_config(lead,config,ai_topics=None):
+    # The score is shared across projects; their budget floors only gate delivery.
+    # ai_topics: services detected by the LLM; they replace the keyword services for this decision.
+    enrich(lead)
+    status, reason, _ = classify(lead,config['min_budget'],config['max_age_hours'],ai_topics=ai_topics)
     if (config.get('notify_without_budget') and status == 'review' and
             reason in ('бюджет не указан','указан только потолок бюджета') and lead.score >= 45):
         status, reason = 'ready', f'{lead.temperature} лид; бюджет нужно уточнить'
-    status, reason = apply_preferences(lead, config, status, reason)
+    status, reason = apply_preferences(lead, config, status, reason, ai_topics)
     return status,reason
 
 def scan(db, config, fixtures=False):
@@ -104,13 +110,19 @@ def scan(db, config, fixtures=False):
                 db.execute('''INSERT INTO health(source,checked,ok,count,error) VALUES(?,?,?,?,?)
                     ON CONFLICT(source) DO UPDATE SET checked=excluded.checked,ok=excluded.ok,
                     count=excluded.count,error=excluded.error''',
-                    (source['name'],datetime.now(UTC).isoformat(),0,0,type(exc).__name__))
-            print(f"{source['name']}: ошибка {type(exc).__name__}; см. status",flush=True)
+                    (source['name'],datetime.now(UTC).isoformat(),0,0,error_label(exc)))
+            print(f"{source['name']}: ошибка {error_label(exc)}; см. status",flush=True)
+            from .observability import capture_exception
+            capture_exception(exc,component='parser',source=source.get('id',''))
 
-def apply_preferences(lead, config, status, reason):
-    from .core import topics
-    if 'topics' in config and not set(topics(lead.title+' '+lead.text)).intersection(config['topics']):
-        return 'rejected', 'направление выключено'
+def apply_preferences(lead, config, status, reason, ai_topics=None):
+    from .core import topics, possible_need_topics
+    if 'topics' in config:
+        if ai_topics:
+            if not set(ai_topics).intersection(config['topics']):
+                return 'rejected', 'AI: услуга не выбрана — '+', '.join(ai_topics)
+        elif not set(topics(lead.title+' '+lead.text)+possible_need_topics(lead.title+' '+lead.text)).intersection(config['topics']):
+            return 'rejected', 'направление выключено'
     known = {s['name'] for s in config.get('sources',[])}
     enabled = {s['name'] for s in config.get('sources',[]) if s['enabled']}
     if lead.source in known and lead.source not in enabled:
@@ -171,11 +183,14 @@ def deliver(db, config, sender=telegram, limit=20):
             time.sleep(1.1)
 
 def status(db):
+    from .telegram_monitor import SESSION_FILE, reader_status
     counts = {row['status']:row['total'] for row in db.execute('SELECT status,count(*) AS total FROM leads GROUP BY status')}
     registry = {row['status']:row['total'] for row in db.execute('SELECT status,count(*) AS total FROM telegram_sources GROUP BY status')}
-    enabled = db.execute('SELECT count(*) AS total FROM telegram_sources WHERE enabled=1').fetchone()['total']
+    from .source_registry import read_count
+    enabled = read_count(db)  # chats the service account reads; registry statuses are public-page checks
+    reader = reader_status(db) | {'session_file': SESSION_FILE.exists()}
     print(json.dumps({'counts':counts,'sources':[dict(r) for r in db.execute('SELECT * FROM health')],
-                      'telegram_registry':registry,'telegram_enabled':enabled},ensure_ascii=False,indent=2))
+                      'telegram_registry':registry,'telegram_enabled':enabled,'telegram_reader':reader},ensure_ascii=False,indent=2))
 
 def setup():
     path = ROOT.parent/'.env'
@@ -209,15 +224,20 @@ def main():
     parser.add_argument('command',choices=['scan','run','bot','status','export','setup','import-sources','verify-sources','setup-telegram','monitor-telegram'])
     parser.add_argument('--send',action='store_true',help='Отправлять подходящие объявления в ваш Telegram')
     parser.add_argument('--fixtures',action='store_true',help='Проверка на ранее сохранённых страницах, без сети')
+    parser.add_argument('--qr',action='store_true',help='setup-telegram: вход по QR-коду вместо кода из SMS/Telegram')
     parser.add_argument('--db',type=Path,help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.command in ('bot','run','scan','monitor-telegram') and not args.fixtures:
+        from .observability import init_alerts, init_sentry
+        service='bot' if args.command=='bot' else 'cli-'+args.command
+        init_alerts(service);init_sentry(service)
     if args.fixtures and (args.send or args.command in ('run','bot')):
         parser.error('Fixtures support only scan without sending')
     if args.command == 'setup':
         setup(); return
     if args.command == 'setup-telegram':
         from .telegram_monitor import setup_session
-        setup_session(); return
+        setup_session(qr=args.qr); return
     config = json.loads((ROOT/'sources.json').read_text())
     if config['poll_seconds'] < 60 or config['min_budget'] < 0:
         raise ValueError('Invalid config')
@@ -265,6 +285,8 @@ if __name__ == '__main__':
     except KeyboardInterrupt:
         print('Остановлено.')
     except Exception as exc:
+        from .observability import capture_exception, flush
+        capture_exception(exc,component='main');flush()
         # No traceback or secret-bearing request URLs in user-facing logs.
         print(f'Ошибка: {type(exc).__name__}: {exc}' if isinstance(exc,(ValueError,RuntimeError)) else f'Ошибка: {type(exc).__name__}')
         raise SystemExit(1)

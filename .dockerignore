@@ -1,6 +1,13 @@
 *
 !Dockerfile
 !requirements.txt
-!leadgen
+!leadgen/
 !leadgen/*.py
 !leadgen/sources.json
+!leadgen/web_templates/
+!leadgen/web_templates/**
+!leadgen/web_static/
+!leadgen/web_static/**
+!supabase/
+!supabase/migrations/
+!supabase/migrations/*.sql

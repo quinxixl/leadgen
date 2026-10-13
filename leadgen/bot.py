@@ -6,9 +6,10 @@ import time
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-from .adapters import collect
-from .app import ROOT, telegram, ingest, deliver, send_lead, classify_for_config, env_load, notification_chat_ids
+from .adapters import collect, error_label
+from .app import telegram, ingest, deliver, send_lead, classify_for_config, env_load, notification_chat_ids
 from .core import TOPICS, Lead, UTC, classify
+from .observability import capture_exception
 
 MENU = {'keyboard':[[{'text':'▶️ Начать'},{'text':'⏸ Остановить'}],
     [{'text':'🔎 Найти сейчас'},{'text':'📋 Объявления'}],
@@ -22,7 +23,8 @@ def collect_batch(config):
             try:
                 result.append((source['name'],collect(source),None))
             except Exception as exc:
-                result.append((source['name'],[],type(exc).__name__))
+                capture_exception(exc,component='parser',source=source.get('id',''))
+                result.append((source['name'],[],error_label(exc)))
     return result
 
 class Controller:
@@ -65,7 +67,8 @@ class Controller:
 
     def services(self):
         chosen=self.config()['topics']
-        keys=[[{'text':('✅ ' if name in chosen else '⬜️ ')+name,'callback_data':'topic:'+str(i)}] for i,name in enumerate(TOPICS)]
+        buttons=[{'text':('✅ ' if name in chosen else '⬜️ ')+name,'callback_data':'topic:'+str(i)} for i,name in enumerate(TOPICS)]
+        keys=[buttons[i:i+2] for i in range(0,len(buttons),2)]
         self.say('Выберите услуги. Можно включить несколько:',{'inline_keyboard':keys})
 
     def sources(self):
@@ -73,9 +76,10 @@ class Controller:
         for source in self.config()['sources']:
             if source['kind']=='pending':continue
             keys.append([{'text':('✅ ' if source['enabled'] else '⬜️ ')+source['name'],'callback_data':'source:'+source['id']}])
+        from .source_registry import read_count
         registry={row['status']:row['total'] for row in self.db.execute('SELECT status,count(*) AS total FROM telegram_sources GROUP BY status')}
-        note=(f"\n\nTelegram-база: {sum(registry.values())} источников; "
-              f"активны {registry.get('active',0)}, ожидают проверки {registry.get('pending',0)+registry.get('retry',0)}.")
+        note=(f"\n\nTelegram: служебный аккаунт читает {read_count(self.db)} чатов в реальном времени; "
+              f"в базе {sum(registry.values())} источников, ожидают проверки {registry.get('pending',0)+registry.get('retry',0)}.")
         self.say('Источники. hh показывает проектные вакансии только на проверке. Авито и Kwork пока недоступны.'+note,{'inline_keyboard':keys})
 
     def listing(self,review=False,page=0):
@@ -173,10 +177,17 @@ class Controller:
             if uncertain:lines.append(f'Не подтверждена отправка {uncertain} объявлений; проверьте историю чата.')
             registry={row['status']:row['total'] for row in self.db.execute('SELECT status,count(*) AS total FROM telegram_sources GROUP BY status')}
             if registry:
-                lines.append(f"Telegram-база: активны {registry.get('active',0)}, неактивны {registry.get('inactive',0)}, "
-                             f"не чаты {registry.get('not_chat',0)}, ждут проверки {registry.get('pending',0)+registry.get('retry',0)}")
-                reader=all(os.getenv(k) for k in ('TELEGRAM_API_ID','TELEGRAM_API_HASH','TELEGRAM_PHONE')) and (ROOT/'data'/'telegram_reader.session').exists()
-                lines.append('Чтение групп: '+('подключено' if reader else 'нужна однократная настройка Telegram-аккаунта'))
+                from .source_registry import read_count
+                lines.append(f"Telegram: служебный аккаунт читает {read_count(self.db)} чатов; в базе активны {registry.get('active',0)}, "
+                             f"неактивны {registry.get('inactive',0)}, не чаты {registry.get('not_chat',0)}, "
+                             f"ждут проверки {registry.get('pending',0)+registry.get('retry',0)}")
+                from .telegram_monitor import reader_configured, reader_status
+                state=reader_status(self.db)['state']
+                reader=('нужна однократная настройка Telegram-аккаунта' if not reader_configured() else
+                        'подключено' if state=='running' else
+                        'сессия не авторизована, выполните setup-telegram' if state=='unauthorized' else
+                        'не работает ('+state+')')
+                lines.append('Чтение групп и каналов: '+reader)
             self.say('\n'.join(lines))
         else:self.say('Выберите кнопку меню. Сумма должна быть целым числом от 0 до 100 000 000.' if self.get('await_budget') else 'Нажмите кнопку меню или /start.')
 
@@ -195,24 +206,40 @@ def run_bot(db,config):
     if webhook.get('url'):
         raise ValueError('У бота настроен webhook. Используйте отдельного бота без webhook для локального запуска.')
     print('Бот работает. Откройте Telegram и отправьте /start. Ctrl+C — выход.',flush=True)
-    db_target=db.target;monitor_started=False
+    db_target=db.target
+    from .telegram_monitor import ReaderThread, reader_configured
+    def read_groups():
+        from .telegram_monitor import run_monitor
+        run_monitor(db_target,config)
+    # One supervised reader thread; if it ever dies, the polling loop below starts it again.
+    reader=ReaderThread(read_groups)
     def start_reader_if_ready():
-        nonlocal monitor_started
         env_load()
-        if monitor_started or not (all(os.getenv(k) for k in ('TELEGRAM_API_ID','TELEGRAM_API_HASH','TELEGRAM_PHONE')) and (ROOT/'data'/'telegram_reader.session').exists()):
+        if not reader_configured():
             return False
-        def monitor():
-            try:
-                from .telegram_monitor import run_monitor
-                run_monitor(db_target,config)
-            except Exception as exc:
-                print('Монитор Telegram остановлен: '+type(exc).__name__,flush=True)
-        threading.Thread(target=monitor,daemon=True).start()
-        monitor_started=True
-        return True
+        return reader.ensure()=='started'
     if not start_reader_if_ready():
         print('Чтение групп не запущено: выполните setup-telegram после добавления API-параметров.',flush=True)
-    future=None;next_scan=0;telegram_retry_delay=2
+    if product_mode and all(os.getenv(key) for key in ('TELEGRAM_API_ID','TELEGRAM_API_HASH','TELEGRAM_SESSION_ENCRYPTION_KEY')):
+        def personal_monitors():
+            try:
+                from .telegram_accounts import run_personal_monitors
+                run_personal_monitors(db_target, config)
+            except Exception as exc:
+                capture_exception(exc,component='personal_monitors')
+                print('Личные Telegram-подключения остановлены: '+type(exc).__name__, flush=True)
+        threading.Thread(target=personal_monitors, daemon=True).start()
+        print('Менеджер личных Telegram-подключений запущен.', flush=True)
+    elif product_mode:
+        print('Личные Telegram-подключения отключены: добавьте API-параметры и ключ шифрования.', flush=True)
+    from .ai_scoring import scoring_enabled
+    if product_mode and scoring_enabled():
+        # Off the Telegram polling loop: a slow LLM call never delays updates or delivery.
+        from .ai_scoring import run_scorer
+        threading.Thread(target=run_scorer, args=(db_target,), daemon=True).start()
+    elif product_mode:
+        print('AI-оценка лидов отключена: задайте GROQ_API_KEY.', flush=True)
+    future=None;next_scan=0;telegram_retry_delay=2;next_subscription_check=0;next_first_run_check=0
     with ThreadPoolExecutor(max_workers=1) as pool:
         while True:
             try:
@@ -246,12 +273,59 @@ def run_bot(db,config):
                     if ui.manual or ui.get('active',False):
                         ui.drain=True
                         failures=sum(bool(e) for _,_,e in batch)
-                        if ui.manual:
+                        # Product users get leads as cards; the owner-only summary refers to the legacy menu.
+                        if ui.manual and not product_mode:
                             ui.say(f'Проверка завершена: прочитано {sum(len(x) for _,x,_ in batch)} записей. Ошибок источников: {failures}. Результаты — «Объявления».')
                     ui.manual=False
                     next_scan=time.monotonic()+config['poll_seconds']
                 if (ui.manual or (ui.get('active',False) and time.monotonic()>=next_scan)) and future is None:
                     future=pool.submit(collect_batch,ui.config())
+                if product_mode:
+                    from .reminders import deliver_due
+                    deliver_due(db,telegram)
+                    from .integrations import integrations_enabled
+                    if integrations_enabled() and os.getenv('TELEGRAM_SESSION_ENCRYPTION_KEY'):
+                        from .integrations import deliver_webhooks
+                        deliver_webhooks(db,os.environ['TELEGRAM_SESSION_ENCRYPTION_KEY'],limit=2)
+                    from .team_notifications import deliver_assignments
+                    deliver_assignments(db,telegram,limit=2)
+                    if time.monotonic()>=next_subscription_check:
+                        next_subscription_check=time.monotonic()+300
+                        try:
+                            from .product import notify_subscriptions
+                            notify_subscriptions(db,telegram)
+                        except Exception as exc:
+                            # Trial reminders are optional; only RuntimeError is survivable in this loop.
+                            capture_exception(exc,component='subscription_reminders')
+                            print('Напоминания о подписке: '+type(exc).__name__,flush=True)
+                            db.connection.rollback()
+                        try:
+                            from .feedback import send_surveys
+                            send_surveys(db,telegram)
+                        except Exception as exc:
+                            # Beta surveys are optional and must never stop lead delivery.
+                            capture_exception(exc,component='beta_surveys')
+                            print('Опрос беты: '+type(exc).__name__,flush=True)
+                            db.connection.rollback()
+                    if time.monotonic()>=next_first_run_check:
+                        # Before the live stream: monitoring enabled on the site gets the welcome batch too.
+                        next_first_run_check=time.monotonic()+10
+                        try:
+                            from .product import backfill_pending
+                            backfill_pending(db,config,telegram)
+                        except RuntimeError:raise
+                        except Exception as exc:
+                            capture_exception(exc,component='first_leads')
+                            print('Первые лиды: '+type(exc).__name__,flush=True)
+                            db.connection.rollback()
+                        try:
+                            from .feedback import deliver_notifications
+                            deliver_notifications(db,telegram)
+                        except Exception as exc:
+                            # Feedback is already saved; only the owner notification is skipped.
+                            capture_exception(exc,component='feedback_notifications')
+                            print('Уведомление об обратной связи: '+type(exc).__name__,flush=True)
+                            db.connection.rollback()
                 if ui.get('active',False) or ui.drain:
                     if product_mode:
                         from .product import deliver_registered
@@ -261,5 +335,7 @@ def run_bot(db,config):
                         deliver(db,ui.config(),limit=1)
                         ui.drain=bool(db.execute("SELECT 1 FROM leads WHERE status='ready' AND next_attempt<=? LIMIT 1",(time.time(),)).fetchone())
             except RuntimeError as exc:
+                # Telegram network/API errors are expected here; report only unexpected ones.
+                if not str(exc).startswith('Telegram'):capture_exception(exc,component='bot_loop')
                 print(str(exc),flush=True)
                 time.sleep(3)
