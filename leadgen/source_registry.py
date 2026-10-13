@@ -20,6 +20,15 @@ ONLINE = re.compile(r'([\d\s.,]+)\s*(?:online|онлайн)', re.I)
 JOINED = 'joined'
 JOINED_REASON = 'подписан служебный аккаунт'
 NOT_JOINED_REASON = 'служебный аккаунт не подписан'
+# A chat the service account joined on its own waits for the platform admin: it is stored disabled
+# with this status and is read only after approval. A rejected chat keeps its row, so the reader never
+# registers it again. Neither status is touched by verify_pending or apply_monitor_policy.
+MODERATION = 'moderation'
+REJECTED = 'rejected'
+MODERATION_REASON = 'ждёт одобрения администратора'
+APPROVED_REASON = 'одобрен администратором'
+REJECTED_REASON = 'отклонён администратором'
+MODERATION_LIMIT = 100
 
 
 def _metadata(value):
@@ -48,6 +57,30 @@ def monitor_enabled(status, selection_group, metadata, segment=None):
 def read_count(db):
     """Chats the shared service account reads in real time (what the cabinet catalog lists)."""
     return db.execute("SELECT count(*) AS total FROM telegram_sources WHERE enabled=1 AND status='active'").fetchone()['total']
+
+
+def moderation_queue(db, limit=MODERATION_LIMIT):
+    """Chats the service account joined that wait for the admin's decision, oldest first."""
+    return db.execute('''SELECT username,title,checked_at,metadata FROM telegram_sources
+        WHERE status=? ORDER BY checked_at,username LIMIT ?''', (MODERATION, limit)).fetchall()
+
+
+def _decide(db, username, status, enabled, reason):
+    with db:
+        row = db.execute('''UPDATE telegram_sources SET status=?,enabled=?,checked_at=?,check_reason=?
+            WHERE username=? AND status=? RETURNING username''',
+            (status, enabled, datetime.now(UTC).isoformat(), reason, username, MODERATION)).fetchone()
+    return row is not None
+
+
+def approve_source(db, username):
+    """Start reading a chat waiting for moderation. False when it is not waiting."""
+    return _decide(db, username, 'active', 1, APPROVED_REASON)
+
+
+def reject_source(db, username):
+    """Keep a chat waiting for moderation disabled for good. False when it is not waiting."""
+    return _decide(db, username, REJECTED, 0, REJECTED_REASON)
 
 
 def _number(value):

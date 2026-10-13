@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from .core import Lead, UTC
-from .source_registry import JOINED, JOINED_REASON, joined_metadata
+from .source_registry import JOINED, MODERATION, MODERATION_REASON, joined_metadata
 
 ROOT = Path(__file__).resolve().parent
 SESSION = ROOT/'data'/'telegram_reader'  # Telethon stores it as telegram_reader.session
@@ -289,17 +289,18 @@ def realtime_group_username(event, chat):
 def register_joined_chat(db, username, title, kind='group', now=None):
     """Register a public chat the service account follows. True when a row was inserted or marked.
 
-    Only a brand-new chat is inserted (active and enabled). An existing row keeps its enabled, status
-    and check_reason: an admin or the registry may have disabled it, and following the chat must
-    never switch it back on. Such a row only gets the joined marker in its metadata."""
+    Only a brand-new chat is inserted, disabled and waiting for the platform admin's approval in /admin:
+    joining a chat must never start reading it on its own. An existing row keeps its enabled, status
+    and check_reason: an admin or the registry may have disabled or rejected it, and following the chat
+    must never switch it back on. Such a row only gets the joined marker in its metadata."""
     now = now or datetime.now(UTC).isoformat()
     row = db.execute('SELECT metadata FROM telegram_sources WHERE username=?', (username,)).fetchone()
     if row is None:
         db.execute('''INSERT INTO telegram_sources
             (username,url,title,segment,priority,selection_group,status,enabled,checked_at,check_reason,metadata)
-            VALUES(?,?,?,?,2,?,'active',1,?,?,?) ON CONFLICT(username) DO NOTHING''',
-            (username, 'https://t.me/'+username, (title or username)[:200], JOINED, JOINED, now,
-             JOINED_REASON, joined_metadata(None, kind)))
+            VALUES(?,?,?,?,2,?,?,0,?,?,?) ON CONFLICT(username) DO NOTHING''',
+            (username, 'https://t.me/'+username, (title or username)[:200], JOINED, JOINED, MODERATION, now,
+             MODERATION_REASON, joined_metadata(None, kind)))
         return True
     metadata = joined_metadata(row['metadata'], kind)
     if metadata == row['metadata']:
@@ -318,7 +319,7 @@ class PublicChat:
 @dataclass(frozen=True)
 class StoreResult:
     stored: bool      # the message was ingested
-    inserted: bool    # the chat was new and has been registered as a source
+    inserted: bool    # the chat was new and has been registered, waiting for moderation
 
 
 def _source(db, username):
@@ -328,8 +329,9 @@ def _source(db, username):
 def store_public_message(db, chat, message, config, now, known=False):
     """Ingest one message of a public chat inside the caller's transaction. Synchronous DB work only.
 
-    A chat without a row is registered first; a known chat (registered earlier by this process)
-    skips registration. A disabled source is left as is and its messages are not ingested."""
+    A chat without a row is registered first (waiting for moderation); a known chat (registered earlier
+    by this process) skips registration. A disabled, rejected or not yet approved source is left as is
+    and its messages are not ingested."""
     from .app import ingest
     row = _source(db, chat.username)
     inserted = False
@@ -399,7 +401,7 @@ async def process_event(event, db_target, config, state, log=_log, known=None):
             result = store_public_message(db, public, event.message, config, now, username in known)
         known.add(username)
         if result.inserted:
-            log(f'Монитор Telegram: подключён новый публичный источник @{username}.')
+            log(f'Монитор Telegram: новый публичный источник @{username} ждёт одобрения в /admin.')
         if not result.stored:
             return False
         state['ingested'] = state.get('ingested', 0)+1; state['last_ingest_at'] = now
