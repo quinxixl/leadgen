@@ -88,7 +88,8 @@ MIGRATIONS=('20260930143416_web_projects_crm.sql','20260930193638_lead_reminders
             '20261012130000_ai_prompt_admin.sql',
             '20261013120000_yookassa_payments.sql',
             '20261013140000_user_delivery_cursor.sql',
-            '20261013150000_leads_query_indexes.sql')
+            '20261013150000_leads_query_indexes.sql',
+            '20261014130000_user_leads_fk_indexes.sql')
 MIGRATIONS_DIR=Path(__file__).resolve().parent.parent/'supabase'/'migrations'
 NO_TRANSACTION_MARKER='-- leadgen:no-transaction'
 ADVISORY_LOCK_KEY=734297159
