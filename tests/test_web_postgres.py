@@ -163,7 +163,7 @@ class WebPostgres(unittest.TestCase):
                 self.db.execute('DELETE FROM settings WHERE key=?',('reader:heartbeat',))
 
     def test_migration_disables_unjoined_sources_only(self):
-        from leadgen.source_registry import JOINED_REASON, NOT_JOINED_REASON
+        from leadgen.source_registry import NOT_JOINED_REASON
         from leadgen.telegram_monitor import register_joined_chat
         sql=Path('supabase/migrations/20261011150000_disable_unjoined_sources.sql').read_text()
         rows={'pgmig_unjoined':('Потенциальные клиенты','Бизнес','{"risks": ""}',1),
@@ -189,10 +189,10 @@ class WebPostgres(unittest.TestCase):
                 'pgmig_off':(0,'83 онлайн при проверке')})
             self.assertEqual(self.db.connection.execute(sql,prepare=False).rowcount,0)  # idempotent
             self.assertEqual(len(state()),7)  # nothing deleted
-            # The reader re-enables a disabled chat once the service account follows it; a re-run keeps it.
+            # The reader never re-enables a disabled chat: it only adds the joined marker.
             self.assertTrue(register_joined_chat(self.db,'pgmig_unjoined','Чат','group'))
             self.db.connection.execute(sql,prepare=False)
-            self.assertEqual(state()['pgmig_unjoined'],(1,JOINED_REASON))
+            self.assertEqual(state()['pgmig_unjoined'],(0,NOT_JOINED_REASON))
         finally:
             self.db.connection.rollback()
 
