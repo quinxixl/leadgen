@@ -3,6 +3,7 @@ import copy
 import json
 import os
 import re
+import time
 from datetime import datetime, timedelta, timezone
 
 from . import accounts
@@ -270,6 +271,7 @@ def _send_card(db,sender,prefs,lead_id,lead,reason,matches,prefix='',ai=''):
             for project_id in matches:
                 db.execute('''INSERT INTO project_leads(project_id,user_id,lead_id) VALUES(?,?,?)
                     ON CONFLICT(project_id,lead_id) DO NOTHING''',(project_id,prefs['id'],lead_id))
+    db.release()  # never hold a transaction (and its locks) across the Telegram call
     try:
         sender('sendMessage',{'chat_id':str(prefs['telegram_chat_id']),'text':prefix+message(lead,reason,ai),
             'link_preview_options':{'is_disabled':True},'reply_markup':lead_buttons(lead_id,lead.url)})
@@ -315,34 +317,175 @@ def active_projects(db,user_id,limits):
                       (user_id,limits['projects'])).fetchall()
 
 
+def _env_int(name,default,low,high):
+    try:value=int(os.environ.get(name,'').strip() or default)
+    except ValueError:return default
+    return min(high,max(low,value))
+
+
+def cursor_lag_seconds():
+    """How old a lead must be before the per-user cursor may pass it (LEAD_CURSOR_LAG_SECONDS, default 600).
+
+    Identity ids are allocated at INSERT but become visible at COMMIT, so a lower id can appear after a higher
+    one. Any transaction shorter than the lag (statement_timeout is 120 s, idle_in_transaction 60 s) has
+    committed or rolled back before the cursor passes its ids; a longer one could have its lead skipped."""
+    return _env_int('LEAD_CURSOR_LAG_SECONDS',600,60,86400)
+
+
+def window_hours(base):
+    """Live-stream window: classify() rejects leads published more than max_age_hours ago ('вне окна свежести',
+    an hour of clock skew is tolerated), so older leads can never be delivered and are not scanned."""
+    return int(base.get('max_age_hours',72))+2
+
+
+_FLOORS={}
+
+
+def lead_id_floor(db,hours,ttl=300,clock=time.monotonic):
+    """Highest id of a lead found more than `hours` ago, 0 if none.
+
+    Walks leads_id_key backwards across the window only. Cached: the floor only grows, so a stale value merely
+    widens the scan a little."""
+    now=clock();cached=_FLOORS.get(hours)
+    if cached and cached[0]>now:return cached[1]
+    row=db.execute('''SELECT id FROM leads WHERE first_seen::timestamptz < now()-(? * interval '1 hour')
+        ORDER BY id DESC LIMIT 1''',(hours,)).fetchone()
+    floor=row['id'] if row else 0
+    _FLOORS[hours]=(now+ttl,floor)
+    return floor
+
+
+def settled_horizon(db,lag_seconds):
+    """Highest id of a lead found at least lag_seconds ago, 0 if none: the furthest any cursor may advance.
+
+    Lower ids were allocated earlier, so their inserting transactions have ended by now (see cursor_lag_seconds).
+    Walks leads_id_key backwards across the lag only."""
+    row=db.execute('''SELECT id FROM leads WHERE first_seen::timestamptz <= now()-(? * interval '1 second')
+        ORDER BY id DESC LIMIT 1''',(lag_seconds,)).fetchone()
+    return row['id'] if row else 0
+
+
+def next_cursor(cursor,horizon,pending):
+    """New low-water mark: up to the horizon, but below the oldest lead still pending for the user.
+
+    Pending: unseen leads of the scanned range that are not settled yet (plan delay, AI-score wait, the per-pass
+    limit or a stopped batch). The cursor never moves back."""
+    target=min(horizon,min(pending)-1) if pending else horizon
+    return max(cursor,target)
+
+
+def _query_canceled():
+    try:from psycopg.errors import QueryCanceled
+    except ImportError:return ()
+    return (QueryCanceled,)
+
+
 def deliver_registered(db,base,sender,limit_per_user=1):
-    """While AI scoring is on, a fresh lead waits up to AI_SCORING_WAIT_SECONDS for its shared score."""
-    from .ai_scoring import fetch_scores,scoring_enabled,wait_seconds
+    """Send each active user the newest unseen matching leads; returns the number of cards sent.
+
+    While AI scoring is on, a fresh lead waits up to AI_SCORING_WAIT_SECONDS for its shared score.
+    Each user is scanned only above user_preferences.delivery_cursor (or the freshness window), see _deliver_user.
+    No transaction stays open between users or across Telegram calls."""
+    from .ai_scoring import scoring_enabled,wait_seconds
     users=db.execute(RECIPIENTS+' ORDER BY u.id').fetchall()
+    if not users:
+        db.release();return 0
+    timing=(scoring_enabled(db),wait_seconds())
+    floor=lead_id_floor(db,window_hours(base))
+    horizon=settled_horizon(db,cursor_lag_seconds())
+    db.release()
     delivered=0
     for prefs in users:
-        config=user_config(base,prefs);processed=0;limits=recipient_limits(prefs)
-        projects=active_projects(db,prefs['id'],limits)
-        # The live stream starts at registration; older leads reach a user only through the one-time first-run batch.
-        # Free plan: a lead becomes deliverable only once the plan's delay has passed since it was found.
-        delayed,delay_args=delay_clause(limits['delay_minutes'])
-        rows=db.execute('SELECT l.id,l.payload FROM leads l WHERE '+UNSEEN+''' AND l.first_seen::timestamptz >= ?
-            AND (NOT ? OR EXISTS (SELECT 1 FROM lead_ai_scores s WHERE s.lead_id=l.id)
-                 OR l.first_seen::timestamptz < now()-(? * interval '1 second'))'''+delayed+
-            ' ORDER BY l.id DESC LIMIT 100',[prefs['id'],prefs['id'],prefs['id'],prefs['registered_at'],
-            scoring_enabled(db),wait_seconds()]+delay_args).fetchall()
-        scores=fetch_scores(db,[row['id'] for row in rows])
-        for row in rows:
-            lead=Lead(**json.loads(row['payload']))
-            allowed,reason,matches,ai,_=_ai_eligibility(db,row['id'],lead,config,prefs,projects,scores)
-            if not allowed:
-                with db:db.execute('''INSERT INTO user_leads(user_id,lead_id,delivery_status,filter_reason)
-                    VALUES(?,?,'filtered',?) ON CONFLICT(user_id,lead_id) DO NOTHING''',(prefs['id'],row['id'],reason))
-                continue
-            if not _send_card(db,sender,prefs,row['id'],lead,reason,matches,ai=ai):break
-            delivered+=1;processed+=1
-            if processed>=limit_per_user:break
+        try:delivered+=_deliver_user(db,base,sender,prefs,limit_per_user,timing,floor,horizon)
+        except _query_canceled() as exc:
+            # One slow user must not starve the others; the loop's handler covers lost connections.
+            from .observability import capture_exception
+            capture_exception(exc,user_id=prefs['id'],component='deliver_registered')
+            print(f"Доставка лидов пользователю {prefs['id']}: запрос отменён ({exc}).",flush=True)
+            db.recover()
     return delivered
+
+
+def _deliver_user(db,base,sender,prefs,limit_per_user,timing,floor,horizon):
+    config=user_config(base,prefs);limits=recipient_limits(prefs);user_id=prefs['id']
+    projects=active_projects(db,user_id,limits)
+    cursor=int(prefs['delivery_cursor'] or 0) if 'delivery_cursor' in prefs.keys() else 0
+    # Leads at or below the cursor are settled; leads at or below the floor can no longer pass classify().
+    since=max(cursor,floor)
+    # The live stream starts at registration; older leads reach a user only through the one-time first-run batch.
+    # Free plan: a lead becomes deliverable only once the plan's delay has passed since it was found.
+    delayed,delay_args=delay_clause(limits['delay_minutes'])
+    scoring,wait=timing
+    candidates=db.execute('''SELECT l.id,((NOT ? OR EXISTS (SELECT 1 FROM lead_ai_scores s WHERE s.lead_id=l.id)
+            OR l.first_seen::timestamptz < now()-(? * interval '1 second'))'''+delayed+''') AS ready
+        FROM leads l WHERE l.id > ? AND '''+UNSEEN+' AND l.first_seen::timestamptz >= ? ORDER BY l.id DESC',
+        [scoring,wait]+delay_args+[since,user_id,user_id,user_id,prefs['registered_at']]).fetchall()
+    pending={row['id'] for row in candidates}
+    ready=[row['id'] for row in candidates if row['ready']][:100]
+    rows=[]
+    if ready:
+        from .ai_scoring import fetch_scores
+        marks=','.join('?'*len(ready))
+        rows=db.execute(f'SELECT id,payload FROM leads WHERE id IN ({marks}) ORDER BY id DESC',ready).fetchall()
+        scores=fetch_scores(db,ready)
+    db.release()
+    sent=0
+    for row in rows:
+        lead=Lead(**json.loads(row['payload']))
+        allowed,reason,matches,ai,_=_ai_eligibility(db,row['id'],lead,config,prefs,projects,scores)
+        if not allowed:
+            with db:db.execute('''INSERT INTO user_leads(user_id,lead_id,delivery_status,filter_reason)
+                VALUES(?,?,'filtered',?) ON CONFLICT(user_id,lead_id) DO NOTHING''',(user_id,row['id'],reason))
+            pending.discard(row['id'])
+            continue
+        ok=_send_card(db,sender,prefs,row['id'],lead,reason,matches,ai=ai)
+        pending.discard(row['id'])  # recorded as sent or uncertain: settled either way
+        if not ok:break
+        sent+=1
+        if sent>=limit_per_user:break
+    moved=next_cursor(cursor,horizon,pending)
+    if moved>cursor and 'delivery_cursor' in prefs.keys() and 'updated_at' in prefs.keys():
+        # Compare-and-set: a filter change during this pass resets the cursor (trigger on user_leads) and bumps
+        # updated_at; the leads it re-opens must not be skipped, so the stale advance is dropped.
+        with db:db.execute('''UPDATE user_preferences SET delivery_cursor=? WHERE user_id=? AND delivery_cursor=?
+            AND updated_at=?''',(moved,user_id,cursor,prefs['updated_at']))
+    db.release()
+    return sent
+
+
+class DeliveryGate:
+    """When the worker loop runs deliver_registered instead of on every ~1 s iteration.
+
+    A pass runs on the first call, when forced (a source scan just finished), right after a pass that sent
+    something (a backlog drains one card per user per pass), when new leads arrived (max(leads.id) moved: an
+    index lookup) and at least every LEAD_DELIVERY_IDLE_SECONDS: leads waiting for an AI score or a plan delay
+    become deliverable without new inserts, and a late-committing lower id does not move max(id).
+    Passes are at least LEAD_DELIVERY_MIN_SECONDS apart unless forced."""
+    def __init__(self,min_seconds=None,idle_seconds=None,clock=time.monotonic):
+        self.min_seconds=_env_int('LEAD_DELIVERY_MIN_SECONDS',2,0,300) if min_seconds is None else min_seconds
+        self.idle_seconds=_env_int('LEAD_DELIVERY_IDLE_SECONDS',15,1,3600) if idle_seconds is None else idle_seconds
+        self.clock=clock;self.last_run=None;self.last_max=None;self.backlog=False
+
+    def _latest(self,db):
+        row=db.execute('SELECT max(id) AS id FROM leads').fetchone()
+        db.release()
+        return row['id'] if row else None
+
+    def due(self,db,force=False):
+        now=self.clock()
+        if force or self.last_run is None:
+            latest=self._latest(db)
+        else:
+            elapsed=now-self.last_run
+            if elapsed<self.min_seconds:return False
+            latest=self._latest(db)
+            if not (self.backlog or elapsed>=self.idle_seconds or latest!=self.last_max):return False
+        # Snapshot before the pass: leads inserted while it runs trigger the next one.
+        self.last_run=now;self.last_max=latest
+        return True
+
+    def ran(self,delivered):
+        self.backlog=bool(delivered)
 
 
 def backfill_first_leads(db,base,sender,user_id,limit=FIRST_RUN_LIMIT,hours=FIRST_RUN_HOURS):
@@ -350,19 +493,21 @@ def backfill_first_leads(db,base,sender,user_id,limit=FIRST_RUN_LIMIT,hours=FIRS
 
     A settings marker makes the batch one-time; user_leads rows keep the live stream from repeating them."""
     prefs=db.execute(RECIPIENTS+' AND u.id=?',(user_id,)).fetchone()
-    if not prefs:return 0
+    if not prefs:
+        db.release();return 0
     with db:
         claimed=db.execute('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO NOTHING RETURNING key',
             (f'first_run:{user_id}',json.dumps(datetime.now(timezone.utc).isoformat()))).fetchone()
     if not claimed:return 0
     if db.execute("SELECT 1 FROM user_leads WHERE user_id=? AND delivery_status IN ('sent','uncertain') LIMIT 1",(user_id,)).fetchone():
-        return 0
+        db.release();return 0
     config=user_config(base,prefs);limits=recipient_limits(prefs)
     projects=active_projects(db,user_id,limits)
     delayed,delay_args=delay_clause(limits['delay_minutes'])
-    rows=db.execute('SELECT l.id,l.payload,l.fingerprint FROM leads l WHERE '+UNSEEN+''' AND
+    # The id floor bounds the backwards walk to the window: first_seen is text, its cast cannot use an index.
+    rows=db.execute('SELECT l.id,l.payload,l.fingerprint FROM leads l WHERE l.id > ? AND '+UNSEEN+''' AND
         l.first_seen::timestamptz >= now()-(? * interval '1 hour')'''+delayed+' ORDER BY l.id DESC LIMIT 500',
-        [user_id,user_id,user_id,hours]+delay_args).fetchall()
+        [lead_id_floor(db,hours),user_id,user_id,user_id,hours]+delay_args).fetchall()
     candidates=[]
     from .ai_scoring import fetch_scores
     scores=fetch_scores(db,[row['id'] for row in rows])
@@ -370,6 +515,7 @@ def backfill_first_leads(db,base,sender,user_id,limit=FIRST_RUN_LIMIT,hours=FIRS
         lead=Lead(**json.loads(row['payload']))
         allowed,reason,matches,ai,ai_score=_ai_eligibility(db,row['id'],lead,config,prefs,projects,scores)
         if allowed:candidates.append(((ai_score or 0,lead.score),row['id'],row['fingerprint'],lead,reason,matches,ai))
+    db.release()
     candidates.sort(key=lambda item:(item[0],item[1]),reverse=True)
     sent=0;fingerprints=set()
     for _,lead_id,fingerprint,lead,reason,matches,ai in candidates:
@@ -400,6 +546,7 @@ def notify_subscriptions(db,sender,limit=20):
               -- Autorenewing subscriptions are charged instead; leadgen.payments reports the outcome.
               AND NOT (s.autorenew AND s.payment_method_id IS NOT NULL AND s.provider='yookassa')) due
         WHERE NOT EXISTS (SELECT 1 FROM settings WHERE key=due.marker) ORDER BY ends_at LIMIT ?''',(limit,)).fetchall()
+    db.release()
     sent=0
     for row in rows:
         if is_unlimited(row["telegram_user_id"]):continue
@@ -682,7 +829,7 @@ class ProductController:
             from .observability import capture_exception
             capture_exception(exc,user_id=user['id'],component='first_leads')
             print('Первые лиды: '+type(exc).__name__,flush=True)
-            self.db.connection.rollback()
+            self.db.recover()
             return 0
 
     def _launch(self,user):

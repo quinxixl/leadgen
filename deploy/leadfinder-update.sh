@@ -23,6 +23,6 @@ docker compose "$@" build --pull
 if [ -f leadgen/web_migrate.py ]; then
     docker compose "$@" run --rm --no-deps leadfinder python -m leadgen.web_migrate
 fi
-docker compose "$@" up -d --remove-orphans --wait --wait-timeout 120
+docker compose "$@" up -d --remove-orphans --wait --wait-timeout 180
 docker compose "$@" ps
 printf '%s\n' "$remote" > .leadfinder-deployed-sha
