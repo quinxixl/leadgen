@@ -138,7 +138,7 @@ class BotUX(unittest.TestCase):
         with self.db:
             self.db.execute('DELETE FROM user_leads WHERE user_id=?',(self.u,))
             self.db.execute('UPDATE user_preferences SET monitoring_active=true,show_without_budget=true WHERE user_id IN (?,?)',(self.u,self.other))
-            self.db.execute("UPDATE leads SET first_seen=(now()-interval '3 hours')::text")
+            self.db.execute("UPDATE leads SET first_seen=(now()-interval '3 hours')")
         sent=[];send=lambda method,data:sent.append(data)
         self.assertEqual(backfill_pending(self.db,CONFIG,send),2)
         self.assertEqual([item['chat_id'] for item in sent],['1','1'])

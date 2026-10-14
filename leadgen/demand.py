@@ -1,11 +1,10 @@
 """Demand report derived only from a workspace's actual leads."""
-import json
 from collections import Counter
 from datetime import datetime
 
 from flask import abort, g, render_template, request
 
-from .core import Lead, enrich
+from .core import stored_lead
 
 
 WEEKDAYS=('Понедельник','Вторник','Среда','Четверг','Пятница','Суббота','Воскресенье')
@@ -19,11 +18,11 @@ def register_demand(app,db):
         if days not in (7,30,90):abort(400)
         rows=db().execute('''SELECT l.payload FROM user_leads ul JOIN leads l ON l.id=ul.lead_id
             WHERE ul.user_id=? AND ul.delivery_status<>'filtered'
-            AND l.first_seen::timestamptz>=now()-(? * interval '1 day') ORDER BY l.id DESC LIMIT 10000''',
+            AND l.first_seen>=now()-(? * interval '1 day') ORDER BY l.id DESC LIMIT 10000''',
             (g.owner_id,days)).fetchall()
         topics=Counter();temperatures=Counter();weekdays=Counter();hours=Counter();direct=0;possible=0
         for row in rows:
-            lead=enrich(Lead(**json.loads(row['payload'])))
+            lead=stored_lead(row['payload'])
             if 'Направление: ' in lead.summary:
                 topics.update(lead.summary.split('Направление: ',1)[1].split('\n',1)[0].split(', '))
             temperatures[lead.temperature]+=1

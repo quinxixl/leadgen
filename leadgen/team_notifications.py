@@ -1,5 +1,6 @@
 """Durable Telegram notification for a lead assignment."""
-import json
+
+from .core import lead_data
 
 
 def deliver_assignments(db,sender,limit=5):
@@ -18,7 +19,7 @@ def deliver_assignments(db,sender,limit=5):
             if not row:break
             db.execute("""UPDATE lead_assignments SET notification_status='sending',notification_updated_at=now()
                 WHERE workspace_id=? AND lead_id=?""",(row['workspace_id'],row['lead_id']))
-        lead=json.loads(row['payload'])
+        lead=lead_data(row['payload'])
         text=(f"Вам назначен лид в команде «{row['workspace_name']}».\n\n"
               f"{lead['title']}\n{lead['source']}\n\n{lead['url']}")[:3900]
         payload={'chat_id':str(row['telegram_chat_id']),'text':text,'disable_web_page_preview':True}

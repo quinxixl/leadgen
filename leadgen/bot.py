@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from .adapters import collect, error_label
 from .app import telegram, ingest, deliver, send_lead, classify_for_config, env_load, notification_chat_ids
-from .core import TOPICS, Lead, UTC, classify
+from .core import TOPICS, UTC, classify, load_lead
 from .heartbeat import beat
 from .observability import capture_exception
 
@@ -64,7 +64,7 @@ class Controller:
         with self.db:
             # Rebuild eligible queue when filters change, preserving sent/uncertain entries.
             self.db.execute("UPDATE leads SET status='review' WHERE status NOT IN ('sent','sending','uncertain')")
-            for row in rows:ingest(self.db,Lead(**json.loads(row['payload'])),config)
+            for row in rows:ingest(self.db,load_lead(row['payload']),config)
 
     def services(self):
         chosen=self.config()['topics']
@@ -88,7 +88,7 @@ class Controller:
         candidates=[]
         identity='id' if self.db.backend=='postgres' else 'rowid AS id'
         for row in self.db.execute(f'SELECT {identity},payload,reason FROM leads ORDER BY first_seen DESC,id DESC'):
-            lead=Lead(**json.loads(row['payload']))
+            lead=load_lead(row['payload'])
             state,reason=classify_for_config(lead,config)
             if state==('review' if review else 'ready'):
                 candidates.append((row,lead,reason))
@@ -147,7 +147,7 @@ class Controller:
             elif prefix=='show' and value.isdigit():
                 identity='id' if self.db.backend=='postgres' else 'rowid'
                 row=self.db.execute(f'SELECT payload,reason FROM leads WHERE {identity}=?',(int(value),)).fetchone()
-                if row:send_lead(Lead(**json.loads(row['payload'])),row['reason'],self.owner,self.sender)
+                if row:send_lead(load_lead(row['payload']),row['reason'],self.owner,self.sender)
             return
         text=msg.get('text','').strip()
         if text=='/cancel':
