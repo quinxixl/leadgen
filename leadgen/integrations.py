@@ -113,7 +113,11 @@ def enqueue_lead_event(db,owner_user_id,lead_id,event_type='lead.updated'):
 
 def deliver_webhooks(db,cipher_key,sender=send_webhook,resolver=socket.getaddrinfo,limit=5):
     if not integrations_enabled():return 0
-    cipher=SessionCipher(cipher_key);delivered=0
+    try:cipher=SessionCipher(cipher_key)
+    except TelegramAccountError:
+        # A broken server key is fixable: leave the queue untouched instead of killing the events.
+        print('Webhook: ключ шифрования не настроен, доставка пропущена',flush=True);return 0
+    delivered=0
     with db:db.execute("UPDATE webhook_outbox SET status='failed',last_error='Предыдущая отправка прервана' WHERE status='processing' AND next_attempt_at<now()-interval '5 minutes'")
     for _ in range(limit):
         with db:
@@ -125,7 +129,15 @@ def deliver_webhooks(db,cipher_key,sender=send_webhook,resolver=socket.getaddrin
                 db.execute("UPDATE webhook_outbox SET status='dead',last_error='Webhook отключён' WHERE id=?",(row['id'],));continue
             db.execute("UPDATE webhook_outbox SET status='processing',attempts=attempts+1,next_attempt_at=now() WHERE id=?",(row['id'],))
         body=json.dumps(row['payload'],ensure_ascii=False,separators=(',',':')).encode()
-        secret=cipher.decrypt(row['secret_cipher'])['secret'].encode()
+        try:
+            secret=cipher.decrypt(row['secret_cipher'])['secret'].encode()
+        except (TelegramAccountError,KeyError,TypeError,AttributeError) as exc:
+            # A secret that cannot be decrypted (rotated key, damaged row) never heals by retrying:
+            # the event is dropped as dead instead of crashing the bot loop every few minutes.
+            print(f"Webhook {row['webhook_id']}: секрет не расшифровывается ({type(exc).__name__}), событие {row['id']} снято",flush=True)
+            with db:db.execute("UPDATE webhook_outbox SET status='dead',last_error=? WHERE id=?",
+                               ('Секрет webhook не расшифровывается: пересоздайте webhook',row['id']))
+            continue
         signature='sha256='+hmac.new(secret,body,hashlib.sha256).hexdigest()
         try:sender(row['url'],body,{'Content-Type':'application/json','User-Agent':'Signalid-Webhook/1.0',
             'X-Signalid-Signature':signature,'X-Leadfinder-Signature':signature},resolver)
