@@ -117,6 +117,14 @@ def plan_limits(code):
     return LIMITS.get(code, LIMITS['free'])
 
 
+# The public API and webhooks come with every running non-free plan: paid, trial, beta «Старт» and service accounts.
+INTEGRATION_PLANS = frozenset(LIMITS) - {'free'}
+
+
+def plan_includes_integrations(code):
+    return code in INTEGRATION_PLANS
+
+
 def _env_ids(*names):
     return {value.strip() for name in names for value in os.environ.get(name, '').split(',') if value.strip()}
 
