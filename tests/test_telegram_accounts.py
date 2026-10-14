@@ -264,3 +264,162 @@ class FlowsEndReadTransaction(unittest.TestCase):
         self.assertEqual([item for item in self.journal if item.startswith('gateway:')],
                          ['gateway:dialogs', 'gateway:logout', 'gateway:wait_qr', 'gateway:resend', 'gateway:begin_qr'])
 
+
+
+class StopLoop(BaseException):
+    pass
+
+
+class FakeClient:
+    def __init__(self, authorized=True, connect=None, run=None):
+        self.authorized, self.connect_impl, self.run_impl = authorized, connect, run
+        self.disconnects = 0
+
+    async def connect(self):
+        if self.connect_impl:
+            await self.connect_impl()
+
+    async def is_user_authorized(self):
+        return self.authorized
+
+    async def run_until_disconnected(self):
+        if self.run_impl:
+            await self.run_impl()
+
+    async def disconnect(self):
+        self.disconnects += 1
+
+
+class PersonalClientLifecycle(unittest.TestCase):
+    def test_disconnects_when_session_is_revoked(self):
+        client = FakeClient(authorized=False)
+        with self.assertRaises(TelegramAccountError):
+            asyncio.run(ta.serve_personal_client(client, 1))
+        self.assertEqual(client.disconnects, 1)
+
+    def test_disconnects_on_network_error(self):
+        async def fail():
+            raise ConnectionError('reset')
+        client = FakeClient(run=fail)
+        with self.assertRaises(ConnectionError):
+            asyncio.run(ta.serve_personal_client(client, 1))
+        self.assertEqual(client.disconnects, 1)
+
+    def test_disconnects_when_cancelled_during_connect(self):
+        client = FakeClient(connect=lambda: asyncio.sleep(30))
+
+        async def scenario():
+            task = asyncio.create_task(ta.serve_personal_client(client, 1))
+            await asyncio.sleep(0.01)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+        asyncio.run(scenario())
+        self.assertEqual(client.disconnects, 1)
+
+    def test_ready_hook_failure_keeps_connection(self):
+        async def broken_hook():
+            raise RuntimeError('db down')
+        client = FakeClient()
+        with redirect_quiet():
+            asyncio.run(ta.serve_personal_client(client, 1, on_ready=broken_hook))
+        self.assertEqual(client.disconnects, 1)
+
+
+def redirect_quiet():
+    import contextlib
+    import io
+    return contextlib.redirect_stdout(io.StringIO())
+
+
+class PersonalConnectionBackoff(unittest.TestCase):
+    def run_keep(self, outcomes, clock=None):
+        recorded, sleeps, logs = [], [], []
+        outcomes = list(outcomes)
+
+        async def attempt():
+            outcome = outcomes.pop(0)
+            if outcome is not None:
+                raise outcome
+
+        async def record(user_id, text):
+            recorded.append((user_id, text))
+
+        async def sleep(seconds):
+            sleeps.append(seconds)
+            if not outcomes:
+                raise StopLoop()
+        try:
+            asyncio.run(ta.keep_personal_connection(7, attempt, record, sleep=sleep,
+                                                    clock=clock or (lambda: 0.0), log=logs.append))
+        except StopLoop:
+            pass
+        return recorded, sleeps, logs
+
+    def test_transient_errors_retry_with_backoff_and_never_raise(self):
+        recorded, sleeps, _ = self.run_keep([ConnectionError('x'), OSError('y'), asyncio.TimeoutError(), None])
+        self.assertEqual(sleeps, [5, 10, 20, 40])
+        self.assertEqual(len(recorded), 4)
+        self.assertTrue(all(user_id == 7 and text.startswith('Временная ошибка') for user_id, text in recorded))
+
+    def test_revoked_session_propagates_without_retry(self):
+        from telethon import errors
+        for error in (TelegramAccountError('revoked'), errors.AuthKeyUnregisteredError(request=None),
+                      errors.SessionRevokedError(request=None)):
+            with self.subTest(error=type(error).__name__):
+                with self.assertRaises(type(error)):
+                    self.run_keep([error, None])
+
+    def test_flood_wait_waits_requested_seconds(self):
+        from telethon import errors
+        flood = errors.FloodWaitError(request=None, capture=120)
+        _, sleeps, _ = self.run_keep([flood])
+        self.assertEqual(sleeps, [121])
+
+    def test_backoff_is_capped_and_reset_after_healthy_run(self):
+        _, sleeps, _ = self.run_keep([OSError()] * 8)
+        self.assertEqual(sleeps, [5, 10, 20, 40, 80, 160, 300, 300])
+        now = [0.0]
+
+        def clock():
+            now[0] += 700  # every attempt ran longer than HEALTHY_RUN_SECONDS
+            return now[0]
+        _, sleeps, _ = self.run_keep([OSError()] * 3, clock=clock)
+        self.assertEqual(sleeps, [5, 5, 5])
+
+    def test_record_failure_does_not_stop_retries(self):
+        sleeps = []
+
+        async def attempt():
+            raise ConnectionError()
+
+        async def record(user_id, text):
+            raise RuntimeError('db down')
+
+        async def sleep(seconds):
+            sleeps.append(seconds)
+            if len(sleeps) == 2:
+                raise StopLoop()
+        with self.assertRaises(StopLoop):
+            asyncio.run(ta.keep_personal_connection(1, attempt, record, sleep=sleep, log=lambda _: None))
+        self.assertEqual(sleeps, [5, 10])
+
+
+class ManagerLoop(unittest.TestCase):
+    def test_iteration_exception_does_not_kill_the_loop(self):
+        calls, sleeps, reports = [], [], []
+
+        async def iteration():
+            calls.append(1)
+            if len(calls) == 1:
+                raise KeyError('boom')
+
+        async def sleep(seconds):
+            sleeps.append(seconds)
+            if len(sleeps) == 3:
+                raise StopLoop()
+        with self.assertRaises(StopLoop):
+            asyncio.run(ta.run_forever(iteration, interval=15, sleep=sleep, log=lambda _: None, report=reports.append))
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(sleeps, [15, 15, 15])
+        self.assertEqual([type(exc) for exc in reports], [KeyError])
