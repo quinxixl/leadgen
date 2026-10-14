@@ -559,11 +559,11 @@ def is_unauthorized(exc):
     return isinstance(exc, (UnauthorizedError, AuthKeyError, AuthKeyNotFound))
 
 
-def _alert(exc, **tags):
+def _alert(exc, component='telegram_reader', **tags):
     """Owner alert + Sentry for unexpected reader failures; never breaks the supervisor."""
     try:
         from .observability import capture_exception
-        capture_exception(exc, component='telegram_reader', **tags)
+        capture_exception(exc, component=component, **tags)
     except Exception:
         pass
 
@@ -646,18 +646,22 @@ def run_monitor(db_path, config, *, client_factory=None, sleep=time.sleep, max_a
 
 
 class ReaderThread:
-    """Owns the shared reader thread: start once, restart if it ever dies (at most once a minute)."""
-    def __init__(self, target, clock=time.monotonic, restart_delay=60, log=_log):
+    """Owns a long-running monitor thread: start once, restart if it ever dies (at most once a minute).
+
+    Used for the shared reader and for the personal-monitors manager (`name`, `label`, `component`)."""
+    def __init__(self, target, clock=time.monotonic, restart_delay=60, log=_log,
+                 name='telegram-reader', label='Монитор Telegram', component='telegram_reader'):
         self.target, self.clock, self.restart_delay, self.log = target, clock, restart_delay, log
+        self.name, self.label, self.component = name, label, component
         self.thread = None; self.next_start = 0.0
 
     def _run(self):
         try:
             self.target()
-            self.log('Монитор Telegram остановлен: поток чтения завершился; будет перезапущен.')
+            self.log(f'{self.label} остановлен: поток чтения завершился; будет перезапущен.')
         except Exception as exc:
-            self.log('Монитор Telegram остановлен: '+safe_error(exc)+'; поток будет перезапущен.')
-            _alert(exc, reader_state='thread_crash')
+            self.log(f'{self.label} остановлен: '+safe_error(exc)+'; поток будет перезапущен.')
+            _alert(exc, component=self.component, reader_state='thread_crash')
 
     def ensure(self):
         """'started' on the first start, 'restarted' after a dead thread, None when nothing changed."""
@@ -666,11 +670,11 @@ class ReaderThread:
         if self.clock() < self.next_start:
             return None
         restarted = self.thread is not None
-        self.thread = threading.Thread(target=self._run, daemon=True, name='telegram-reader')
+        self.thread = threading.Thread(target=self._run, daemon=True, name=self.name)
         self.thread.start()
         self.next_start = self.clock()+self.restart_delay
         if restarted:
-            self.log('Монитор Telegram: поток чтения перезапущен.')
+            self.log(f'{self.label}: поток чтения перезапущен.')
         return 'restarted' if restarted else 'started'
 
 

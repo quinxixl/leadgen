@@ -415,6 +415,22 @@ class Supervisor(unittest.TestCase):
         self.assertTrue(any('поток чтения завершился' in line for line in logs))
 
 
+    def test_personal_monitors_thread_restarts_with_its_own_label_and_component(self):
+        now = [0.0]; logs = []; runs = []
+        def crash():
+            runs.append(1); raise RuntimeError('manager died')
+        keeper = tm.ReaderThread(crash, clock=lambda: now[0], log=logs.append, name='personal-monitors',
+                                 label='Менеджер личных Telegram-подключений', component='personal_monitors')
+        with mock.patch('leadgen.observability.capture_exception') as capture:
+            self.assertEqual(keeper.ensure(), 'started'); keeper.thread.join(2)
+            self.assertEqual(keeper.thread.name, 'personal-monitors')
+            now[0] = 61
+            self.assertEqual(keeper.ensure(), 'restarted'); keeper.thread.join(2)
+        self.assertEqual(len(runs), 2)
+        self.assertTrue(all(c.kwargs['component'] == 'personal_monitors' for c in capture.call_args_list))
+        self.assertTrue(any(line.startswith('Менеджер личных Telegram-подключений остановлен') for line in logs))
+
+
 class Monitor(DbCase):
     def test_run_monitor_recovers_reads_channels_and_beats(self):
         public = chat('Orders_Channel', 'Заказы IT')
