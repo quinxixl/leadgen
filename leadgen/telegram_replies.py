@@ -5,7 +5,7 @@ import re
 import secrets
 from datetime import datetime, timedelta, timezone
 
-from .telegram_accounts import SessionCipher, TelegramAccountError, TelethonGateway
+from .telegram_accounts import TelegramAccountError, TelethonGateway
 
 
 MODES = {'dm': 'В личку автору', 'group': 'Ответом в группе'}

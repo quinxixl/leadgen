@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from .adapters import collect, error_label
 from .app import telegram, ingest, deliver, send_lead, classify_for_config, env_load, notification_chat_ids
-from .core import TOPICS, Lead, UTC, classify
+from .core import TOPICS, Lead, UTC
 from .heartbeat import beat
 from .observability import capture_exception
 
