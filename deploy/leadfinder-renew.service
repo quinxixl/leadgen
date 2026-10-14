@@ -5,5 +5,19 @@ After=network-online.target docker.service
 
 [Service]
 Type=oneshot
+# Not root: a dedicated account in the docker group (created by deploy/install-auto-update.sh).
+User=leadfinder-deploy
+Group=leadfinder-deploy
+SupplementaryGroups=docker
 WorkingDirectory=/opt/leadfinder
 ExecStart=/opt/leadfinder/deploy/leadfinder-renew.sh
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+# Only `docker compose exec`: nothing in the checkout is written, the docker CLI keeps its state in HOME.
+ReadWritePaths=/var/lib/leadfinder-deploy
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes

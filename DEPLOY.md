@@ -222,6 +222,35 @@ sudo deploy/install-auto-update.sh
 
 Таймер каждые пять минут сравнивает локальный коммит с `origin/main`. Если в GitHub появился новый коммит, сервер выполняет fast-forward, собирает образ и перезапускает контейнер. `.env` и `leadgen/data/telegram_reader.session` не затрагиваются.
 
+### Обновление идёт не от root
+
+Сервисы `leadfinder-update` и `leadfinder-renew` работают от системного пользователя `leadfinder-deploy`. У него нет пароля и входа в оболочку. Он состоит в группе `docker`, а домашний каталог у него `/var/lib/leadfinder-deploy`. Systemd дополнительно ограничивает сервисы. `NoNewPrivileges` запрещает повышать права через sudo и setuid. `ProtectSystem=strict` делает файловую систему доступной только для чтения, кроме `/opt/leadfinder` и домашнего каталога. `PrivateTmp` даёт сервису собственный `/tmp`.
+
+Установщик выполняет эти шаги сам, и запускать его повторно безопасно:
+
+1. Создаёт `leadfinder-deploy`, если такого пользователя ещё нет, и добавляет его в группу `docker`.
+2. Передаёт ему владение `/opt/leadfinder`, включая `.git` и `.env`. Каталог `leadgen/data` остаётся за пользователем контейнера (uid 10001).
+3. Ставит обновлённые юниты. Если `leadfinder-renew.service` уже был установлен, юнит заменяется, а состояние таймера сохраняется.
+
+Что сделать на сервере, где автообновление уже работало от root:
+
+```sh
+cd /opt/leadfinder
+sudo git pull --ff-only          # последний раз от root, чтобы получить новый установщик
+sudo deploy/install-auto-update.sh
+sudo systemctl start leadfinder-update.service
+sudo journalctl -u leadfinder-update.service -n 50 --no-pager
+sudo systemctl start leadfinder-renew.service   # только если продление уже было включено
+sudo journalctl -u leadfinder-renew.service -n 50 --no-pager
+```
+
+Проверьте ещё два момента:
+
+- `git -C /opt/leadfinder remote get-url origin` должен начинаться с `https://`. Если используется SSH-ключ из `/root/.ssh`, сервис его больше не увидит. Положите deploy-ключ в `/var/lib/leadfinder-deploy/.ssh/` с владельцем `leadfinder-deploy` и правами `600`.
+- Ручные git-команды в `/opt/leadfinder` выполняйте от владельца: `sudo -u leadfinder-deploy git -C /opt/leadfinder status`. Иначе git откажет с ошибкой `dubious ownership`.
+
+Членство в группе `docker` по сути даёт права root через Docker API. Отдельный пользователь не делает Docker безопаснее. Зато скрипт из репозитория больше не исполняется напрямую от root, не может менять системные файлы вне разрешённых путей и не получает новые привилегии.
+
 Проверка таймера и журнала обновлений:
 
 ```sh

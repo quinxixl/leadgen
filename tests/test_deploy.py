@@ -26,3 +26,21 @@ class Updater(unittest.TestCase):
             self.assertIn('--wait',calls)
             self.assertEqual(subprocess.run(['sh',str(script)],env=env,capture_output=True).returncode,0)
             self.assertEqual(calls,(root/'calls').read_text())
+
+
+class Units(unittest.TestCase):
+    def test_units_run_as_deploy_user_with_hardening(self):
+        for name in ('leadfinder-update.service','leadfinder-renew.service'):
+            text=Path('deploy/'+name).read_text()
+            for line in ('User=leadfinder-deploy','SupplementaryGroups=docker','NoNewPrivileges=yes',
+                         'PrivateTmp=yes','ProtectSystem=strict','ReadWritePaths='):
+                self.assertIn(line,text,name)
+            self.assertNotIn('User=root',text)
+        self.assertIn('ReadWritePaths=/opt/leadfinder ',Path('deploy/leadfinder-update.service').read_text())
+
+    def test_installer_creates_user_idempotently_and_keeps_container_data(self):
+        text=Path('deploy/install-auto-update.sh').read_text()
+        self.assertIn('if ! id -u "$DEPLOY_USER"',text)
+        self.assertIn('usermod -aG docker "$DEPLOY_USER"',text)
+        self.assertIn('-path "$APP_DIR/leadgen/data" -prune',text)
+        self.assertEqual(subprocess.run(['sh','-n','deploy/install-auto-update.sh']).returncode,0)
