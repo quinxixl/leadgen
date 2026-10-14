@@ -3,12 +3,14 @@ import json
 import os
 import tempfile
 import unittest
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import urlsplit, urlunsplit
 
 import test_web_postgres as fixtures
+from leadgen import demand
 from leadgen.app import ingest
 from leadgen.core import Lead, enrich, lead_data, load_lead, message, stored_lead
 from leadgen.database import db_open
@@ -59,6 +61,22 @@ class StoredEnrichment(unittest.TestCase):
             self.assertEqual(stored,enrich(bare))
             self.assertTrue(stored.summary and stored.temperature)
             db.close()
+
+
+def legacy_report(payloads):
+    """The /app/demand algorithm before the SQL aggregation: json.loads + enrich for every row."""
+    topics=Counter();temperatures=Counter();weekdays=Counter();hours=Counter();direct=possible=0
+    for payload in payloads:
+        lead=enrich(Lead(**lead_data(payload)))
+        if 'Направление: ' in lead.summary:
+            topics.update(lead.summary.split('Направление: ',1)[1].split('\n',1)[0].split(', '))
+        temperatures[lead.temperature]+=1
+        if lead.intent=='possible':possible+=1
+        elif lead.intent=='direct':direct+=1
+        try:
+            moment=datetime.fromisoformat(lead.published);weekdays[moment.weekday()]+=1;hours[moment.hour]+=1
+        except (TypeError,ValueError):pass
+    return len(payloads),topics,temperatures,direct,possible,weekdays,hours
 
 
 @unittest.skipUnless(fixtures.DSN,'WEB_TEST_DATABASE_URL is not configured')
@@ -217,6 +235,25 @@ class TypedColumnsPostgres(unittest.TestCase):
         self.assertEqual(legacy['score'],enrich(load_lead(self.db.execute('SELECT payload FROM leads WHERE id=?',
                                                                           (self.ids[0],)).fetchone()['payload'])).score)
 
+    def test_demand_aggregation_matches_previous_algorithm(self):
+        samples=[fresh_lead('https://ex/d1'),
+                 fresh_lead('https://ex/d2','Посоветуйте подрядчика','Клиенты теряются, заявки пропадают в excel'),
+                 fresh_lead('https://ex/d3','Сайт и бот','Нужен лендинг и чат-бот срочно до завтра, @contact_me'),
+                 fresh_lead('https://ex/d4','Интернет-магазин','Ищем разработчика интернет-магазина')]
+        samples[2].published='2026-10-13T23:30:00+05:00';samples[3].published='не дата'
+        for index,lead in enumerate(samples):self.add_lead(lead,stored=index%2==0)
+        self.add_lead(fresh_lead('https://ex/foreign'),owner=self.other)
+        self.add_lead(fresh_lead('https://ex/old'),first_seen=(datetime.now(timezone.utc)-timedelta(days=40)).isoformat())
+        payloads=[row['payload'] for row in self.db.execute('''SELECT l.payload FROM user_leads ul JOIN leads l ON l.id=ul.lead_id
+            WHERE ul.user_id=? AND ul.delivery_status<>'filtered' AND l.first_seen>=now()-interval '30 days' ''',(self.u,)).fetchall()]
+        total,topics,temperatures,direct,possible,weekdays,hours=legacy_report(payloads)
+        got_total,got_topics,got_temperatures,intents,published=demand.demand_counts(self.db,self.u,30)
+        got_weekdays,got_hours=demand.publication_counts(published)
+        self.assertEqual(total,5)
+        self.assertEqual((got_total,got_topics,got_temperatures,intents['direct'],intents['possible'],got_weekdays,got_hours),
+                         (total,topics,temperatures,direct,possible,weekdays,hours))
+        page=self.client.get('/app/demand?days=30').text
+        self.assertIn(f'Всего запросов</span><strong>{total}',page)
 
 
 if __name__=='__main__':
