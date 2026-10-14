@@ -288,6 +288,8 @@ def score_pending(db,scorer=groq_score,limit=None,max_age=None):
     model=prompt['model'];prompt_id=prompt['id']
     try:
         examples=feedback_examples(db,fewshot_count(prompt))
+        # The reads above opened an implicit transaction: never hold it (idle in transaction) during the LLM call.
+        db.release()
         results,usage=scorer(batch,examples,model=model,prompt=prompt)
     except Exception as exc:
         db.connection.rollback()
