@@ -5,10 +5,9 @@ import os
 import time
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
 from .adapters import collect, error_label
-from .app import telegram, ingest, deliver, send_lead, classify_for_config, env_load, notification_chat_ids
-from .core import TOPICS, Lead, UTC
+from .app import telegram, ingest, deliver, send_lead, classify_for_config, env_load, notification_chat_ids, record_health
+from .core import TOPICS, Lead
 from .heartbeat import beat
 from .observability import capture_exception
 
@@ -16,6 +15,12 @@ MENU = {'keyboard':[[{'text':'▶️ Начать'},{'text':'⏸ Останов�
     [{'text':'🔎 Найти сейчас'},{'text':'📋 Объявления'}],
     [{'text':'🧩 Услуги'},{'text':'💰 Бюджет'}],
     [{'text':'⚙️ Источники'},{'text':'📊 Статус'}]],'resize_keyboard':True,'is_persistent':True}
+
+def reader_ready():
+    """The group reader can start: API parameters and a session exist (re-reads .env, setup can finish at runtime)."""
+    env_load()
+    from .telegram_monitor import reader_configured
+    return reader_configured()
 
 def collect_batch(config):
     result=[]
@@ -77,8 +82,8 @@ class Controller:
         for source in self.config()['sources']:
             if source['kind']=='pending':continue
             keys.append([{'text':('✅ ' if source['enabled'] else '⬜️ ')+source['name'],'callback_data':'source:'+source['id']}])
-        from .source_registry import read_count
-        registry={row['status']:row['total'] for row in self.db.execute('SELECT status,count(*) AS total FROM telegram_sources GROUP BY status')}
+        from .source_registry import read_count, registry_stats
+        registry=registry_stats(self.db)
         note=(f"\n\nTelegram: служебный аккаунт читает {read_count(self.db)} чатов в реальном времени; "
               f"в базе {sum(registry.values())} источников, ожидают проверки {registry.get('pending',0)+registry.get('retry',0)}.")
         self.say('Источники. hh показывает проектные вакансии только на проверке. Авито и Kwork пока недоступны.'+note,{'inline_keyboard':keys})
@@ -176,15 +181,15 @@ class Controller:
             lines += [f"{'✅' if r['ok'] else '⚠️'} {r['source']}: {r['count']} записей · {r['checked']}" for r in rows]
             uncertain=self.db.execute("SELECT count(*) AS total FROM leads WHERE status='uncertain'").fetchone()['total']
             if uncertain:lines.append(f'Не подтверждена отправка {uncertain} объявлений; проверьте историю чата.')
-            registry={row['status']:row['total'] for row in self.db.execute('SELECT status,count(*) AS total FROM telegram_sources GROUP BY status')}
+            from .source_registry import read_count, registry_stats
+            registry=registry_stats(self.db)
             if registry:
-                from .source_registry import read_count
                 lines.append(f"Telegram: служебный аккаунт читает {read_count(self.db)} чатов; в базе активны {registry.get('active',0)}, "
                              f"неактивны {registry.get('inactive',0)}, не чаты {registry.get('not_chat',0)}, "
                              f"ждут проверки {registry.get('pending',0)+registry.get('retry',0)}")
-                from .telegram_monitor import reader_configured, reader_status
+                from .telegram_monitor import reader_status
                 state=reader_status(self.db)['state']
-                reader=('нужна однократная настройка Telegram-аккаунта' if not reader_configured() else
+                reader=('нужна однократная настройка Telegram-аккаунта' if not reader_ready() else
                         'подключено' if state=='running' else
                         'сессия не авторизована, выполните setup-telegram' if state=='unauthorized' else
                         'не работает ('+state+')')
@@ -230,17 +235,14 @@ def run_bot(db,config):
         raise ValueError('У бота настроен webhook. Используйте отдельного бота без webhook для локального запуска.')
     print('Бот работает. Откройте Telegram и отправьте /start. Ctrl+C — выход.',flush=True)
     db_target=db.target
-    from .telegram_monitor import ReaderThread, reader_configured
+    from .telegram_monitor import ReaderThread
     def read_groups():
         from .telegram_monitor import run_monitor
         run_monitor(db_target,config)
     # One supervised reader thread; if it ever dies, the polling loop below starts it again.
     reader=ReaderThread(read_groups)
     def start_reader_if_ready():
-        env_load()
-        if not reader_configured():
-            return False
-        return reader.ensure()=='started'
+        return reader_ready() and reader.ensure()=='started'
     if not start_reader_if_ready():
         print('Чтение групп не запущено: выполните setup-telegram после добавления API-параметров.',flush=True)
     if product_mode and all(os.getenv(key) for key in ('TELEGRAM_API_ID','TELEGRAM_API_HASH','TELEGRAM_SESSION_ENCRYPTION_KEY')):
@@ -290,10 +292,7 @@ def run_bot(db,config):
                     with db:
                         for source,leads,error in batch:
                             for lead in leads:ingest(db,lead,ui.config())
-                            db.execute('''INSERT INTO health(source,checked,ok,count,error) VALUES(?,?,?,?,?)
-                                ON CONFLICT(source) DO UPDATE SET checked=excluded.checked,ok=excluded.ok,
-                                count=excluded.count,error=excluded.error''',
-                                (source,datetime.now(UTC).isoformat(),int(error is None),len(leads),error))
+                            record_health(db,source,len(leads),error)
                     if ui.manual or ui.get('active',False):
                         ui.drain=True
                         failures=sum(bool(e) for _,_,e in batch)
