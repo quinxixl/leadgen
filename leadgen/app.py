@@ -242,7 +242,7 @@ def main():
     parser = argparse.ArgumentParser(description='IT-лиды от 5 000 ₽')
     parser.add_argument('command',choices=['scan','run','bot','status','healthcheck','export','setup','import-sources','verify-sources','setup-telegram','monitor-telegram'])
     parser.add_argument('--send',action='store_true',help='Отправлять подходящие объявления в ваш Telegram')
-    parser.add_argument('--fixtures',action='store_true',help='Проверка на ранее сохранённых страницах, без сети')
+    parser.add_argument('--fixtures',action='store_true',help='Проверка без сети на страницах, сохранённых scripts/probe.py')
     parser.add_argument('--qr',action='store_true',help='setup-telegram: вход по QR-коду вместо кода из SMS/Telegram')
     parser.add_argument('--exact',action='store_true',help='status: точный подсчёт лидов (полный проход по таблице, медленно)')
     parser.add_argument('--db',type=Path,help=argparse.SUPPRESS)
