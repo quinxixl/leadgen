@@ -20,6 +20,9 @@ TABLES={
         'username'),
     'settings':(['key','value'],'key text,value text','key'),
 }
+# SQLite keeps these leads columns as text; in Postgres they are timestamptz/jsonb (20261014140000_typed_lead_columns).
+SELECT_EXPRESSIONS={'leads':{'payload':'payload::jsonb','first_seen':'first_seen::timestamptz',
+                             'sent_at':"nullif(btrim(sent_at),'')::timestamptz"}}
 
 
 def batch_sql(source,table,offset,limit):
@@ -41,7 +44,7 @@ def batch_sql(source,table,offset,limit):
     payload=json.dumps(rows,ensure_ascii=False,separators=(',',':')).replace("'","''")
     updates=','.join(f'{column}=excluded.{column}' for column in columns if column!=key)
     return f'''insert into leadgen.{table} ({','.join(columns)})
-select {','.join(columns)} from jsonb_to_recordset('{payload}'::jsonb) as x({definition})
+select {','.join(SELECT_EXPRESSIONS.get(table,{}).get(column,column) for column in columns)} from jsonb_to_recordset('{payload}'::jsonb) as x({definition})
 on conflict ({key}) do update set {updates};'''
 
 

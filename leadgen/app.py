@@ -11,7 +11,7 @@ import time
 from datetime import datetime
 from urllib.error import HTTPError, URLError
 from .adapters import collect, error_label, fetch, parse
-from .core import Lead, UTC, classify, fingerprint, message, enrich
+from .core import UTC, classify, ensure_enriched, fingerprint, lead_data, load_lead, message
 from .database import db_open, database_url
 
 ROOT = Path(__file__).resolve().parent
@@ -79,7 +79,7 @@ def ingest(db, lead, config, origin_user_id=None):
 def classify_for_config(lead,config,ai_topics=None):
     # The score is shared across projects; their budget floors only gate delivery.
     # ai_topics: services detected by the LLM; they replace the keyword services for this decision.
-    enrich(lead)
+    ensure_enriched(lead)
     status, reason, _ = classify(lead,config['min_budget'],config['max_age_hours'],ai_topics=ai_topics)
     if (config.get('notify_without_budget') and status == 'review' and
             reason in ('бюджет не указан','указан только потолок бюджета') and lead.score >= 45):
@@ -160,7 +160,7 @@ def deliver(db, config, sender=telegram, limit=20):
         db.execute("UPDATE leads SET status='uncertain', reason='Сбой во время отправки; проверьте Telegram' WHERE status='sending'")
     rows = db.execute("SELECT * FROM leads WHERE status='ready' AND next_attempt<=? ORDER BY first_seen LIMIT ?",(time.time(),limit)).fetchall()
     for row in rows:
-        lead = Lead(**json.loads(row['payload']))
+        lead = load_lead(row['payload'])
         status,reason = classify_for_config(lead,config)
         if status != 'ready':
             with db:
@@ -290,7 +290,7 @@ def main():
             status(db, exact=args.exact); return
         if args.command == 'export':
             for row in db.execute("SELECT payload,status,reason FROM leads WHERE status IN ('ready','review','sent','uncertain')"):
-                print(json.dumps({**json.loads(row['payload']),'status':row['status'],'reason':row['reason']},ensure_ascii=False))
+                print(json.dumps({**lead_data(row['payload']),'status':row['status'],'reason':row['reason']},ensure_ascii=False))
             return
         while True:
             scan(db,config,args.fixtures)

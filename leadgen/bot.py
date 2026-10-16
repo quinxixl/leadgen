@@ -48,10 +48,12 @@ def run_bot(db,config):
     if db.backend!='postgres':
         raise ValueError('Бот работает только с PostgreSQL: задайте DATABASE_URL')
     from .database import transient_errors
+    from .filtered_cleanup import FilteredCleanup
     from .product import DeliveryGate, ProductController
     send=releasing(db,telegram)
     ui=ProductController(db,config,send)
     gate=DeliveryGate()
+    cleanup=FilteredCleanup()
     webhook=send('getWebhookInfo',{})
     if webhook.get('url'):
         raise ValueError('У бота настроен webhook. Используйте отдельного бота без webhook для локального запуска.')
@@ -67,15 +69,15 @@ def run_bot(db,config):
         return reader_ready() and reader.ensure()=='started'
     if not start_reader_if_ready():
         print('Чтение групп не запущено: выполните setup-telegram после добавления API-параметров.',flush=True)
+    personal=None
     if all(os.getenv(key) for key in ('TELEGRAM_API_ID','TELEGRAM_API_HASH','TELEGRAM_SESSION_ENCRYPTION_KEY')):
         def personal_monitors():
-            try:
-                from .telegram_accounts import run_personal_monitors
-                run_personal_monitors(db_target, config)
-            except Exception as exc:
-                capture_exception(exc,component='personal_monitors')
-                print('Личные Telegram-подключения остановлены: '+type(exc).__name__, flush=True)
-        threading.Thread(target=personal_monitors, daemon=True).start()
+            from .telegram_accounts import run_personal_monitors
+            run_personal_monitors(db_target, config)
+        # Supervised like the shared reader: if the manager thread dies, the polling loop below restarts it.
+        personal=ReaderThread(personal_monitors,name='personal-monitors',label='Менеджер личных Telegram-подключений',
+                              component='personal_monitors')
+        personal.ensure()
         print('Менеджер личных Telegram-подключений запущен.', flush=True)
     else:
         print('Личные Telegram-подключения отключены: добавьте API-параметры и ключ шифрования.', flush=True)
@@ -92,6 +94,7 @@ def run_bot(db,config):
             try:
                 # The setup wizard can finish while the bot is already running.
                 if start_reader_if_ready():print('Сессия найдена, чтение групп подключается.',flush=True)
+                if personal:personal.ensure()
                 try:
                     updates=send('getUpdates',{'offset':ui.get('offset',0),'timeout':1,'allowed_updates':['message','callback_query']})
                     telegram_retry_delay=2
@@ -166,6 +169,15 @@ def run_bot(db,config):
                         capture_exception(exc,component='feedback_notifications')
                         print('Уведомление об обратной связи: '+type(exc).__name__,flush=True)
                         db.recover()
+                try:
+                    # Hourly, not per iteration: old 'filtered' markers, bounded batches, cursors untouched.
+                    cleanup.run_if_due(db,config)
+                except RuntimeError:raise
+                except Exception as exc:
+                    # Housekeeping only; the next interval retries, delivery goes on.
+                    capture_exception(exc,component='filtered_cleanup')
+                    print('Очистка filtered-строк: '+type(exc).__name__,flush=True)
+                    db.recover()
                 if ui.get('active',False) or ui.drain:
                     # Cadence: only when new leads arrived, a backlog drains, a scan finished or the idle interval passed.
                     if gate.due(db,force=ui.drain):
