@@ -11,6 +11,7 @@ from leadgen.web import create_app
 from leadgen.web_auth import approve_login
 from leadgen.telegram_accounts import SessionCipher
 from cryptography.fernet import Fernet
+from leadgen.core import lead_data
 
 
 class FakeTelegramGateway:
@@ -47,6 +48,14 @@ def fake_ai_generator(lead,profile_services='',portfolio='',settings=None,api_ke
             {'prompt_tokens':321,'completion_tokens':123})
 
 DSN=os.environ.get('WEB_TEST_DATABASE_URL','')
+
+
+def apply_no_transaction_file(name):
+    """A -- leadgen:no-transaction migration, statement by statement on an autocommit connection, as web_migrate runs it."""
+    import psycopg
+    from leadgen.web_migrate import split_statements
+    with psycopg.connect(DSN,autocommit=True) as connection:
+        for statement in split_statements((Path('supabase/migrations')/name).read_text()):connection.execute(statement)
 
 
 @unittest.skipUnless(DSN,'WEB_TEST_DATABASE_URL is not configured')
@@ -97,7 +106,10 @@ class WebPostgres(unittest.TestCase):
         cls.db.connection.execute(Path('supabase/migrations/20261012130000_ai_prompt_admin.sql').read_text(),prepare=False)
         cls.db.connection.execute(Path('supabase/migrations/20261013120000_yookassa_payments.sql').read_text(),prepare=False)
         cls.db.connection.execute(Path('supabase/migrations/20261013140000_user_delivery_cursor.sql').read_text(),prepare=False)
+        cls.db.connection.execute(Path('supabase/migrations/20261014120000_filtered_cleanup_keeps_cursor.sql').read_text(),prepare=False)
+        cls.db.connection.execute(Path('supabase/migrations/20261014140000_typed_lead_columns.sql').read_text(),prepare=False)
         cls.db.commit()
+        apply_no_transaction_file('20261014150000_lead_search_indexes.sql')
         cls.app=create_app({'TESTING':True,'SECRET_KEY':'test-'*10,'BOT_USERNAME':'test_bot',
             'SESSION_COOKIE_SECURE':False,'DB_FACTORY':lambda:db_open(DSN),
             'TELEGRAM_CIPHER_KEY':Fernet.generate_key().decode(),
@@ -149,7 +161,7 @@ class WebPostgres(unittest.TestCase):
                 self.db.execute("DELETE FROM telegram_sources WHERE username='pg_joined_channel'")
                 register_joined_chat(self.db,'pg_joined_channel','PG канал','channel')
             row=self.db.execute("SELECT enabled,status FROM telegram_sources WHERE username='pg_joined_channel'").fetchone()
-            self.assertEqual((row['enabled'],row['status']),(1,'active'))
+            self.assertEqual((row['enabled'],row['status']),(0,'moderation'))  # waits for the admin
             write_heartbeat(self.db,new_state()|{'state':'running','connected':True,'chats':3})
             info=reader_status(self.db)
             self.assertEqual(info['state'],'running');self.assertGreaterEqual(info['joined_sources'],1)
@@ -157,13 +169,47 @@ class WebPostgres(unittest.TestCase):
                 r=self.client.get('/admin')
             self.assertEqual(r.status_code,200)
             self.assertIn('Чтение Telegram служебным аккаунтом',r.text);self.assertIn('Работает',r.text)
+            self.assertIn('id="source-moderation"',r.text);self.assertIn('/admin/sources/pg_joined_channel/approve',r.text)
         finally:
             with self.db:
                 self.db.execute("DELETE FROM telegram_sources WHERE username='pg_joined_channel'")
                 self.db.execute('DELETE FROM settings WHERE key=?',('reader:heartbeat',))
 
+    def test_admin_approves_and_rejects_joined_chats(self):
+        from leadgen.telegram_monitor import register_joined_chat
+        names=('pg_mod_ok','pg_mod_spam')
+        state=lambda name:(lambda row:(row['status'],row['enabled']))(self.db.execute('SELECT status,enabled FROM telegram_sources WHERE username=?',(name,)).fetchone())
+        try:
+            with self.db:
+                self.db.execute('DELETE FROM telegram_sources WHERE username IN (?,?)',names)
+                for name in names:register_joined_chat(self.db,name,'Чат '+name,'group')
+            for name in names:
+                for decision in ('approve','reject'):
+                    # A non-admin is refused even with a valid CSRF token.
+                    path=f'/admin/sources/{name}/{decision}'
+                    self.assertEqual(self.client.post(path,data={'csrf':'test-csrf'}).status_code,403,path)
+                self.assertEqual(state(name),('moderation',0))
+            with patch.dict(os.environ,{'WEB_ADMIN_TELEGRAM_IDS':'1'}):
+                self.assertEqual(self.client.post('/admin/sources/pg_mod_ok/approve').status_code,400)  # CSRF
+                self.assertEqual(self.client.post('/admin/sources/pg_mod_ok/delete',data={'csrf':'test-csrf'}).status_code,404)
+                r=self.client.post('/admin/sources/pg_mod_ok/approve',data={'csrf':'test-csrf'})
+                self.assertEqual((r.status_code,r.location),(302,'/admin#source-moderation'))
+                self.assertEqual(self.client.post('/admin/sources/pg_mod_spam/reject',data={'csrf':'test-csrf'}).status_code,302)
+                # Decisions are final: the chat no longer waits, so a second click finds nothing.
+                self.assertEqual(self.client.post('/admin/sources/pg_mod_spam/approve',data={'csrf':'test-csrf'}).status_code,404)
+                page=self.client.get('/admin').text
+            self.assertEqual(state('pg_mod_ok'),('active',1))
+            self.assertEqual(state('pg_mod_spam'),('rejected',0))
+            self.assertNotIn('/admin/sources/pg_mod_',page)
+            # Following the rejected chat again does not put it back into the queue.
+            with self.db:register_joined_chat(self.db,'pg_mod_spam','Чат','group')
+            self.assertEqual(state('pg_mod_spam'),('rejected',0))
+        finally:
+            with self.db:
+                self.db.execute('DELETE FROM telegram_sources WHERE username IN (?,?)',names)
+
     def test_migration_disables_unjoined_sources_only(self):
-        from leadgen.source_registry import JOINED_REASON, NOT_JOINED_REASON
+        from leadgen.source_registry import NOT_JOINED_REASON
         from leadgen.telegram_monitor import register_joined_chat
         sql=Path('supabase/migrations/20261011150000_disable_unjoined_sources.sql').read_text()
         rows={'pgmig_unjoined':('Потенциальные клиенты','Бизнес','{"risks": ""}',1),
@@ -189,10 +235,10 @@ class WebPostgres(unittest.TestCase):
                 'pgmig_off':(0,'83 онлайн при проверке')})
             self.assertEqual(self.db.connection.execute(sql,prepare=False).rowcount,0)  # idempotent
             self.assertEqual(len(state()),7)  # nothing deleted
-            # The reader re-enables a disabled chat once the service account follows it; a re-run keeps it.
+            # The reader never re-enables a disabled chat: it only adds the joined marker.
             self.assertTrue(register_joined_chat(self.db,'pgmig_unjoined','Чат','group'))
             self.db.connection.execute(sql,prepare=False)
-            self.assertEqual(state()['pgmig_unjoined'],(1,JOINED_REASON))
+            self.assertEqual(state()['pgmig_unjoined'],(0,NOT_JOINED_REASON))
         finally:
             self.db.connection.rollback()
 
@@ -222,7 +268,7 @@ class WebPostgres(unittest.TestCase):
         self.assertIn('Пробный период',self.client.get('/app/billing').text)
         with self.db:self.db.execute("UPDATE subscriptions SET ends_at=now()-interval '1 minute' WHERE user_id=?",(self.u,))
         # The cabinet stays open; the lead found an hour ago is visible, limits are the Free ones.
-        with self.db:self.db.execute("UPDATE leads SET first_seen=(now()-interval '2 hours')::text")
+        with self.db:self.db.execute("UPDATE leads SET first_seen=(now()-interval '2 hours')")
         r=self.client.get('/app/leads');self.assertEqual(r.status_code,200);self.assertIn('Нужен сайт 0',r.text)
         page=self.client.get('/app/billing').text
         self.assertIn('Бесплатный',page);self.assertIn('работает на бесплатном тарифе',page)
@@ -295,7 +341,7 @@ class WebPostgres(unittest.TestCase):
         with self.db:
             self.db.execute('DELETE FROM user_leads WHERE user_id=?',(self.u,))
             self.db.execute('UPDATE user_preferences SET monitoring_active=true WHERE user_id=?',(self.u,))
-            self.db.execute("UPDATE leads SET first_seen=(now()+interval '1 second')::text")
+            self.db.execute("UPDATE leads SET first_seen=(now()+interval '1 second')")
             for name in ('Первый проект','Второй проект'):
                 self.db.execute('''INSERT INTO projects(user_id,workspace_id,name,topics,show_without_budget)
                     VALUES(?,?,?,?::jsonb,true)''',(self.u,self.ws,name,json.dumps(['Сайты'])))
@@ -310,7 +356,7 @@ class WebPostgres(unittest.TestCase):
         with self.db:
             self.db.execute('DELETE FROM user_leads WHERE user_id=?',(self.u,))
             self.db.execute('UPDATE user_preferences SET monitoring_active=true,show_without_budget=true WHERE user_id=?',(self.u,))
-            self.db.execute("UPDATE leads SET first_seen=(now()+interval '1 second')::text")
+            self.db.execute("UPDATE leads SET first_seen=(now()+interval '1 second')")
         # Projects created from the web start disabled.
         self.client.post('/app/projects',data={'csrf':'test-csrf','name':'Черновик проекта'})
         self.assertFalse(self.db.execute('SELECT enabled FROM projects WHERE user_id=?',(self.u,)).fetchone()['enabled'])
@@ -325,7 +371,7 @@ class WebPostgres(unittest.TestCase):
         lid=self.ids[0]
         with self.db:
             self.db.execute("INSERT INTO lead_feedback(user_id,lead_id,label) VALUES(?,?,'fit')",(self.u,lid))
-            payload=json.loads(self.db.execute('SELECT payload FROM leads WHERE id=?',(lid,)).fetchone()['payload'])
+            payload=lead_data(self.db.execute('SELECT payload FROM leads WHERE id=?',(lid,)).fetchone()['payload'])
             payload['title']='=HYPERLINK("https://example.com")'
             self.db.execute('UPDATE leads SET payload=? WHERE id=?',(json.dumps(payload),lid))
         r=self.client.get('/app/leads/export?format=xlsx&feedback=fit&source=Telegram:+test')
@@ -379,7 +425,7 @@ class WebPostgres(unittest.TestCase):
         self.assertEqual(page.status_code,200)
         self.assertIn('77 001',page.text)
         self.assertNotIn('998 877',page.text)
-        with self.db:self.db.execute("UPDATE leads SET first_seen=(now()-interval '20 days')::text WHERE id=?",(self.ids[0],))
+        with self.db:self.db.execute("UPDATE leads SET first_seen=(now()-interval '20 days') WHERE id=?",(self.ids[0],))
         # The period report excludes the older lead; the earnings widget above it is not period-bound.
         page=self.client.get('/app?days=7').text
         self.assertNotIn('77 001',page.split('<h1>Результаты поиска</h1>')[1])
@@ -390,7 +436,7 @@ class WebPostgres(unittest.TestCase):
     def test_duplicate_does_not_send_again_to_user(self):
         from leadgen.product import deliver_registered
         from test_leadgen import CONFIG
-        payload=json.loads(self.db.execute('SELECT payload FROM leads WHERE id=?',(self.ids[0],)).fetchone()['payload'])
+        payload=lead_data(self.db.execute('SELECT payload FROM leads WHERE id=?',(self.ids[0],)).fetchone()['payload'])
         payload.update(url='https://t.me/another/1',title='Нужен бот',text='Нужен бот, бюджет 20000 рублей',budget_text='20000 руб.')
         with self.db:
             self.db.execute("UPDATE user_preferences SET monitoring_active=true,show_without_budget=true WHERE user_id=?",(self.u,))
@@ -634,7 +680,7 @@ class WebPostgres(unittest.TestCase):
         self.assertEqual(page.status_code,200)
         self.assertIn('Всего запросов</span><strong>1',page.text)
         self.assertIn('Сайты',page.text)
-        with self.db:self.db.execute("UPDATE leads SET first_seen=(now()-interval '20 days')::text WHERE id=?",(self.ids[0],))
+        with self.db:self.db.execute("UPDATE leads SET first_seen=(now()-interval '20 days') WHERE id=?",(self.ids[0],))
         self.assertIn('Всего запросов</span><strong>0',self.client.get('/app/demand?days=7').text)
         self.assertIn('Всего запросов</span><strong>1',self.client.get('/app/demand?days=30').text)
         self.assertEqual(self.client.get('/app/demand?days=365').status_code,400)

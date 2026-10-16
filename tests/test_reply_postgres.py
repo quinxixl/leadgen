@@ -9,6 +9,7 @@ from leadgen import telegram_replies as replies
 from leadgen.database import db_open
 from leadgen.product import ProductController
 from leadgen.telegram_accounts import SessionCipher, TelegramAccountError
+from leadgen.core import lead_data
 
 
 class Gateway:
@@ -42,7 +43,7 @@ class ReplyPostgres(unittest.TestCase):
                     (user_id,telegram_user_id,session_cipher,status,display_name) VALUES(?,?,?,'active','Мой аккаунт')''',
                     (uid,account,self.cipher.encrypt({'session':str(account)})))
             row=self.db.execute('SELECT payload FROM leads WHERE id=?',(self.ids[0],)).fetchone()
-            payload=json.loads(row['payload']);payload['url']='https://t.me/business_chat/101'
+            payload=lead_data(row['payload']);payload['url']='https://t.me/business_chat/101'
             self.db.execute('UPDATE leads SET payload=?,url=? WHERE id=?',(json.dumps(payload),payload['url'],self.ids[0]))
 
     def prepare(self,mode='dm',body='Здравствуйте! Готов обсудить сайт.'):
@@ -100,6 +101,30 @@ class ReplyPostgres(unittest.TestCase):
             self.assertEqual(len(self.gateway.sent),before)
         self.assertEqual(self.db.execute('SELECT pipeline_status FROM user_leads WHERE user_id=? AND lead_id=?',
             (self.u,self.ids[0])).fetchone()['pipeline_status'],'new')
+
+    def test_daily_send_limits_per_actor_and_recipient(self):
+        with patch.dict(replies.os.environ,{'REPLY_DAILY_LIMIT':'3','REPLY_RECIPIENT_DAILY_LIMIT':'1'}):
+            self.assertEqual(replies.confirm(self.db,self.prepare('dm')['id'],self.u,self.u,self.cipher,self.gateway)['status'],'sent')
+            row=self.prepare('dm')
+            with self.assertRaisesRegex(TelegramAccountError,'Этому получателю вы уже отправили 1'):
+                replies.confirm(self.db,row['id'],self.u,self.u,self.cipher,self.gateway)
+            self.assertEqual(self.db.execute('SELECT status FROM telegram_replies WHERE id=?',(row['id'],)).fetchone()['status'],'draft')
+            self.assertEqual(replies.confirm(self.db,self.prepare('group')['id'],self.u,self.u,self.cipher,self.gateway)['status'],'sent')
+            # The rejected attempt above also counts, so the daily cap of 3 is now reached.
+            row=self.prepare('group')
+            with self.assertRaisesRegex(TelegramAccountError,'дневной лимит: 3 откликов'):
+                replies.confirm(self.db,row['id'],self.u,self.u,self.cipher,self.gateway)
+            self.assertEqual(len(self.gateway.sent),2)
+            # The web page shows the same explanation instead of sending.
+            response=self.client.post('/app/replies/'+row['id'],data={'csrf':'test-csrf','action':'send'},follow_redirects=True)
+            self.assertIn('дневной лимит',response.text)
+            self.assertEqual(len(self.gateway.sent),2)
+
+    def test_send_limit_settings_are_clamped(self):
+        with patch.dict(replies.os.environ,{'REPLY_DAILY_LIMIT':'abc','REPLY_RECIPIENT_DAILY_LIMIT':'10'}):
+            self.assertEqual((replies.daily_limit(),replies.recipient_daily_limit()),(30,3))
+        with patch.dict(replies.os.environ,{'REPLY_DAILY_LIMIT':'0','REPLY_RECIPIENT_DAILY_LIMIT':''}):
+            self.assertEqual((replies.daily_limit(),replies.recipient_daily_limit()),(1,2))
 
     def test_claim_is_committed_before_send_for_other_workers(self):
         row=self.prepare();other_db=db_open(fixtures.DSN)

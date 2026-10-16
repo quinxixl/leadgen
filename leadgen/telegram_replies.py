@@ -1,11 +1,12 @@
 """Explicit, durable Telegram replies shared by the web and bot interfaces."""
 import asyncio
-import json
+import os
 import re
 import secrets
 from datetime import datetime, timedelta, timezone
 
-from .telegram_accounts import SessionCipher, TelegramAccountError, TelethonGateway
+from .core import lead_data
+from .telegram_accounts import TelegramAccountError, TelethonGateway
 
 
 MODES = {'dm': 'В личку автору', 'group': 'Ответом в группе'}
@@ -127,7 +128,7 @@ def authorized_lead(db, actor_id, owner_id, lead_id):
         (actor_id, owner_id, lead_id)).fetchone()
     if not row:
         raise TelegramAccountError('Лид недоступен или у вас нет права отправлять отклики.')
-    return json.loads(row['payload'])
+    return lead_data(row['payload'])
 
 
 def connection(db, actor_id):
@@ -165,6 +166,53 @@ def prepare(db, actor_id, owner_id, lead_id, mode, text, cipher, gateway):
     return row
 
 
+# Sending from a personal account is capped per day: too many messages get the account limited or banned.
+DAY_SECONDS = 86400
+DEFAULT_DAILY_LIMIT = 30
+DEFAULT_RECIPIENT_DAILY_LIMIT = 2
+
+
+def _env_limit(name, default, high):
+    try:
+        value = int(os.environ.get(name, '').strip() or default)
+    except ValueError:
+        return default
+    return min(high, max(1, value))
+
+
+def daily_limit():
+    """Replies one person may send per 24 hours (REPLY_DAILY_LIMIT, default 30)."""
+    return _env_limit('REPLY_DAILY_LIMIT', DEFAULT_DAILY_LIMIT, 1000)
+
+
+def recipient_daily_limit():
+    """Replies one person may send to the same author or group per 24 hours (REPLY_RECIPIENT_DAILY_LIMIT, default 2)."""
+    return _env_limit('REPLY_RECIPIENT_DAILY_LIMIT', DEFAULT_RECIPIENT_DAILY_LIMIT, 3)
+
+
+def _wait_text(seconds):
+    hours, minutes = divmod(max(1, seconds // 60), 60)
+    return f'{hours} ч {minutes} мин' if hours else f'{minutes} мин'
+
+
+def check_send_limits(db, actor_id, recipient_id):
+    """Count one send attempt; TelegramAccountError with a plain explanation once a daily cap is reached."""
+    from .rate_limit import RateLimited, hit
+    limit = daily_limit()
+    try:
+        hit(db, 'telegram-reply-send', actor_id, limit, DAY_SECONDS)
+    except RateLimited as exc:
+        raise TelegramAccountError(f'Достигнут дневной лимит: {limit} откликов за сутки с вашего Telegram-аккаунта. '
+                                   f'Это защищает аккаунт от блокировки за спам. Следующий отклик можно отправить через '
+                                   f'{_wait_text(exc.retry_after)}.') from None
+    limit = recipient_daily_limit()
+    try:
+        hit(db, 'telegram-reply-recipient', f'{actor_id}:{recipient_id}', limit, DAY_SECONDS)
+    except RateLimited as exc:
+        raise TelegramAccountError(f'Этому получателю вы уже отправили {limit} отклик(а) за сутки. Повторные сообщения '
+                                   f'похожи на спам. Написать ему снова можно через {_wait_text(exc.retry_after)}.') from None
+
+
 STUCK_ERROR = 'Отправка была прервана. Проверьте переписку в Telegram перед новым откликом. Автоматического повтора не будет.'
 
 
@@ -196,6 +244,7 @@ def confirm(db, token, actor_id, owner_id, cipher, gateway):
         raise TelegramAccountError('Аккаунт изменился. Подготовьте отклик заново.')
     session = cipher.decrypt(account['session_cipher'])['session']
     expected = cipher.decrypt(row['target_cipher'])
+    check_send_limits(db, actor_id, expected['recipient_id'])
     # Commit the single-use claim BEFORE any network write. Concurrent clicks and
     # crashed processes must never cause an automatic second send.
     with db:

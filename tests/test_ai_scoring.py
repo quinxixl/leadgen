@@ -217,6 +217,16 @@ class ScoringPostgres(unittest.TestCase):
         # Failed leads are retried later, not immediately.
         self.assertEqual(score_pending(self.db,self.scorer(ScoringError('x'))),0)
 
+    def test_llm_call_runs_outside_a_transaction(self):
+        seen=[]
+        def scorer(batch,examples,model=None,prompt=None):
+            seen.append(self.db.connection.info.transaction_status.name)
+            verdict={'score':8,'category':'service_request','budget_amount':None,'budget_currency':None,
+                     'urgency':'high','summary':'Сайт'}
+            return {lead_id:dict(verdict) for lead_id,_ in batch},{}
+        score_pending(self.db,scorer)
+        self.assertEqual(seen,['IDLE'])  # not idle in transaction while waiting for the LLM
+
     def test_unscored_lead_goes_out_after_wait(self):
         with patch.dict(os.environ,{'AI_SCORING_WAIT_SECONDS':'0'}):
             cards=[item for item in self.deliver() if 'салона' in item['text']]

@@ -10,6 +10,7 @@ import test_web_postgres as fixtures
 from leadgen import ai_admin, ai_offers, ai_prompts, ai_scoring
 from leadgen.core import TOPICS, Lead
 from test_leadgen import CONFIG, lead as rule_lead
+from leadgen.core import lead_data
 
 REQUEST='Нужен сайт для салона красоты, бюджет 50 000 руб, срочно. Пишите @salon_owner'
 DRAFT_MARK='ЧЕРНОВИК-МАРКЕР'
@@ -291,7 +292,7 @@ class AIAdminPostgres(unittest.TestCase):
             captured.append((model,prompt['id']))
             return fixtures.fake_ai_generator(lead)
         with self.db:self.db.execute("INSERT INTO user_leads(user_id,lead_id,delivery_status) VALUES(?,?,'sent')",(self.u,self.ids[0]))
-        lead=Lead(**json.loads(self.db.execute('SELECT payload FROM leads WHERE id=?',(self.ids[0],)).fetchone()['payload']))
+        lead=Lead(**lead_data(self.db.execute('SELECT payload FROM leads WHERE id=?',(self.ids[0],)).fetchone()['payload']))
         ai_offers.generate_for_lead(self.db,self.ws,self.u,self.u,self.ids[0],lead,generator=generator)
         self.assertEqual(captured,[('openai/gpt-oss-20b',prompt_id)])
         self.assertEqual(self.db.execute('SELECT model FROM ai_offer_generations ORDER BY id DESC LIMIT 1').fetchone()['model'],'openai/gpt-oss-20b')

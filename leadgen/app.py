@@ -11,7 +11,7 @@ import time
 from datetime import datetime
 from urllib.error import HTTPError, URLError
 from .adapters import collect, error_label, fetch, parse
-from .core import Lead, UTC, classify, fingerprint, message, enrich
+from .core import UTC, classify, ensure_enriched, fingerprint, lead_data, load_lead, message
 from .database import db_open, database_url
 
 ROOT = Path(__file__).resolve().parent
@@ -79,13 +79,20 @@ def ingest(db, lead, config, origin_user_id=None):
 def classify_for_config(lead,config,ai_topics=None):
     # The score is shared across projects; their budget floors only gate delivery.
     # ai_topics: services detected by the LLM; they replace the keyword services for this decision.
-    enrich(lead)
+    ensure_enriched(lead)
     status, reason, _ = classify(lead,config['min_budget'],config['max_age_hours'],ai_topics=ai_topics)
     if (config.get('notify_without_budget') and status == 'review' and
             reason in ('бюджет не указан','указан только потолок бюджета') and lead.score >= 45):
         status, reason = 'ready', f'{lead.temperature} лид; бюджет нужно уточнить'
     status, reason = apply_preferences(lead, config, status, reason, ai_topics)
     return status,reason
+
+def record_health(db, source, count, error=None):
+    """Upsert the last check of a lead source; ok is derived from the absence of an error."""
+    db.execute('''INSERT INTO health(source,checked,ok,count,error) VALUES(?,?,?,?,?)
+        ON CONFLICT(source) DO UPDATE SET checked=excluded.checked,ok=excluded.ok,
+        count=excluded.count,error=excluded.error''',
+        (source,datetime.now(UTC).isoformat(),int(error is None),count,error))
 
 def scan(db, config, fixtures=False):
     for source in config['sources']:
@@ -100,17 +107,11 @@ def scan(db, config, fixtures=False):
             with db:
                 for lead in leads:
                     ingest(db,lead,config)
-                db.execute('''INSERT INTO health(source,checked,ok,count,error) VALUES(?,?,?,?,?)
-                    ON CONFLICT(source) DO UPDATE SET checked=excluded.checked,ok=excluded.ok,
-                    count=excluded.count,error=excluded.error''',
-                    (source['name'],datetime.now(UTC).isoformat(),1,len(leads),None))
+                record_health(db,source['name'],len(leads),None)
             print(f"{source['name']}: прочитано {len(leads)}",flush=True)
         except Exception as exc:
             with db:
-                db.execute('''INSERT INTO health(source,checked,ok,count,error) VALUES(?,?,?,?,?)
-                    ON CONFLICT(source) DO UPDATE SET checked=excluded.checked,ok=excluded.ok,
-                    count=excluded.count,error=excluded.error''',
-                    (source['name'],datetime.now(UTC).isoformat(),0,0,error_label(exc)))
+                record_health(db,source['name'],0,error_label(exc))
             print(f"{source['name']}: ошибка {error_label(exc)}; см. status",flush=True)
             from .observability import capture_exception
             capture_exception(exc,component='parser',source=source.get('id',''))
@@ -159,7 +160,7 @@ def deliver(db, config, sender=telegram, limit=20):
         db.execute("UPDATE leads SET status='uncertain', reason='Сбой во время отправки; проверьте Telegram' WHERE status='sending'")
     rows = db.execute("SELECT * FROM leads WHERE status='ready' AND next_attempt<=? ORDER BY first_seen LIMIT ?",(time.time(),limit)).fetchall()
     for row in rows:
-        lead = Lead(**json.loads(row['payload']))
+        lead = load_lead(row['payload'])
         status,reason = classify_for_config(lead,config)
         if status != 'ready':
             with db:
@@ -203,8 +204,8 @@ def status(db, exact=False):
     from .telegram_monitor import SESSION_FILE, reader_status
     from .heartbeat import status as worker_status
     counts, counts_mode = lead_counts(db, exact)
-    registry = {row['status']:row['total'] for row in db.execute('SELECT status,count(*) AS total FROM telegram_sources GROUP BY status')}
-    from .source_registry import read_count
+    from .source_registry import read_count, registry_stats
+    registry = registry_stats(db)
     enabled = read_count(db)  # chats the service account reads; registry statuses are public-page checks
     reader = reader_status(db) | {'session_file': SESSION_FILE.exists()}
     print(json.dumps({'counts':counts,'counts_mode':counts_mode,'worker':worker_status(db),'sources':[dict(r) for r in db.execute('SELECT * FROM health')],
@@ -241,7 +242,7 @@ def main():
     parser = argparse.ArgumentParser(description='IT-лиды от 5 000 ₽')
     parser.add_argument('command',choices=['scan','run','bot','status','healthcheck','export','setup','import-sources','verify-sources','setup-telegram','monitor-telegram'])
     parser.add_argument('--send',action='store_true',help='Отправлять подходящие объявления в ваш Telegram')
-    parser.add_argument('--fixtures',action='store_true',help='Проверка на ранее сохранённых страницах, без сети')
+    parser.add_argument('--fixtures',action='store_true',help='Проверка без сети на страницах, сохранённых scripts/probe.py')
     parser.add_argument('--qr',action='store_true',help='setup-telegram: вход по QR-коду вместо кода из SMS/Telegram')
     parser.add_argument('--exact',action='store_true',help='status: точный подсчёт лидов (полный проход по таблице, медленно)')
     parser.add_argument('--db',type=Path,help=argparse.SUPPRESS)
@@ -289,7 +290,7 @@ def main():
             status(db, exact=args.exact); return
         if args.command == 'export':
             for row in db.execute("SELECT payload,status,reason FROM leads WHERE status IN ('ready','review','sent','uncertain')"):
-                print(json.dumps({**json.loads(row['payload']),'status':row['status'],'reason':row['reason']},ensure_ascii=False))
+                print(json.dumps({**lead_data(row['payload']),'status':row['status'],'reason':row['reason']},ensure_ascii=False))
             return
         while True:
             scan(db,config,args.fixtures)
