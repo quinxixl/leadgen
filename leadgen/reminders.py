@@ -1,6 +1,7 @@
 """Durable reminders. Ambiguous Telegram sends require an explicit reschedule."""
-import json
 from datetime import datetime, timedelta, timezone
+
+from .core import lead_data
 
 
 def schedule(db,user_id,lead_id,due_at,note=''):
@@ -40,7 +41,7 @@ def deliver_due(db,sender,limit=5):
                 ORDER BY r.due_at FOR UPDATE OF r SKIP LOCKED LIMIT 1''').fetchone()
             if not row:break
             db.execute("UPDATE lead_reminders SET status='sending',updated_at=now() WHERE user_id=? AND lead_id=?",(row['user_id'],row['lead_id']))
-        lead=json.loads(row['payload'])
+        lead=lead_data(row['payload'])
         text='Напоминание по лиду\n\n'+lead['title'][:500]+'\n'+row['note']+'\n\n'+lead['url']
         payload={'chat_id':row['telegram_chat_id'],'text':text[:3900],'disable_web_page_preview':True}
         from .product import lead_link
