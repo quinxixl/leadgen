@@ -14,7 +14,7 @@ from flask.sessions import SecureCookieSessionInterface
 from itsdangerous import BadSignature
 from werkzeug.middleware.proxy_fix import ProxyFix
 from .app import env_load
-from .database import db_open
+from .database import db_pooled
 from .core import TOPICS, TOPIC_CATEGORIES, Lead, enrich
 from .product import PIPELINE, FEEDBACK, ProductController
 from .crm import NOTE_LIMIT as CRM_NOTE_LIMIT, normalize as normalize_status
@@ -204,7 +204,7 @@ def create_app(test_config=None):
         WEB_PUBLIC_URL=os.environ.get('WEB_PUBLIC_URL','').strip().rstrip('/'),
         TELEGRAM_CIPHER_KEY=os.environ.get('TELEGRAM_SESSION_ENCRYPTION_KEY',''),
         INTEGRATIONS_ENABLED=integrations_enabled(),
-        DB_FACTORY=db_open, TRUSTED_HOSTS=os.environ.get('WEB_ALLOWED_HOSTS','localhost,127.0.0.1').split(','))
+        DB_FACTORY=db_pooled, TRUSTED_HOSTS=os.environ.get('WEB_ALLOWED_HOSTS','localhost,127.0.0.1').split(','))
     if test_config:app.config.update(test_config)
     if not app.config['SECRET_KEY'] or len(app.config['SECRET_KEY']) < 32:
         raise ValueError('WEB_SECRET_KEY должен содержать минимум 32 символа')
