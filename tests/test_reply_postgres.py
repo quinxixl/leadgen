@@ -9,6 +9,7 @@ from leadgen import telegram_replies as replies
 from leadgen.database import db_open
 from leadgen.product import ProductController
 from leadgen.telegram_accounts import SessionCipher, TelegramAccountError
+from leadgen.core import lead_data
 
 
 class Gateway:
@@ -42,7 +43,7 @@ class ReplyPostgres(unittest.TestCase):
                     (user_id,telegram_user_id,session_cipher,status,display_name) VALUES(?,?,?,'active','Мой аккаунт')''',
                     (uid,account,self.cipher.encrypt({'session':str(account)})))
             row=self.db.execute('SELECT payload FROM leads WHERE id=?',(self.ids[0],)).fetchone()
-            payload=json.loads(row['payload']);payload['url']='https://t.me/business_chat/101'
+            payload=lead_data(row['payload']);payload['url']='https://t.me/business_chat/101'
             self.db.execute('UPDATE leads SET payload=?,url=? WHERE id=?',(json.dumps(payload),payload['url'],self.ids[0]))
 
     def prepare(self,mode='dm',body='Здравствуйте! Готов обсудить сайт.'):

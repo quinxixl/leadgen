@@ -16,8 +16,8 @@ from urllib.parse import urlsplit, urlunsplit
 from flask import abort, current_app, flash, g, jsonify, redirect, render_template, request, session
 
 from .billing import delay_clause
-from .core import Lead, enrich
-from .product import FEEDBACK, PIPELINE
+from .core import stored_lead
+from .product import FEEDBACK
 from .teams import EDIT_SETTINGS, require_role
 from .telegram_accounts import SessionCipher, TelegramAccountError
 
@@ -96,7 +96,7 @@ def enqueue_lead_event(db,owner_user_id,lead_id,event_type='lead.updated'):
         WHERE w.owner_user_id=? AND l.id=?''',
         (owner_user_id,lead_id)).fetchone()
     if not row:return 0
-    lead=enrich(Lead(**json.loads(row['payload'])))
+    lead=stored_lead(row['payload'])
     payload={'event':event_type,'lead':{'id':lead_id,'title':lead.title,'text':lead.text,'source':lead.source,
         'url':lead.url,'published':lead.published,'score':lead.score,'temperature':lead.temperature,
         'summary':lead.summary,'pipeline_status':row['pipeline_status'],'deal_amount':row['deal_amount'],
@@ -245,7 +245,7 @@ def register_integrations(app,db):
             ORDER BY l.id LIMIT ?''',(identity['workspace_id'],identity['owner_user_id'],after,*delay_args,limit)).fetchall()
         result=[]
         for row in rows:
-            lead=enrich(Lead(**json.loads(row['payload'])))
+            lead=stored_lead(row['payload'])
             result.append({'id':row['id'],'title':lead.title,'text':lead.text,'source':lead.source,'url':lead.url,
                            'published':lead.published,'score':lead.score,'temperature':lead.temperature,
                            'pipeline_status':row['pipeline_status'],'deal_amount':row['deal_amount'],

@@ -2,7 +2,6 @@
 
 Access rules (session, workspace role, terms) are enforced in web.protect(); these routes
 only re-check the role for writes, exactly like the cabinet."""
-import json
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote, urlencode
 
@@ -11,7 +10,7 @@ from flask import abort, current_app, flash, g, jsonify, redirect, render_templa
 from . import telegram_replies as replies
 from .accounts import accept_terms, register_user
 from .billing import delay_clause, effective_plan, plan_limits
-from .core import TOPICS, TOPIC_CATEGORIES, Lead, enrich
+from .core import TOPICS, TOPIC_CATEGORIES, stored_lead
 from .crm import NOTE_LIMIT as CRM_NOTE_LIMIT, REMIND_DAYS
 from .product import FEEDBACK, PIPELINE
 from .rate_limit import RateLimited, hit
@@ -191,7 +190,7 @@ def register_tg_routes(app, db):
         more = len(rows) > PAGE
         from .ai_scoring import fetch_scores
         scores = fetch_scores(db(), [row['id'] for row in rows[:PAGE]])
-        items = [dict(row) | {'lead': enrich(Lead(**json.loads(row['payload']))), 'ai': scores.get(row['id'])}
+        items = [dict(row) | {'lead': stored_lead(row['payload']), 'ai': scores.get(row['id'])}
                  for row in rows[:PAGE]]
         return render_template('tg/feed.html', items=items, kind=kind, filters=FEED_FILTERS,
                                next_before=items[-1]['id'] if more else None, before=before)
@@ -240,7 +239,7 @@ def register_tg_routes(app, db):
             else:
                 abort(400)
             return redirect(f'/tg/leads/{lid}')
-        lead = enrich(Lead(**json.loads(row['payload'])))
+        lead = stored_lead(row['payload'])
         try:
             replies.source_message(lead.url)
             replyable = True
@@ -266,7 +265,7 @@ def register_tg_routes(app, db):
         row = owner_lead(db(), g.owner_id, lid)
         if not row:
             abort(404)
-        lead = enrich(Lead(**json.loads(row['payload'])))
+        lead = stored_lead(row['payload'])
         account = db().execute("""SELECT display_name FROM telegram_connections
             WHERE user_id=? AND status='active' AND session_cipher<>''""", (g.user['id'],)).fetchone()
         from .ai_offers import latest_for_lead

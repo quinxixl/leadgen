@@ -241,6 +241,18 @@ class WebMigrateParsing(unittest.TestCase):
         self.assertEqual(len(set(web_migrate.MIGRATIONS)),len(web_migrate.MIGRATIONS))
         self.assertEqual(list(web_migrate.MIGRATIONS),sorted(web_migrate.MIGRATIONS))
         self.assertTrue(migrations['20261013150000_leads_query_indexes.sql'].no_transaction)
+        fk_indexes=migrations['20261014130000_user_leads_fk_indexes.sql']
+        self.assertTrue(fk_indexes.no_transaction)
+        names=[web_migrate.concurrent_index_name(statement) for statement in web_migrate.split_statements(fk_indexes.sql)]
+        self.assertEqual([name for name in names if name],['lead_assignments_owner_lead','telegram_replies_owner_lead'])
+        self.assertFalse(migrations['20261014120000_filtered_cleanup_keeps_cursor.sql'].no_transaction)
+        # Column types change in the transactional batch (atomic, rolled back on any unparsable value); the indexes on
+        # the new columns are built CONCURRENTLY afterwards.
+        self.assertFalse(migrations['20261014140000_typed_lead_columns.sql'].no_transaction)
+        search=migrations['20261014150000_lead_search_indexes.sql']
+        self.assertTrue(search.no_transaction)
+        names=[web_migrate.concurrent_index_name(statement) for statement in web_migrate.split_statements(search.sql)]
+        self.assertEqual(names,['leads_source','leads_search_trgm'])
 
 
 if __name__=='__main__':

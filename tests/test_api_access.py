@@ -54,7 +54,7 @@ class ApiAccess(unittest.TestCase):
             self.assertEqual(self.listed(headers),[])
             self.assertEqual(self.client.patch(f'/api/v1/leads/{self.ids[0]}',headers=headers,
                                                json={'status':'won'}).status_code,404)
-            with self.db:self.db.execute("UPDATE leads SET first_seen=(now()-interval '2 hours')::text WHERE id=?",(self.ids[0],))
+            with self.db:self.db.execute("UPDATE leads SET first_seen=now()-interval '2 hours' WHERE id=?",(self.ids[0],))
             self.assertEqual(self.listed(headers),[self.ids[0]])
             self.assertEqual(self.client.patch(f'/api/v1/leads/{self.ids[0]}',headers=headers,
                                                json={'status':'won'}).status_code,200)

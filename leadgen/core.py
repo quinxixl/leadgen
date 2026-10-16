@@ -1,5 +1,6 @@
 """Conservative rules: uncertain budget and intent are held for review."""
 import hashlib
+import json
 import re
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
@@ -258,6 +259,25 @@ def enrich(lead, minimum=5000):
     lead.intent = 'direct' if re.search(DEMAND,normalize(lead.title+' '+lead.text)) else ('possible' if possible_need_topics(lead.title+' '+lead.text) else 'unclear')
     return lead
 
+def lead_data(payload):
+    """leads.payload as a dict: Postgres returns jsonb as a dict, SQLite (tests, local runs) returns the JSON text."""
+    if isinstance(payload, (str, bytes, bytearray)):
+        return json.loads(payload)
+    return dict(payload)
+
+def load_lead(payload):
+    """Lead exactly as stored in leads.payload."""
+    return Lead(**lead_data(payload))
+
+def ensure_enriched(lead, minimum=5000):
+    """ingest() stores leads already enriched (classify_for_config runs enrich before the upsert), so the stored
+    score and summary are reused. Only rows stored without them (older payloads, hand-made leads) are enriched."""
+    return lead if lead.summary and lead.temperature else enrich(lead, minimum)
+
+def stored_lead(payload, minimum=5000):
+    """Lead from leads.payload with its score fields, computed only when the row has none."""
+    return ensure_enriched(load_lead(payload), minimum)
+
 def fingerprint(lead):
     # Keep budget and contact identity. Exact normalized copies across channels collapse.
     text = normalize(lead.title + ' ' + lead.text + ' ' + lead.budget_text)
@@ -265,7 +285,7 @@ def fingerprint(lead):
 
 def message(lead, reason, ai=''):
     """ai: optional pre-rendered AI assessment lines (see ai_scoring.card_lines)."""
-    lead = enrich(lead)
+    lead = ensure_enriched(lead)
     label = {'горячий':'🔥','тёплый':'🌤','холодный':'❄️'}.get(lead.temperature,'')
     intent = '\nСигнал: возможная потребность, готовый заказ не подтверждён.' if lead.intent=='possible' else ''
     # Plain text avoids HTML injection from untrusted listings.

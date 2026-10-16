@@ -94,15 +94,15 @@ def sandbox_leads(db,ids=(),source='',with_feedback=False,last=5):
                         (list(ids)[:SANDBOX_MAX_LEADS],SANDBOX_MAX_LEADS)).fetchall()
     else:
         rows=db.execute('''SELECT l.id,l.payload FROM leads l WHERE l.status<>'duplicate'
-            AND (?='' OR l.payload::jsonb->>'source'=?)
+            AND (?='' OR l.source=?)
             AND (NOT ? OR EXISTS (SELECT 1 FROM lead_feedback f WHERE f.lead_id=l.id))
             ORDER BY l.id DESC LIMIT ?''',(source,source,bool(with_feedback),max(1,min(SANDBOX_MAX_LEADS,last)))).fetchall()
     return rows
 
 
 def lead_from_payload(payload):
-    from .core import Lead
-    try:return Lead(**json.loads(payload))
+    from .core import load_lead
+    try:return load_lead(payload)
     except (TypeError,ValueError):return None
 
 
@@ -140,7 +140,7 @@ def journal(db,filters,limit=JOURNAL_LIMIT):
     if filters['topic']:where.append('s.topics @> ?::jsonb');params.append(json.dumps([filters['topic']],ensure_ascii=False))
     if filters['category']:where.append('s.category=?');params.append(filters['category'])
     if filters['status']:where.append('s.status=?');params.append(filters['status'])
-    if filters['source']:where.append("l.payload::jsonb->>'source'=?");params.append(filters['source'])
+    if filters['source']:where.append("l.source=?");params.append(filters['source'])
     if filters['date_from']:where.append("s.updated_at >= (?::date AT TIME ZONE 'Europe/Moscow')");params.append(filters['date_from'])
     if filters['date_to']:
         where.append("s.updated_at < ((?::date + 1) AT TIME ZONE 'Europe/Moscow')");params.append(filters['date_to'])
@@ -163,7 +163,7 @@ def journal(db,filters,limit=JOURNAL_LIMIT):
 
 
 def journal_sources(db):
-    rows=db.execute('''SELECT DISTINCT l.payload::jsonb->>'source' AS source FROM lead_ai_scores s JOIN leads l ON l.id=s.lead_id
+    rows=db.execute('''SELECT DISTINCT l.source AS source FROM lead_ai_scores s JOIN leads l ON l.id=s.lead_id
         WHERE s.updated_at>now()-interval '30 days' ORDER BY 1 LIMIT 200''').fetchall()
     return [row['source'] for row in rows if row['source']]
 
@@ -423,13 +423,13 @@ def register_ai_admin_routes(app,db):
         return {'run':run}
 
     def _prepare_offers(prompts):
-        from .core import enrich
+        from .core import ensure_enriched
         lead_id=request.form.get('lead_id','').strip()
         if not lead_id.isdigit():raise ValueError('Укажите ID лида.')
         row=db().execute('SELECT id,payload FROM leads WHERE id=?',(int(lead_id),)).fetchone()
         lead=lead_from_payload(row['payload']) if row else None
         if not lead:raise ValueError('Лид не найден.')
-        lead=enrich(lead)
+        lead=ensure_enriched(lead)
         project_id=request.form.get('project_id','').strip();settings=None;services=portfolio=''
         if project_id:
             if not project_id.isdigit():raise ValueError('ID проекта — число.')
