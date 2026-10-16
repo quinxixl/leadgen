@@ -4,12 +4,12 @@ import base64
 import json
 import os
 import re
-import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 from cryptography.fernet import Fernet, InvalidToken
+
+from .db_store import MonitorStore, _connection_lost  # noqa: F401  (re-exported for callers and tests)
 
 
 PHONE = re.compile(r'^\+[1-9]\d{7,14}$')
@@ -568,78 +568,6 @@ def personal_message_link(entity, message_id):
     return f'https://t.me/c/{entity.id}/{message_id}'
 
 
-def _connection_lost(db, exc):
-    """True when the connection behind `db` is unusable and must be replaced."""
-    connection = getattr(db, 'connection', None)
-    if getattr(connection, 'closed', False) or getattr(connection, 'broken', False):
-        return True
-    try:
-        import psycopg
-    except ImportError:
-        return False
-    return isinstance(exc, (psycopg.OperationalError, psycopg.InterfaceError))
-
-
-class MonitorStore:
-    """The one database connection shared by every personal monitor of the process.
-
-    The Supavisor session pool is small, so monitors never open a connection per Telegram
-    message. All work runs on a single worker thread: off the event loop, and the psycopg
-    connection is never used from two threads at once. Each unit of work is one short
-    transaction, committed or rolled back before control returns to the event loop, so no
-    transaction (and no checked-out connection) ever stays open across an await. A
-    connection the server closed (idle_in_transaction_session_timeout, pooler restart,
-    network) is replaced and the unit of work retried once."""
-
-    def __init__(self, db_target, opener=None):
-        self.db_target, self.opener = db_target, opener
-        self.db = None
-        self.lock = threading.Lock()
-        self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='personal-monitors-db')
-
-    def _drop(self):
-        db, self.db = self.db, None
-        if db is not None:
-            try:
-                db.close()
-            except Exception:
-                pass
-
-    def call(self, work):
-        """Run work(db) in one transaction on the shared connection (blocking)."""
-        with self.lock:
-            for attempt in (0, 1):
-                if self.db is None:
-                    if self.opener is None:
-                        from .app import db_open
-                        self.opener = db_open
-                    self.db = self.opener(self.db_target)
-                db = self.db
-                try:
-                    with db:
-                        return work(db)
-                except Exception as exc:
-                    if not _connection_lost(db, exc):
-                        raise
-                    self._drop()
-                    if attempt:
-                        raise
-
-    async def run(self, work):
-        """Run work(db) on the DB thread; the transaction has ended when this returns."""
-        return await asyncio.get_running_loop().run_in_executor(self.executor, self.call, work)
-
-    def close(self):
-        def drop():
-            with self.lock:
-                self._drop()
-        try:
-            self.executor.submit(drop).result(timeout=10)
-        except Exception:
-            pass
-        self.executor.shutdown(wait=False)
-
-
 def _load_monitor_targets(db):
     connections = [dict(row) for row in db.execute("""SELECT user_id,session_cipher,updated_at FROM telegram_connections
         WHERE status='active' AND session_cipher<>''""").fetchall()]
@@ -682,6 +610,101 @@ async def handle_personal_message(event, user_id, store, enabled, config):
     return await store.run(lambda db: store_personal_message(db, user_id, chat_id, entity, message, config))
 
 
+MANAGER_INTERVAL = 15
+DISCONNECT_TIMEOUT = 10
+
+
+def _log(text):
+    print(text, flush=True)
+
+
+def _report(exc, **tags):
+    """Owner alert + Sentry for an unexpected manager failure; never breaks the caller."""
+    try:
+        from .observability import capture_exception
+        capture_exception(exc, component='personal_monitors', **tags)
+    except Exception:
+        pass
+
+
+def is_session_revoked(exc):
+    """Only a revoked/unauthorized session disables a connection; everything else is retried."""
+    from .telegram_monitor import is_unauthorized
+    return isinstance(exc, TelegramAccountError) or is_unauthorized(exc)
+
+
+async def _disconnect_quietly(client, user_id):
+    try:
+        await asyncio.wait_for(client.disconnect(), DISCONNECT_TIMEOUT)
+    except Exception as exc:
+        from .telegram_monitor import safe_error
+        _log(f'Личное Telegram-подключение {user_id}: отключение не удалось ({safe_error(exc)}).')
+
+
+async def serve_personal_client(client, user_id, on_ready=None):
+    """One connection attempt. The client is always disconnected: on errors, revoked sessions and cancel."""
+    try:
+        await client.connect()
+        if not await client.is_user_authorized():
+            raise TelegramAccountError('Telegram-сессия отозвана.')
+        if on_ready:
+            try:
+                await on_ready()
+            except Exception as exc:  # bookkeeping only: a DB hiccup must not drop a live connection
+                _log(f'Личное Telegram-подключение {user_id}: статус не обновлён ({type(exc).__name__}).')
+        await client.run_until_disconnected()
+    finally:
+        await _disconnect_quietly(client, user_id)
+
+
+async def keep_personal_connection(user_id, attempt, record_error, *, sleep=asyncio.sleep,
+                                   clock=time.monotonic, log=_log):
+    """Run attempt() forever with exponential backoff (5 s -> 5 min, reset after a long healthy run).
+
+    A revoked session propagates (the manager then sets status='error'); network errors, disconnects and
+    FloodWait only record last_error and retry, so the user never has to reconnect after a blip."""
+    from .telegram_monitor import (HEALTHY_RUN_SECONDS, MAX_RETRY_SECONDS, MIN_RETRY_SECONDS,
+                                   flood_wait_seconds, safe_error)
+    delay = MIN_RETRY_SECONDS
+    while True:
+        started = clock()
+        try:
+            await attempt()
+            error = None
+        except Exception as exc:
+            if is_session_revoked(exc):
+                raise
+            error = exc
+        if clock()-started >= HEALTHY_RUN_SECONDS:
+            delay = MIN_RETRY_SECONDS
+        flood = flood_wait_seconds(error) if error is not None else None
+        if flood is not None:
+            wait = max(MIN_RETRY_SECONDS, flood+1)
+        else:
+            wait, delay = delay, min(delay*2, MAX_RETRY_SECONDS)
+        reason = safe_error(error) if error is not None else 'соединение закрыто'
+        log(f'Личное Telegram-подключение {user_id}: {reason}; переподключение через {wait} с.')
+        try:
+            await record_error(user_id, 'Временная ошибка соединения, переподключение: '
+                               + (type(error).__name__ if error is not None else 'соединение закрыто'))
+        except Exception as exc:
+            log(f'Личное Telegram-подключение {user_id}: ошибка не сохранена ({type(exc).__name__}).')
+        await sleep(wait)
+
+
+async def run_forever(iteration, *, interval=MANAGER_INTERVAL, sleep=asyncio.sleep, log=_log, report=_report):
+    """Call iteration() every `interval` seconds; an exception is logged and reported, never fatal."""
+    while True:
+        try:
+            await iteration()
+        except Exception as exc:
+            from .telegram_monitor import safe_error
+            log('Личные Telegram-подключения: сбой цикла менеджера (' + safe_error(exc) + '), повтор через '
+                + str(interval) + ' с.')
+            report(exc)
+        await sleep(interval)
+
+
 def run_personal_monitors(db_target, config, store=None):
     """Keep one event-only Telethon client per active encrypted connection."""
     from telethon import TelegramClient, events
@@ -692,17 +715,28 @@ def run_personal_monitors(db_target, config, store=None):
     store = store or MonitorStore(db_target)
     enabled = set()
 
-    async def connection_task(user_id, session_string):
+    def record_error(user_id, text):
+        # updated_at is the manager's version stamp: touching it would restart the task and reset backoff.
+        def work(db):
+            db.execute('UPDATE telegram_connections SET last_error=? WHERE user_id=?', (text, user_id))
+        return store.run(work)
+
+    def clear_error(user_id):
+        def work(db):
+            db.execute("UPDATE telegram_connections SET last_error='' WHERE user_id=? AND last_error<>''", (user_id,))
+        return store.run(work)
+
+    async def connection_attempt(user_id, session_string):
         client = TelegramClient(StringSession(session_string), api_id, api_hash)
 
         @client.on(events.NewMessage(incoming=True))
         async def live(event):
             await handle_personal_message(event, user_id, store, enabled, config)
 
-        await client.connect()
-        if not await client.is_user_authorized():
-            raise TelegramAccountError('Telegram-сессия отозвана.')
-        await client.run_until_disconnected()
+        await serve_personal_client(client, user_id, on_ready=lambda: clear_error(user_id))
+
+    async def connection_task(user_id, session_string):
+        await keep_personal_connection(user_id, lambda: connection_attempt(user_id, session_string), record_error)
 
     def mark_error(user_id, error):
         def work(db):
@@ -710,49 +744,47 @@ def run_personal_monitors(db_target, config, store=None):
                 WHERE user_id=?""", ('Соединение остановлено: ' + type(error).__name__, user_id))
         return store.run(work)
 
-    async def manager():
-        tasks = {}
-        while True:
+    tasks = {}
+
+    async def sync_once():
+        try:
+            rows, selected = await store.run(_load_monitor_targets)
+        except Exception as exc:
+            # Database unavailable: keep the running clients and retry on the next cycle.
+            _log('Личные Telegram-подключения: база недоступна (' + type(exc).__name__ + '), повтор через 15 с.')
+            return
+        enabled.clear()
+        enabled.update(selected)
+        wanted = {}
+        for row in rows:
             try:
-                rows, selected = await store.run(_load_monitor_targets)
-            except Exception as exc:
-                # Database unavailable: keep the running clients and retry on the next cycle.
-                print('Личные Telegram-подключения: база недоступна (' + type(exc).__name__ + '), повтор через 15 с.', flush=True)
-                await asyncio.sleep(15)
+                wanted[row['user_id']] = (str(row['updated_at']), cipher.decrypt(row['session_cipher'])['session'])
+            except TelegramAccountError:
                 continue
-            enabled.clear()
-            enabled.update(selected)
-            wanted = {}
-            for row in rows:
-                try:
-                    wanted[row['user_id']] = (str(row['updated_at']), cipher.decrypt(row['session_cipher'])['session'])
-                except TelegramAccountError:
-                    continue
-            for user_id in list(tasks):
-                if tasks[user_id][1].done():
-                    error = tasks[user_id][1].exception() if not tasks[user_id][1].cancelled() else None
-                    del tasks[user_id]
-                    if error:
-                        try:
-                            await mark_error(user_id, error)
-                        except Exception as exc:
-                            print('Личные Telegram-подключения: статус ошибки не сохранён (' + type(exc).__name__ + ').', flush=True)
-                        wanted.pop(user_id, None)
-            for user_id, (version, session_string) in wanted.items():
-                current = tasks.get(user_id)
-                if current and current[0] == version and not current[1].done():
-                    continue
-                if current:
-                    current[1].cancel()
-                task = asyncio.create_task(connection_task(user_id, session_string))
-                tasks[user_id] = (version, task)
-            for user_id in list(tasks):
-                if user_id not in wanted:
-                    tasks[user_id][1].cancel()
-                    del tasks[user_id]
-            await asyncio.sleep(15)
+        for user_id in list(tasks):
+            if tasks[user_id][1].done():
+                error = tasks[user_id][1].exception() if not tasks[user_id][1].cancelled() else None
+                del tasks[user_id]
+                if error:
+                    try:
+                        await mark_error(user_id, error)
+                    except Exception as exc:
+                        _log('Личные Telegram-подключения: статус ошибки не сохранён (' + type(exc).__name__ + ').')
+                    wanted.pop(user_id, None)
+        for user_id, (version, session_string) in wanted.items():
+            current = tasks.get(user_id)
+            if current and current[0] == version and not current[1].done():
+                continue
+            if current:
+                current[1].cancel()
+            task = asyncio.create_task(connection_task(user_id, session_string))
+            tasks[user_id] = (version, task)
+        for user_id in list(tasks):
+            if user_id not in wanted:
+                tasks[user_id][1].cancel()
+                del tasks[user_id]
 
     try:
-        asyncio.run(manager())
+        asyncio.run(run_forever(sync_once))
     finally:
         store.close()

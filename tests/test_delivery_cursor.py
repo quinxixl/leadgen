@@ -176,7 +176,7 @@ class StopLoop(Exception):
 @unittest.skipUnless(psycopg,'psycopg is not installed')
 class WorkerLoop(unittest.TestCase):
     """run_bot survives statement timeouts and lost connections and never waits on Telegram inside a transaction."""
-    def run_loop(self,deliveries,iterations=3,connection=None):
+    def run_loop(self,deliveries,iterations=3,connection=None,extra_env=None):
         from leadgen import bot
         self.connection=connection or FakeConnection(self.answer);db=Database(self.connection,'postgres','dsn')
         self.max_id=0;self.polls=[];self.sleeps=[];self.calls=0
@@ -189,12 +189,12 @@ class WorkerLoop(unittest.TestCase):
             self.calls+=1;outcome=deliveries[min(self.calls,len(deliveries))-1]
             if isinstance(outcome,BaseException):raise outcome
             return outcome
-        env={'TELEGRAM_CHAT_ID':'1','LEAD_DELIVERY_MIN_SECONDS':'0'}
+        env={'TELEGRAM_CHAT_ID':'1','LEAD_DELIVERY_MIN_SECONDS':'0',**(extra_env or {})}
         with patch.dict(os.environ,env),patch('leadgen.bot.telegram',telegram),patch('leadgen.bot.env_load'),\
                 patch('leadgen.bot.capture_exception') as captured,\
                 patch('leadgen.bot.time.sleep',side_effect=self.sleeps.append),\
                 patch('leadgen.telegram_monitor.reader_configured',return_value=False),\
-                patch('leadgen.telegram_monitor.ReaderThread'),patch('leadgen.bot.beat') as beat,\
+                patch('leadgen.telegram_monitor.ReaderThread') as threads,patch('leadgen.bot.beat') as beat,\
                 patch('leadgen.ai_scoring.scoring_enabled',return_value=False),\
                 patch('leadgen.integrations.integrations_enabled',return_value=False),\
                 patch('leadgen.reminders.deliver_due'),patch('leadgen.team_notifications.deliver_assignments'),\
@@ -203,7 +203,7 @@ class WorkerLoop(unittest.TestCase):
                 patch('leadgen.product.deliver_registered',side_effect=deliver):
             with self.assertRaises(StopLoop):
                 bot.run_bot(db,{'poll_seconds':300,'sources':[]})
-        self.captured=captured;self.beats=beat.call_count
+        self.captured=captured;self.beats=beat.call_count;self.threads=threads
         return db
 
     def answer(self,query,params):
@@ -222,6 +222,14 @@ class WorkerLoop(unittest.TestCase):
         self.assertEqual(self.beats,2)              # heartbeat only after the two passes that completed
         # Every long-poll starts outside a transaction: no ACCESS SHARE locks held while waiting for Telegram.
         self.assertEqual(set(self.polls),{'IDLE'})
+
+    def test_personal_monitors_thread_is_supervised_by_the_loop(self):
+        env={'TELEGRAM_API_ID':'1','TELEGRAM_API_HASH':'h','TELEGRAM_SESSION_ENCRYPTION_KEY':'k'}
+        self.run_loop([0,0,0],extra_env=env)
+        names=[c.kwargs.get('name') for c in self.threads.call_args_list]
+        self.assertIn('personal-monitors',names)
+        # Started once, then re-checked on every pass: a dead manager thread is restarted (rate-limited).
+        self.assertGreaterEqual(self.threads.return_value.ensure.call_count,4)
 
     def test_lost_connection_is_reopened(self):
         lost=psycopg.OperationalError('server closed the connection unexpectedly')
