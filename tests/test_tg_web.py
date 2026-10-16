@@ -11,6 +11,7 @@ from test_reply_postgres import Gateway
 from leadgen.telegram_accounts import SessionCipher
 from leadgen.tg_auth import sign_init_data
 from leadgen.web_auth import approve_login
+from leadgen.core import lead_data
 
 TOKEN = '123456:' + 'T' * 35
 
@@ -282,7 +283,7 @@ class MiniAppPostgres(unittest.TestCase):
         with self.db:
             self.db.execute('''INSERT INTO telegram_connections(user_id,telegram_user_id,session_cipher,status,display_name)
                 VALUES(?,9001,?,'active','Мой аккаунт')''', (self.u, cipher.encrypt({'session': '9001'})))
-            payload = json.loads(self.db.execute('SELECT payload FROM leads WHERE id=?', (self.ids[0],)).fetchone()['payload'])
+            payload = lead_data(self.db.execute('SELECT payload FROM leads WHERE id=?', (self.ids[0],)).fetchone()['payload'])
             payload['url'] = 'https://t.me/business_chat/101'
             self.db.execute('UPDATE leads SET payload=?,url=? WHERE id=?', (json.dumps(payload), payload['url'], self.ids[0]))
         return gateway

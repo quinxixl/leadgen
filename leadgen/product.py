@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 from . import accounts
 from .app import classify_for_config
-from .core import TOPIC_GROUPS, TOPICS, Lead, message, topics, budget
+from .core import TOPIC_GROUPS, TOPICS, load_lead, message, topics, budget
 from .billing import (ANNUAL_DISCOUNT_PERCENT, PLAN_NAMES, PLANS, beta_free_start, beta_label, days_left, delay_clause, effective_plan,
                       is_unlimited, plan_limits, plan_summary, service_subscription, support_contact)
 from .drafts import reply_drafts
@@ -348,7 +348,7 @@ def lead_id_floor(db,hours,ttl=300,clock=time.monotonic):
     widens the scan a little."""
     now=clock();cached=_FLOORS.get(hours)
     if cached and cached[0]>now:return cached[1]
-    row=db.execute('''SELECT id FROM leads WHERE first_seen::timestamptz < now()-(? * interval '1 hour')
+    row=db.execute('''SELECT id FROM leads WHERE first_seen < now()-(? * interval '1 hour')
         ORDER BY id DESC LIMIT 1''',(hours,)).fetchone()
     floor=row['id'] if row else 0
     _FLOORS[hours]=(now+ttl,floor)
@@ -360,7 +360,7 @@ def settled_horizon(db,lag_seconds):
 
     Lower ids were allocated earlier, so their inserting transactions have ended by now (see cursor_lag_seconds).
     Walks leads_id_key backwards across the lag only."""
-    row=db.execute('''SELECT id FROM leads WHERE first_seen::timestamptz <= now()-(? * interval '1 second')
+    row=db.execute('''SELECT id FROM leads WHERE first_seen <= now()-(? * interval '1 second')
         ORDER BY id DESC LIMIT 1''',(lag_seconds,)).fetchone()
     return row['id'] if row else 0
 
@@ -417,8 +417,8 @@ def _deliver_user(db,base,sender,prefs,limit_per_user,timing,floor,horizon):
     delayed,delay_args=delay_clause(limits['delay_minutes'])
     scoring,wait=timing
     candidates=db.execute('''SELECT l.id,((NOT ? OR EXISTS (SELECT 1 FROM lead_ai_scores s WHERE s.lead_id=l.id)
-            OR l.first_seen::timestamptz < now()-(? * interval '1 second'))'''+delayed+''') AS ready
-        FROM leads l WHERE l.id > ? AND '''+UNSEEN+' AND l.first_seen::timestamptz >= ? ORDER BY l.id DESC',
+            OR l.first_seen < now()-(? * interval '1 second'))'''+delayed+''') AS ready
+        FROM leads l WHERE l.id > ? AND '''+UNSEEN+' AND l.first_seen >= ? ORDER BY l.id DESC',
         [scoring,wait]+delay_args+[since,user_id,user_id,user_id,prefs['registered_at']]).fetchall()
     pending={row['id'] for row in candidates}
     ready=[row['id'] for row in candidates if row['ready']][:100]
@@ -431,7 +431,7 @@ def _deliver_user(db,base,sender,prefs,limit_per_user,timing,floor,horizon):
     db.release()
     sent=0
     for row in rows:
-        lead=Lead(**json.loads(row['payload']))
+        lead=load_lead(row['payload'])
         allowed,reason,matches,ai,_=_ai_eligibility(db,row['id'],lead,config,prefs,projects,scores)
         if not allowed:
             with db:db.execute('''INSERT INTO user_leads(user_id,lead_id,delivery_status,filter_reason)
@@ -504,15 +504,15 @@ def backfill_first_leads(db,base,sender,user_id,limit=FIRST_RUN_LIMIT,hours=FIRS
     config=user_config(base,prefs);limits=recipient_limits(prefs)
     projects=active_projects(db,user_id,limits)
     delayed,delay_args=delay_clause(limits['delay_minutes'])
-    # The id floor bounds the backwards walk to the window: first_seen is text, its cast cannot use an index.
+    # The id floor bounds the backwards walk of leads_id_key to the window (first_seen has no index of its own).
     rows=db.execute('SELECT l.id,l.payload,l.fingerprint FROM leads l WHERE l.id > ? AND '+UNSEEN+''' AND
-        l.first_seen::timestamptz >= now()-(? * interval '1 hour')'''+delayed+' ORDER BY l.id DESC LIMIT 500',
+        l.first_seen >= now()-(? * interval '1 hour')'''+delayed+' ORDER BY l.id DESC LIMIT 500',
         [lead_id_floor(db,hours),user_id,user_id,user_id,hours]+delay_args).fetchall()
     candidates=[]
     from .ai_scoring import fetch_scores
     scores=fetch_scores(db,[row['id'] for row in rows])
     for row in rows:
-        lead=Lead(**json.loads(row['payload']))
+        lead=load_lead(row['payload'])
         allowed,reason,matches,ai,ai_score=_ai_eligibility(db,row['id'],lead,config,prefs,projects,scores)
         if allowed:candidates.append(((ai_score or 0,lead.score),row['id'],row['fingerprint'],lead,reason,matches,ai))
     db.release()
@@ -673,7 +673,7 @@ class ProductController:
         row=self.db.execute('''SELECT l.id,l.payload,l.reason FROM leads l JOIN user_leads ul ON ul.lead_id=l.id
             JOIN app_users u ON u.id=ul.user_id WHERE l.id=? AND u.telegram_chat_id=?
             AND ul.delivery_status<>'filtered' ''',(lead_id,int(self.last_chat))).fetchone()
-        return (row,Lead(**json.loads(row['payload']))) if row else (None,None)
+        return (row,load_lead(row['payload'])) if row else (None,None)
 
     def _feedback(self,user_id,lead_id):
         row=self.db.execute('SELECT label FROM lead_feedback WHERE user_id=? AND lead_id=?',(user_id,lead_id)).fetchone()
@@ -801,12 +801,12 @@ class ProductController:
         pipeline={r['pipeline_status']:r['total'] for r in self.db.execute(
             'SELECT pipeline_status,count(*) AS total FROM user_leads WHERE user_id=? GROUP BY pipeline_status',(user_id,))}
         money_total=self.db.execute("SELECT coalesce(sum(deal_amount),0) AS total FROM user_leads WHERE user_id=? AND pipeline_status='won'",(user_id,)).fetchone()['total']
-        sources=self.db.execute('''SELECT l.payload::jsonb->>'source' AS source,count(*) AS found,
+        sources=self.db.execute('''SELECT l.source AS source,count(*) AS found,
             count(*) FILTER (WHERE f.label='fit') AS fit
             FROM user_leads ul JOIN leads l ON l.id=ul.lead_id
             LEFT JOIN lead_feedback f ON f.user_id=ul.user_id AND f.lead_id=ul.lead_id
             WHERE ul.user_id=? AND ul.delivery_status='sent'
-            GROUP BY l.payload::jsonb->>'source' ORDER BY found DESC LIMIT 5''',(user_id,)).fetchall()
+            GROUP BY l.source ORDER BY found DESC LIMIT 5''',(user_id,)).fetchall()
         lines=['Качество отбора:']+[f'• {FEEDBACK[k]}: {feedback.get(k,0)}' for k in FEEDBACK]
         lines+=['','Воронка:']+[f'• {PIPELINE[k]}: {pipeline.get(k,0)}' for k in PIPELINE]
         lines.append(f'• Сумма выигранных сделок: {money(money_total)} ₽')
@@ -901,7 +901,7 @@ class ProductController:
         scores=fetch_scores(self.db,[row['id'] for row in rows])
         # Oldest first, so the newest card ends up at the bottom of the chat.
         for row in reversed(rows):
-            lead=Lead(**json.loads(row['payload']));ai=scores.get(row['id'])
+            lead=load_lead(row['payload']);ai=scores.get(row['id'])
             lines=card_lines(ai,personal_score(ai,lead,selected_topics(user)))
             self.sender('sendMessage',{'chat_id':self.last_chat,'text':message(lead,row['filter_reason'] or 'ранее присланный заказ',lines),
                 'link_preview_options':{'is_disabled':True},'reply_markup':lead_buttons(row['id'],lead.url,row['feedback'])})

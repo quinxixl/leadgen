@@ -15,7 +15,7 @@ from itsdangerous import BadSignature
 from werkzeug.middleware.proxy_fix import ProxyFix
 from .app import env_load
 from .database import db_pooled
-from .core import TOPICS, TOPIC_CATEGORIES, Lead, enrich
+from .core import TOPICS, TOPIC_CATEGORIES, stored_lead
 from .product import PIPELINE, FEEDBACK, ProductController
 from .crm import NOTE_LIMIT as CRM_NOTE_LIMIT, normalize as normalize_status
 from .web_auth import begin_login, consume_handoff, consume_login, login_status
@@ -166,6 +166,11 @@ def start_user_session(db,user_id,permanent=True):
     session.clear()
     session.update(user_id=user_id,sv=row['session_version'] if row else 0,csrf=secrets.token_urlsafe(32))
     session.permanent=permanent
+
+
+# Lead search text. Must stay identical to the expression of the leads_search_trgm GIN index
+# (supabase/migrations/20261014150000_lead_search_indexes.sql), otherwise the planner cannot use it.
+LEAD_SEARCH_TEXT="(coalesce(l.payload->>'title','') || ' ' || coalesce(l.payload->>'text',''))"
 
 
 def like_pattern(value):
@@ -456,7 +461,7 @@ def create_app(test_config=None):
         except ValueError:abort(400)
         if days not in (7,30,90):abort(400)
         owner=(g.owner_id,days)
-        base="ul.user_id=? AND ul.delivery_status<>'filtered' AND ul.updated_at IS NOT NULL AND l.first_seen::timestamptz >= now()-(? * interval '1 day')"
+        base="ul.user_id=? AND ul.delivery_status<>'filtered' AND ul.updated_at IS NOT NULL AND l.first_seen >= now()-(? * interval '1 day')"
         stats=db().execute("""SELECT count(*) AS total,
             count(*) FILTER (WHERE ul.pipeline_status='won') AS won,
             count(*) FILTER (WHERE f.label='fit') AS fit,
@@ -465,14 +470,14 @@ def create_app(test_config=None):
             LEFT JOIN lead_feedback f ON f.user_id=ul.user_id AND f.lead_id=ul.lead_id
             WHERE """+base,owner).fetchone()
         stages=db().execute("SELECT ul.pipeline_status,count(*) AS count FROM user_leads ul JOIN leads l ON l.id=ul.lead_id WHERE "+base+" GROUP BY ul.pipeline_status",owner).fetchall()
-        sources=db().execute("""SELECT l.payload::jsonb->>'source' AS name,count(*) AS count,
+        sources=db().execute("""SELECT l.source AS name,count(*) AS count,
             count(f.label) AS reviewed,count(*) FILTER (WHERE f.label='fit') AS fit,
             count(*) FILTER (WHERE f.label='ad') AS ads,
             count(*) FILTER (WHERE ul.pipeline_status='won') AS won
             FROM user_leads ul JOIN leads l ON l.id=ul.lead_id
             LEFT JOIN lead_feedback f ON f.user_id=ul.user_id AND f.lead_id=ul.lead_id
             WHERE """+base+" GROUP BY name ORDER BY won DESC,fit DESC,count DESC LIMIT 20",owner).fetchall()
-        daily=db().execute("SELECT (l.first_seen::timestamptz AT TIME ZONE 'UTC')::date AS day,count(*) AS count FROM user_leads ul JOIN leads l ON l.id=ul.lead_id WHERE "+base+" GROUP BY day ORDER BY day",owner).fetchall()
+        daily=db().execute("SELECT (l.first_seen AT TIME ZONE 'UTC')::date AS day,count(*) AS count FROM user_leads ul JOIN leads l ON l.id=ul.lead_id WHERE "+base+" GROUP BY day ORDER BY day",owner).fetchall()
         quality=db().execute("""SELECT f.label,count(*) AS count FROM user_leads ul JOIN leads l ON l.id=ul.lead_id
             JOIN lead_feedback f ON f.user_id=ul.user_id AND f.lead_id=ul.lead_id
             WHERE """+base+" GROUP BY f.label ORDER BY count DESC",owner).fetchall()
@@ -511,7 +516,7 @@ def create_app(test_config=None):
         source=request.args.get('source','')[:300]
         label=request.args.get('feedback','')
         if source:
-            where+=" AND l.payload::jsonb->>'source'=?";args.append(source)
+            where+=" AND l.source=?";args.append(source)
         if label:
             if label not in FEEDBACK:abort(400)
             where+=' AND EXISTS (SELECT 1 FROM lead_feedback f WHERE f.user_id=ul.user_id AND f.lead_id=l.id AND f.label=?)';args.append(label)
@@ -525,10 +530,10 @@ def create_app(test_config=None):
                 if key=='to':
                     if day==date.max:abort(400)
                     day+=timedelta(days=1)
-                where+=' AND l.first_seen::timestamptz '+operator+' ?::timestamptz'
+                where+=' AND l.first_seen '+operator+' ?::timestamptz'
                 args.append(day.isoformat()+'T00:00:00+00:00')
         if len(dates)==2 and dates['from']>dates['to']:abort(400)
-        if search:where+=" AND l.payload ILIKE ? ESCAPE '\\'";args.append(like_pattern(search))
+        if search:where+=' AND '+LEAD_SEARCH_TEXT+" ILIKE ? ESCAPE '\\'";args.append(like_pattern(search))
         if status:
             if not normalize_status(status):abort(400)
             where+=' AND ul.pipeline_status=?';args.append(normalize_status(status))
@@ -537,13 +542,13 @@ def create_app(test_config=None):
         rows=db().execute('''SELECT l.id,l.payload,ul.pipeline_status,ul.deal_amount
             FROM user_leads ul JOIN leads l ON l.id=ul.lead_id WHERE '''+where+
             ' ORDER BY l.id DESC LIMIT ? OFFSET ?',args+([10000,0] if export else [30,(page-1)*30])).fetchall()
-        return [dict(row)|{'lead':enrich(Lead(**json.loads(row['payload'])))} for row in rows],count,page
+        return [dict(row)|{'lead':stored_lead(row['payload'])} for row in rows],count,page
 
     @app.get('/app/leads')
     def leads():
         rows,count,page=filtered_leads()
         projects=db().execute('SELECT id,name FROM projects WHERE workspace_id=? ORDER BY name',(g.workspace['id'],)).fetchall()
-        sources=db().execute("SELECT DISTINCT l.payload::jsonb->>'source' AS name FROM user_leads ul JOIN leads l ON l.id=ul.lead_id WHERE ul.user_id=? AND ul.delivery_status<>'filtered' ORDER BY name",(g.owner_id,)).fetchall()
+        sources=db().execute("SELECT DISTINCT l.source AS name FROM user_leads ul JOIN leads l ON l.id=ul.lead_id WHERE ul.user_id=? AND ul.delivery_status<>'filtered' ORDER BY name",(g.owner_id,)).fetchall()
         members=db().execute('''SELECT m.user_id,u.display_name FROM workspace_members m JOIN app_users u ON u.id=m.user_id
             WHERE m.workspace_id=? ORDER BY u.display_name''',(g.workspace['id'],)).fetchall()
         filters={k:request.args.get(k,'') for k in ('q','status','project','source','feedback','from','to')}
@@ -613,7 +618,7 @@ def create_app(test_config=None):
         profile=db().execute('SELECT profile_services,portfolio FROM user_preferences WHERE user_id=?',(g.owner_id,)).fetchone()
         from .drafts import reply_drafts
         from .ai_offers import ai_enabled,latest_for_lead
-        lead=enrich(Lead(**json.loads(row['payload'])))
+        lead=stored_lead(row['payload'])
         drafts=reply_drafts(lead,profile['profile_services'],profile['portfolio'],dict(draft_project) if draft_project else None)
         ai_offer=latest_for_lead(db(),g.owner_id,lid,draft_project['id'] if draft_project else None)
         tags=db().execute('SELECT tag FROM lead_tags WHERE user_id=? AND lead_id=? ORDER BY tag',(g.owner_id,lid)).fetchall()
@@ -638,7 +643,7 @@ def create_app(test_config=None):
                 (lid,int(project_id),g.workspace['id'])).fetchone()
             if not project:abort(404)
         profile=db().execute('SELECT profile_services,portfolio FROM user_preferences WHERE user_id=?',(g.owner_id,)).fetchone()
-        lead=enrich(Lead(**json.loads(row['payload'])))
+        lead=stored_lead(row['payload'])
         try:
             generate_for_lead(db(),g.workspace['id'],g.owner_id,g.user['id'],lid,lead,
                 profile['profile_services'],profile['portfolio'],dict(project) if project else None,

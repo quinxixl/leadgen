@@ -11,6 +11,7 @@ from leadgen.web import create_app
 from leadgen.web_auth import approve_login
 from leadgen.telegram_accounts import SessionCipher
 from cryptography.fernet import Fernet
+from leadgen.core import lead_data
 
 
 class FakeTelegramGateway:
@@ -47,6 +48,14 @@ def fake_ai_generator(lead,profile_services='',portfolio='',settings=None,api_ke
             {'prompt_tokens':321,'completion_tokens':123})
 
 DSN=os.environ.get('WEB_TEST_DATABASE_URL','')
+
+
+def apply_no_transaction_file(name):
+    """A -- leadgen:no-transaction migration, statement by statement on an autocommit connection, as web_migrate runs it."""
+    import psycopg
+    from leadgen.web_migrate import split_statements
+    with psycopg.connect(DSN,autocommit=True) as connection:
+        for statement in split_statements((Path('supabase/migrations')/name).read_text()):connection.execute(statement)
 
 
 @unittest.skipUnless(DSN,'WEB_TEST_DATABASE_URL is not configured')
@@ -98,7 +107,9 @@ class WebPostgres(unittest.TestCase):
         cls.db.connection.execute(Path('supabase/migrations/20261013120000_yookassa_payments.sql').read_text(),prepare=False)
         cls.db.connection.execute(Path('supabase/migrations/20261013140000_user_delivery_cursor.sql').read_text(),prepare=False)
         cls.db.connection.execute(Path('supabase/migrations/20261014120000_filtered_cleanup_keeps_cursor.sql').read_text(),prepare=False)
+        cls.db.connection.execute(Path('supabase/migrations/20261014140000_typed_lead_columns.sql').read_text(),prepare=False)
         cls.db.commit()
+        apply_no_transaction_file('20261014150000_lead_search_indexes.sql')
         cls.app=create_app({'TESTING':True,'SECRET_KEY':'test-'*10,'BOT_USERNAME':'test_bot',
             'SESSION_COOKIE_SECURE':False,'DB_FACTORY':lambda:db_open(DSN),
             'TELEGRAM_CIPHER_KEY':Fernet.generate_key().decode(),
@@ -257,7 +268,7 @@ class WebPostgres(unittest.TestCase):
         self.assertIn('Пробный период',self.client.get('/app/billing').text)
         with self.db:self.db.execute("UPDATE subscriptions SET ends_at=now()-interval '1 minute' WHERE user_id=?",(self.u,))
         # The cabinet stays open; the lead found an hour ago is visible, limits are the Free ones.
-        with self.db:self.db.execute("UPDATE leads SET first_seen=(now()-interval '2 hours')::text")
+        with self.db:self.db.execute("UPDATE leads SET first_seen=(now()-interval '2 hours')")
         r=self.client.get('/app/leads');self.assertEqual(r.status_code,200);self.assertIn('Нужен сайт 0',r.text)
         page=self.client.get('/app/billing').text
         self.assertIn('Бесплатный',page);self.assertIn('работает на бесплатном тарифе',page)
@@ -330,7 +341,7 @@ class WebPostgres(unittest.TestCase):
         with self.db:
             self.db.execute('DELETE FROM user_leads WHERE user_id=?',(self.u,))
             self.db.execute('UPDATE user_preferences SET monitoring_active=true WHERE user_id=?',(self.u,))
-            self.db.execute("UPDATE leads SET first_seen=(now()+interval '1 second')::text")
+            self.db.execute("UPDATE leads SET first_seen=(now()+interval '1 second')")
             for name in ('Первый проект','Второй проект'):
                 self.db.execute('''INSERT INTO projects(user_id,workspace_id,name,topics,show_without_budget)
                     VALUES(?,?,?,?::jsonb,true)''',(self.u,self.ws,name,json.dumps(['Сайты'])))
@@ -345,7 +356,7 @@ class WebPostgres(unittest.TestCase):
         with self.db:
             self.db.execute('DELETE FROM user_leads WHERE user_id=?',(self.u,))
             self.db.execute('UPDATE user_preferences SET monitoring_active=true,show_without_budget=true WHERE user_id=?',(self.u,))
-            self.db.execute("UPDATE leads SET first_seen=(now()+interval '1 second')::text")
+            self.db.execute("UPDATE leads SET first_seen=(now()+interval '1 second')")
         # Projects created from the web start disabled.
         self.client.post('/app/projects',data={'csrf':'test-csrf','name':'Черновик проекта'})
         self.assertFalse(self.db.execute('SELECT enabled FROM projects WHERE user_id=?',(self.u,)).fetchone()['enabled'])
@@ -360,7 +371,7 @@ class WebPostgres(unittest.TestCase):
         lid=self.ids[0]
         with self.db:
             self.db.execute("INSERT INTO lead_feedback(user_id,lead_id,label) VALUES(?,?,'fit')",(self.u,lid))
-            payload=json.loads(self.db.execute('SELECT payload FROM leads WHERE id=?',(lid,)).fetchone()['payload'])
+            payload=lead_data(self.db.execute('SELECT payload FROM leads WHERE id=?',(lid,)).fetchone()['payload'])
             payload['title']='=HYPERLINK("https://example.com")'
             self.db.execute('UPDATE leads SET payload=? WHERE id=?',(json.dumps(payload),lid))
         r=self.client.get('/app/leads/export?format=xlsx&feedback=fit&source=Telegram:+test')
@@ -414,7 +425,7 @@ class WebPostgres(unittest.TestCase):
         self.assertEqual(page.status_code,200)
         self.assertIn('77 001',page.text)
         self.assertNotIn('998 877',page.text)
-        with self.db:self.db.execute("UPDATE leads SET first_seen=(now()-interval '20 days')::text WHERE id=?",(self.ids[0],))
+        with self.db:self.db.execute("UPDATE leads SET first_seen=(now()-interval '20 days') WHERE id=?",(self.ids[0],))
         # The period report excludes the older lead; the earnings widget above it is not period-bound.
         page=self.client.get('/app?days=7').text
         self.assertNotIn('77 001',page.split('<h1>Результаты поиска</h1>')[1])
@@ -425,7 +436,7 @@ class WebPostgres(unittest.TestCase):
     def test_duplicate_does_not_send_again_to_user(self):
         from leadgen.product import deliver_registered
         from test_leadgen import CONFIG
-        payload=json.loads(self.db.execute('SELECT payload FROM leads WHERE id=?',(self.ids[0],)).fetchone()['payload'])
+        payload=lead_data(self.db.execute('SELECT payload FROM leads WHERE id=?',(self.ids[0],)).fetchone()['payload'])
         payload.update(url='https://t.me/another/1',title='Нужен бот',text='Нужен бот, бюджет 20000 рублей',budget_text='20000 руб.')
         with self.db:
             self.db.execute("UPDATE user_preferences SET monitoring_active=true,show_without_budget=true WHERE user_id=?",(self.u,))
@@ -669,7 +680,7 @@ class WebPostgres(unittest.TestCase):
         self.assertEqual(page.status_code,200)
         self.assertIn('Всего запросов</span><strong>1',page.text)
         self.assertIn('Сайты',page.text)
-        with self.db:self.db.execute("UPDATE leads SET first_seen=(now()-interval '20 days')::text WHERE id=?",(self.ids[0],))
+        with self.db:self.db.execute("UPDATE leads SET first_seen=(now()-interval '20 days') WHERE id=?",(self.ids[0],))
         self.assertIn('Всего запросов</span><strong>0',self.client.get('/app/demand?days=7').text)
         self.assertIn('Всего запросов</span><strong>1',self.client.get('/app/demand?days=30').text)
         self.assertEqual(self.client.get('/app/demand?days=365').status_code,400)

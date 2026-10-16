@@ -60,8 +60,7 @@ def save_note(db, owner_id, lead_id, note):
 
 def pipeline_board(db, owner_id, statuses, per_column=50):
     """Leads grouped by status with the next pending reminder; newest status change first."""
-    import json
-    from .core import Lead
+    from .core import load_lead
     rows = db.execute('''SELECT * FROM (SELECT l.id,l.payload,ul.pipeline_status,ul.deal_amount,ul.crm_note,
             ul.status_changed_at,r.due_at AS remind_at,
             row_number() OVER (PARTITION BY ul.pipeline_status
@@ -76,7 +75,7 @@ def pipeline_board(db, owner_id, statuses, per_column=50):
         (owner_id,)).fetchall()}
     board = {status: [] for status in statuses}
     for row in rows:
-        board[row['pipeline_status']].append(dict(row) | {'lead': Lead(**json.loads(row['payload']))})
+        board[row['pipeline_status']].append(dict(row) | {'lead': load_lead(row['payload'])})
     return board, counts
 
 
