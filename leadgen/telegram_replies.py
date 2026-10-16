@@ -1,11 +1,11 @@
 """Explicit, durable Telegram replies shared by the web and bot interfaces."""
 import asyncio
-import json
 import re
 import secrets
 from datetime import datetime, timedelta, timezone
 
-from .telegram_accounts import SessionCipher, TelegramAccountError, TelethonGateway
+from .core import lead_data
+from .telegram_accounts import TelegramAccountError, TelethonGateway
 
 
 MODES = {'dm': 'В личку автору', 'group': 'Ответом в группе'}
@@ -127,7 +127,7 @@ def authorized_lead(db, actor_id, owner_id, lead_id):
         (actor_id, owner_id, lead_id)).fetchone()
     if not row:
         raise TelegramAccountError('Лид недоступен или у вас нет права отправлять отклики.')
-    return json.loads(row['payload'])
+    return lead_data(row['payload'])
 
 
 def connection(db, actor_id):

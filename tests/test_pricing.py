@@ -9,6 +9,7 @@ from unittest.mock import patch
 import test_web_postgres as fixtures
 from leadgen import billing
 from leadgen.web import create_app
+from leadgen.core import lead_data
 
 NOW = datetime(2026, 10, 10, 12, 0, tzinfo=timezone.utc)
 
@@ -72,7 +73,7 @@ class Plans(unittest.TestCase):
     def test_delay_clause_only_for_delayed_plans(self):
         self.assertEqual(billing.delay_clause(0), ('', []))
         sql, args = billing.delay_clause(60)
-        self.assertIn('l.first_seen::timestamptz <= now()', sql);self.assertEqual(args, [60])
+        self.assertIn('l.first_seen <= now()', sql);self.assertEqual(args, [60])
 
 
 class PublicPricing(unittest.TestCase):
@@ -179,7 +180,7 @@ class PricingPostgres(unittest.TestCase):
                 self.db.execute('''INSERT INTO ai_offer_generations(workspace_id,owner_user_id,lead_id,requested_by,model,
                     prompt_fingerprint,status,created_at) VALUES(?,?,?,?,'m',repeat('f',64),'completed',now()-interval '1 hour')''',
                     (self.ws, self.u, self.ids[0], self.u))
-        payload = json.loads(self.db.execute('SELECT payload FROM leads WHERE id=?', (self.ids[0],)).fetchone()['payload'])
+        payload = lead_data(self.db.execute('SELECT payload FROM leads WHERE id=?', (self.ids[0],)).fetchone()['payload'])
         lead = Lead(**payload)
         with patch.dict(os.environ, {'GROQ_API_KEY': 'test-key'}):
             with self.assertRaises(AIOfferError) as error:
@@ -199,7 +200,7 @@ class PricingPostgres(unittest.TestCase):
             self.db.execute('DELETE FROM user_leads WHERE user_id=?', (self.u,))
             self.db.execute('UPDATE app_users SET registered_at=now()-interval \'1 day\' WHERE id=?', (self.u,))
             self.db.execute('UPDATE user_preferences SET monitoring_active=true,show_without_budget=true WHERE user_id=?', (self.u,))
-            self.db.execute("UPDATE leads SET first_seen=(now()-interval '10 minutes')::text,origin_user_id=NULL")
+            self.db.execute("UPDATE leads SET first_seen=(now()-interval '10 minutes'),origin_user_id=NULL")
         self.expire_trial(self.u)
         calls = []
         send = lambda *args:calls.append(args)
@@ -212,7 +213,7 @@ class PricingPostgres(unittest.TestCase):
         # Back on Free, the delivered lead stays hidden in the cabinet until the delay passes.
         self.plan(self.u, 'free')
         self.assertNotIn('Нужен сайт 0', self.client.get('/app/leads').text)
-        with self.db:self.db.execute("UPDATE leads SET first_seen=(now()-interval '61 minutes')::text")
+        with self.db:self.db.execute("UPDATE leads SET first_seen=(now()-interval '61 minutes')")
         self.assertIn('Нужен сайт 0', self.client.get('/app/leads').text)
 
     def test_free_plan_delivers_after_delay(self):
@@ -221,7 +222,7 @@ class PricingPostgres(unittest.TestCase):
             self.db.execute('DELETE FROM user_leads WHERE user_id=?', (self.u,))
             self.db.execute('UPDATE app_users SET registered_at=now()-interval \'1 day\' WHERE id=?', (self.u,))
             self.db.execute('UPDATE user_preferences SET monitoring_active=true,show_without_budget=true WHERE user_id=?', (self.u,))
-            self.db.execute("UPDATE leads SET first_seen=(now()-interval '61 minutes')::text")
+            self.db.execute("UPDATE leads SET first_seen=(now()-interval '61 minutes')")
         self.plan(self.u, 'free')
         calls = []
         deliver_registered(self.db, {'sources': [], 'max_age_hours': 72, 'min_budget': 0}, lambda *args:calls.append(args), 10)

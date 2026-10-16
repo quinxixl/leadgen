@@ -9,7 +9,6 @@ FREE_LEAD_DELAY_MINUTES = 60
 ANNUAL_DISCOUNT_PERCENT = 20
 # Beta founders keep «Старт» at this monthly price for as long as the subscription lasts.
 FOUNDER_START_PRICE = 690
-TRIAL_DAYS = 7
 # Early-access accounts use «Старт» for free until this date (midnight Moscow time), then fall back to Free.
 DEFAULT_BETA_ENDS_AT = '2026-11-15'
 MSK = timezone(timedelta(hours=3))
@@ -185,7 +184,7 @@ def delay_clause(minutes, column='l.first_seen'):
     """SQL condition and parameters that hide leads younger than the plan's delivery delay."""
     if not minutes:
         return '', []
-    return f" AND {column}::timestamptz <= now()-(? * interval '1 minute')", [minutes]
+    return f" AND {column} <= now()-(? * interval '1 minute')", [minutes]
 
 
 def plan_summary(code):
