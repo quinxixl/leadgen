@@ -14,7 +14,7 @@ from flask.sessions import SecureCookieSessionInterface
 from itsdangerous import BadSignature
 from werkzeug.middleware.proxy_fix import ProxyFix
 from .app import env_load
-from .database import db_open
+from .database import db_pooled
 from .core import TOPICS, TOPIC_CATEGORIES, stored_lead
 from .product import PIPELINE, FEEDBACK, ProductController
 from .crm import NOTE_LIMIT as CRM_NOTE_LIMIT, normalize as normalize_status
@@ -209,7 +209,7 @@ def create_app(test_config=None):
         WEB_PUBLIC_URL=os.environ.get('WEB_PUBLIC_URL','').strip().rstrip('/'),
         TELEGRAM_CIPHER_KEY=os.environ.get('TELEGRAM_SESSION_ENCRYPTION_KEY',''),
         INTEGRATIONS_ENABLED=integrations_enabled(),
-        DB_FACTORY=db_open, TRUSTED_HOSTS=os.environ.get('WEB_ALLOWED_HOSTS','localhost,127.0.0.1').split(','))
+        DB_FACTORY=db_pooled, TRUSTED_HOSTS=os.environ.get('WEB_ALLOWED_HOSTS','localhost,127.0.0.1').split(','))
     if test_config:app.config.update(test_config)
     if not app.config['SECRET_KEY'] or len(app.config['SECRET_KEY']) < 32:
         raise ValueError('WEB_SECRET_KEY должен содержать минимум 32 символа')
@@ -689,10 +689,25 @@ def create_app(test_config=None):
         from .billing import PERIODS,is_unlimited
         from .telegram_monitor import reader_status
         from .payments import reason_text,recent_payments
+        from .source_registry import moderation_queue
         return render_template('admin.html',health=health,users=pr.admin_users(db()),feedback_rows=fb.recent(db()),fb=fb,
                                reader=reader_status(db()),plan_requests=pr.open_requests(db()),plan_changes=pr.recent_changes(db()),
                                terms=pr.TERMS,periods=PERIODS,is_unlimited=is_unlimited,
-                               payments=recent_payments(db()),payment_reason=reason_text)
+                               payments=recent_payments(db()),payment_reason=reason_text,
+                               moderation=moderation_queue(db()))
+
+    @app.post('/admin/sources/<username>/<decision>')
+    def admin_moderate_source(username,decision):
+        # Chats the service account joined are read only after the platform admin approves them.
+        if not is_platform_admin(g.user):abort(403)
+        from .source_registry import approve_source,reject_source
+        actions={'approve':(approve_source,'одобрен: сообщения из него теперь читаются'),
+                 'reject':(reject_source,'отклонён и больше не появится в очереди')}
+        if decision not in actions or not re.fullmatch(r'[a-z][a-z0-9_]{3,31}',username):abort(404)
+        action,message=actions[decision]
+        if not action(db(),username):abort(404)
+        flash(f'Источник @{username} {message}.')
+        return redirect('/admin#source-moderation')
 
     @app.errorhandler(400)
     @app.errorhandler(403)
