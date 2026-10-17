@@ -87,6 +87,13 @@ def classify_for_config(lead,config,ai_topics=None):
     status, reason = apply_preferences(lead, config, status, reason, ai_topics)
     return status,reason
 
+def record_health(db, source, count, error=None):
+    """Upsert the last check of a lead source; ok is derived from the absence of an error."""
+    db.execute('''INSERT INTO health(source,checked,ok,count,error) VALUES(?,?,?,?,?)
+        ON CONFLICT(source) DO UPDATE SET checked=excluded.checked,ok=excluded.ok,
+        count=excluded.count,error=excluded.error''',
+        (source,datetime.now(UTC).isoformat(),int(error is None),count,error))
+
 def scan(db, config, fixtures=False):
     for source in config['sources']:
         if not source['enabled']:
@@ -100,17 +107,11 @@ def scan(db, config, fixtures=False):
             with db:
                 for lead in leads:
                     ingest(db,lead,config)
-                db.execute('''INSERT INTO health(source,checked,ok,count,error) VALUES(?,?,?,?,?)
-                    ON CONFLICT(source) DO UPDATE SET checked=excluded.checked,ok=excluded.ok,
-                    count=excluded.count,error=excluded.error''',
-                    (source['name'],datetime.now(UTC).isoformat(),1,len(leads),None))
+                record_health(db,source['name'],len(leads),None)
             print(f"{source['name']}: прочитано {len(leads)}",flush=True)
         except Exception as exc:
             with db:
-                db.execute('''INSERT INTO health(source,checked,ok,count,error) VALUES(?,?,?,?,?)
-                    ON CONFLICT(source) DO UPDATE SET checked=excluded.checked,ok=excluded.ok,
-                    count=excluded.count,error=excluded.error''',
-                    (source['name'],datetime.now(UTC).isoformat(),0,0,error_label(exc)))
+                record_health(db,source['name'],0,error_label(exc))
             print(f"{source['name']}: ошибка {error_label(exc)}; см. status",flush=True)
             from .observability import capture_exception
             capture_exception(exc,component='parser',source=source.get('id',''))
@@ -203,8 +204,8 @@ def status(db, exact=False):
     from .telegram_monitor import SESSION_FILE, reader_status
     from .heartbeat import status as worker_status
     counts, counts_mode = lead_counts(db, exact)
-    registry = {row['status']:row['total'] for row in db.execute('SELECT status,count(*) AS total FROM telegram_sources GROUP BY status')}
-    from .source_registry import read_count
+    from .source_registry import read_count, registry_stats
+    registry = registry_stats(db)
     enabled = read_count(db)  # chats the service account reads; registry statuses are public-page checks
     reader = reader_status(db) | {'session_file': SESSION_FILE.exists()}
     print(json.dumps({'counts':counts,'counts_mode':counts_mode,'worker':worker_status(db),'sources':[dict(r) for r in db.execute('SELECT * FROM health')],
@@ -241,7 +242,7 @@ def main():
     parser = argparse.ArgumentParser(description='IT-лиды от 5 000 ₽')
     parser.add_argument('command',choices=['scan','run','bot','status','healthcheck','export','setup','import-sources','verify-sources','setup-telegram','monitor-telegram'])
     parser.add_argument('--send',action='store_true',help='Отправлять подходящие объявления в ваш Telegram')
-    parser.add_argument('--fixtures',action='store_true',help='Проверка на ранее сохранённых страницах, без сети')
+    parser.add_argument('--fixtures',action='store_true',help='Проверка без сети на страницах, сохранённых scripts/probe.py')
     parser.add_argument('--qr',action='store_true',help='setup-telegram: вход по QR-коду вместо кода из SMS/Telegram')
     parser.add_argument('--exact',action='store_true',help='status: точный подсчёт лидов (полный проход по таблице, медленно)')
     parser.add_argument('--db',type=Path,help=argparse.SUPPRESS)

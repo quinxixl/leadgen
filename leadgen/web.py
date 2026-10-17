@@ -16,7 +16,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from .app import env_load
 from .database import db_pooled
 from .core import TOPICS, TOPIC_CATEGORIES, stored_lead
-from .product import PIPELINE, FEEDBACK, ProductController
+from .product import PIPELINE, FEEDBACK
 from .crm import NOTE_LIMIT as CRM_NOTE_LIMIT, normalize as normalize_status
 from .web_auth import begin_login, consume_handoff, consume_login, login_status
 from .billing import (ANNUAL_DISCOUNT_PERCENT, FOUNDER_START_PRICE, PLANS, PLAN_NAMES, beta_label, days_left, effective_plan, is_service, legal_entity,

@@ -16,7 +16,7 @@ from urllib.parse import urlsplit, urlunsplit
 from flask import abort, current_app, flash, g, jsonify, redirect, render_template, request, session
 
 from .core import stored_lead
-from .product import FEEDBACK, PIPELINE
+from .product import FEEDBACK
 from .teams import EDIT_SETTINGS, require_role
 from .telegram_accounts import SessionCipher, TelegramAccountError
 
