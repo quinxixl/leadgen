@@ -149,7 +149,7 @@ class WebPostgres(unittest.TestCase):
                 self.db.execute("DELETE FROM telegram_sources WHERE username='pg_joined_channel'")
                 register_joined_chat(self.db,'pg_joined_channel','PG канал','channel')
             row=self.db.execute("SELECT enabled,status FROM telegram_sources WHERE username='pg_joined_channel'").fetchone()
-            self.assertEqual((row['enabled'],row['status']),(1,'active'))
+            self.assertEqual((row['enabled'],row['status']),(0,'moderation'))  # waits for the admin
             write_heartbeat(self.db,new_state()|{'state':'running','connected':True,'chats':3})
             info=reader_status(self.db)
             self.assertEqual(info['state'],'running');self.assertGreaterEqual(info['joined_sources'],1)
@@ -157,13 +157,47 @@ class WebPostgres(unittest.TestCase):
                 r=self.client.get('/admin')
             self.assertEqual(r.status_code,200)
             self.assertIn('Чтение Telegram служебным аккаунтом',r.text);self.assertIn('Работает',r.text)
+            self.assertIn('id="source-moderation"',r.text);self.assertIn('/admin/sources/pg_joined_channel/approve',r.text)
         finally:
             with self.db:
                 self.db.execute("DELETE FROM telegram_sources WHERE username='pg_joined_channel'")
                 self.db.execute('DELETE FROM settings WHERE key=?',('reader:heartbeat',))
 
+    def test_admin_approves_and_rejects_joined_chats(self):
+        from leadgen.telegram_monitor import register_joined_chat
+        names=('pg_mod_ok','pg_mod_spam')
+        state=lambda name:(lambda row:(row['status'],row['enabled']))(self.db.execute('SELECT status,enabled FROM telegram_sources WHERE username=?',(name,)).fetchone())
+        try:
+            with self.db:
+                self.db.execute('DELETE FROM telegram_sources WHERE username IN (?,?)',names)
+                for name in names:register_joined_chat(self.db,name,'Чат '+name,'group')
+            for name in names:
+                for decision in ('approve','reject'):
+                    # A non-admin is refused even with a valid CSRF token.
+                    path=f'/admin/sources/{name}/{decision}'
+                    self.assertEqual(self.client.post(path,data={'csrf':'test-csrf'}).status_code,403,path)
+                self.assertEqual(state(name),('moderation',0))
+            with patch.dict(os.environ,{'WEB_ADMIN_TELEGRAM_IDS':'1'}):
+                self.assertEqual(self.client.post('/admin/sources/pg_mod_ok/approve').status_code,400)  # CSRF
+                self.assertEqual(self.client.post('/admin/sources/pg_mod_ok/delete',data={'csrf':'test-csrf'}).status_code,404)
+                r=self.client.post('/admin/sources/pg_mod_ok/approve',data={'csrf':'test-csrf'})
+                self.assertEqual((r.status_code,r.location),(302,'/admin#source-moderation'))
+                self.assertEqual(self.client.post('/admin/sources/pg_mod_spam/reject',data={'csrf':'test-csrf'}).status_code,302)
+                # Decisions are final: the chat no longer waits, so a second click finds nothing.
+                self.assertEqual(self.client.post('/admin/sources/pg_mod_spam/approve',data={'csrf':'test-csrf'}).status_code,404)
+                page=self.client.get('/admin').text
+            self.assertEqual(state('pg_mod_ok'),('active',1))
+            self.assertEqual(state('pg_mod_spam'),('rejected',0))
+            self.assertNotIn('/admin/sources/pg_mod_',page)
+            # Following the rejected chat again does not put it back into the queue.
+            with self.db:register_joined_chat(self.db,'pg_mod_spam','Чат','group')
+            self.assertEqual(state('pg_mod_spam'),('rejected',0))
+        finally:
+            with self.db:
+                self.db.execute('DELETE FROM telegram_sources WHERE username IN (?,?)',names)
+
     def test_migration_disables_unjoined_sources_only(self):
-        from leadgen.source_registry import JOINED_REASON, NOT_JOINED_REASON
+        from leadgen.source_registry import NOT_JOINED_REASON
         from leadgen.telegram_monitor import register_joined_chat
         sql=Path('supabase/migrations/20261011150000_disable_unjoined_sources.sql').read_text()
         rows={'pgmig_unjoined':('Потенциальные клиенты','Бизнес','{"risks": ""}',1),
@@ -189,10 +223,10 @@ class WebPostgres(unittest.TestCase):
                 'pgmig_off':(0,'83 онлайн при проверке')})
             self.assertEqual(self.db.connection.execute(sql,prepare=False).rowcount,0)  # idempotent
             self.assertEqual(len(state()),7)  # nothing deleted
-            # The reader re-enables a disabled chat once the service account follows it; a re-run keeps it.
+            # The reader never re-enables a disabled chat: it only adds the joined marker.
             self.assertTrue(register_joined_chat(self.db,'pgmig_unjoined','Чат','group'))
             self.db.connection.execute(sql,prepare=False)
-            self.assertEqual(state()['pgmig_unjoined'],(1,JOINED_REASON))
+            self.assertEqual(state()['pgmig_unjoined'],(0,NOT_JOINED_REASON))
         finally:
             self.db.connection.rollback()
 
