@@ -15,6 +15,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from flask import abort, current_app, flash, g, jsonify, redirect, render_template, request, session
 
+from .billing import delay_clause
 from .core import stored_lead
 from .product import FEEDBACK
 from .teams import EDIT_SETTINGS, require_role
@@ -112,7 +113,11 @@ def enqueue_lead_event(db,owner_user_id,lead_id,event_type='lead.updated'):
 
 def deliver_webhooks(db,cipher_key,sender=send_webhook,resolver=socket.getaddrinfo,limit=5):
     if not integrations_enabled():return 0
-    cipher=SessionCipher(cipher_key);delivered=0
+    try:cipher=SessionCipher(cipher_key)
+    except TelegramAccountError:
+        # A broken server key is fixable: leave the queue untouched instead of killing the events.
+        print('Webhook: ключ шифрования не настроен, доставка пропущена',flush=True);return 0
+    delivered=0
     with db:db.execute("UPDATE webhook_outbox SET status='failed',last_error='Предыдущая отправка прервана' WHERE status='processing' AND next_attempt_at<now()-interval '5 minutes'")
     for _ in range(limit):
         with db:
@@ -124,7 +129,15 @@ def deliver_webhooks(db,cipher_key,sender=send_webhook,resolver=socket.getaddrin
                 db.execute("UPDATE webhook_outbox SET status='dead',last_error='Webhook отключён' WHERE id=?",(row['id'],));continue
             db.execute("UPDATE webhook_outbox SET status='processing',attempts=attempts+1,next_attempt_at=now() WHERE id=?",(row['id'],))
         body=json.dumps(row['payload'],ensure_ascii=False,separators=(',',':')).encode()
-        secret=cipher.decrypt(row['secret_cipher'])['secret'].encode()
+        try:
+            secret=cipher.decrypt(row['secret_cipher'])['secret'].encode()
+        except (TelegramAccountError,KeyError,TypeError,AttributeError) as exc:
+            # A secret that cannot be decrypted (rotated key, damaged row) never heals by retrying:
+            # the event is dropped as dead instead of crashing the bot loop every few minutes.
+            print(f"Webhook {row['webhook_id']}: секрет не расшифровывается ({type(exc).__name__}), событие {row['id']} снято",flush=True)
+            with db:db.execute("UPDATE webhook_outbox SET status='dead',last_error=? WHERE id=?",
+                               ('Секрет webhook не расшифровывается: пересоздайте webhook',row['id']))
+            continue
         signature='sha256='+hmac.new(secret,body,hashlib.sha256).hexdigest()
         try:sender(row['url'],body,{'Content-Type':'application/json','User-Agent':'Signalid-Webhook/1.0',
             'X-Signalid-Signature':signature,'X-Leadfinder-Signature':signature},resolver)
@@ -143,14 +156,23 @@ def api_identity(db):
     if not header.startswith('Bearer lf_'):abort(401)
     token=header[7:]
     if len(token)>100:abort(401)
+    # A token dies with its author's access: the creator must still be an active owner or admin
+    # of the workspace, and the workspace owner's account must be active.
     row=db.execute('''SELECT t.*,w.owner_user_id FROM api_tokens t JOIN workspaces w ON w.id=t.workspace_id
+        JOIN app_users owner ON owner.id=w.owner_user_id AND owner.status='active'
+        JOIN app_users creator ON creator.id=t.created_by AND creator.status='active'
+        JOIN workspace_members m ON m.workspace_id=t.workspace_id AND m.user_id=t.created_by AND m.role IN ('owner','admin')
         WHERE t.token_hash=? AND t.revoked=false''',(token_hash(token),)).fetchone()
     if not row:abort(401)
+    from .billing import effective_plan,owner_subscription,plan_includes_integrations,plan_limits
+    plan=effective_plan(owner_subscription(db,row['owner_user_id']))
+    if not plan_includes_integrations(plan):
+        abort(403,description='API доступен на платных тарифах. Продлите или смените тариф в разделе «Подписка».')
     from .rate_limit import RateLimited,hit
     try:hit(db,'api',row['id'],120,60)
     except RateLimited:abort(429)
     with db:db.execute('UPDATE api_tokens SET last_used_at=now() WHERE id=?',(row['id'],))
-    return row
+    return dict(row)|{'delay_minutes':plan_limits(plan)['delay_minutes']}
 
 
 def register_integrations(app,db):
@@ -211,14 +233,16 @@ def register_integrations(app,db):
         identity=api_identity(db())
         try:limit=max(1,min(100,int(request.args.get('limit','50'))));after=max(0,int(request.args.get('after','0')))
         except ValueError:abort(400)
+        # The plan's delivery delay applies here exactly as in the web cabinet and the bot.
+        delayed,delay_args=delay_clause(identity['delay_minutes'])
         rows=db().execute('''SELECT l.id,l.payload,ul.pipeline_status,ul.deal_amount,f.label AS feedback,
             a.assignee_user_id,coalesce((SELECT jsonb_agg(t.tag ORDER BY t.tag) FROM lead_tags t
                 WHERE t.user_id=ul.user_id AND t.lead_id=ul.lead_id),'[]'::jsonb) AS tags
             FROM user_leads ul JOIN leads l ON l.id=ul.lead_id
             LEFT JOIN lead_feedback f ON f.user_id=ul.user_id AND f.lead_id=ul.lead_id
             LEFT JOIN lead_assignments a ON a.workspace_id=? AND a.lead_id=ul.lead_id
-            WHERE ul.user_id=? AND ul.delivery_status<>'filtered' AND l.id>?
-            ORDER BY l.id LIMIT ?''',(identity['workspace_id'],identity['owner_user_id'],after,limit)).fetchall()
+            WHERE ul.user_id=? AND ul.delivery_status<>'filtered' AND l.id>?'''+delayed+'''
+            ORDER BY l.id LIMIT ?''',(identity['workspace_id'],identity['owner_user_id'],after,*delay_args,limit)).fetchall()
         result=[]
         for row in rows:
             lead=stored_lead(row['payload'])
@@ -241,7 +265,9 @@ def register_integrations(app,db):
             if status is None:abort(400)
         if feedback is not None and feedback not in FEEDBACK:abort(400)
         if amount is not None and (not isinstance(amount,int) or isinstance(amount,bool) or not 0<=amount<=1000000000):abort(400)
-        owner=identity['owner_user_id'];row=db().execute("SELECT * FROM user_leads WHERE user_id=? AND lead_id=? AND delivery_status<>'filtered'",(owner,lead_id)).fetchone()
+        owner=identity['owner_user_id'];delayed,delay_args=delay_clause(identity['delay_minutes'])
+        row=db().execute('''SELECT ul.* FROM user_leads ul JOIN leads l ON l.id=ul.lead_id
+            WHERE ul.user_id=? AND ul.lead_id=? AND ul.delivery_status<>'filtered' '''+delayed,(owner,lead_id,*delay_args)).fetchone()
         if not row:abort(404)
         with db():
             if status is not None:db().execute('UPDATE user_leads SET pipeline_status=?,updated_at=now() WHERE user_id=? AND lead_id=?',(status,owner,lead_id))

@@ -11,3 +11,4 @@
 !supabase/
 !supabase/migrations/
 !supabase/migrations/*.sql
+leadgen/data
