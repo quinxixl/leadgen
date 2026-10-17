@@ -221,8 +221,10 @@ def run_bot(db,config):
     send=releasing(db,telegram)
     if product_mode:
         from .product import DeliveryGate, ProductController
+        from .filtered_cleanup import FilteredCleanup
         ui=ProductController(db,config,send)
         gate=DeliveryGate()
+        cleanup=FilteredCleanup()
     else:
         ui=Controller(db,config,send)
     webhook=send('getWebhookInfo',{})
@@ -351,6 +353,15 @@ def run_bot(db,config):
                             capture_exception(exc,component='feedback_notifications')
                             print('Уведомление об обратной связи: '+type(exc).__name__,flush=True)
                             db.recover()
+                    try:
+                        # Hourly, not per iteration: old 'filtered' markers, bounded batches, cursors untouched.
+                        cleanup.run_if_due(db,config)
+                    except RuntimeError:raise
+                    except Exception as exc:
+                        # Housekeeping only; the next interval retries, delivery goes on.
+                        capture_exception(exc,component='filtered_cleanup')
+                        print('Очистка filtered-строк: '+type(exc).__name__,flush=True)
+                        db.recover()
                 if ui.get('active',False) or ui.drain:
                     if product_mode:
                         # Cadence: only when new leads arrived, a backlog drains, a scan finished or the idle interval passed.
