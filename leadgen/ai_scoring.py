@@ -17,7 +17,7 @@ import urllib.request
 
 from .ai_offers import GROQ_URL
 from .ai_prompts import active_prompt, model_caps, paused
-from .core import TOPICS, Lead, classify, normalize, possible_need_topics, topics
+from .core import TOPICS, classify, load_lead, normalize, possible_need_topics, topics
 
 DEFAULT_SCORING_MODEL='openai/gpt-oss-20b'
 CATEGORIES=('service_request','ad','job','spam','other')
@@ -231,7 +231,7 @@ def feedback_examples(db,limit=3,exclude=()):
         if row['lead_id'] in exclude:continue
         category=FEEDBACK_CATEGORY[row['label']]
         if category in seen:continue
-        try:lead=Lead(**json.loads(row['payload']))
+        try:lead=load_lead(row['payload'])
         except (TypeError,ValueError):continue
         seen.add(category);examples.append((lead_text(lead)[:300],category))
         if len(examples)>=limit:break
@@ -242,7 +242,7 @@ def feedback_examples(db,limit=3,exclude=()):
 # rescore (any age).
 PENDING='''SELECT id,payload FROM (
     SELECT l.id,l.payload FROM leads l LEFT JOIN lead_ai_scores s ON s.lead_id=l.id
-    WHERE l.status<>'duplicate' AND l.first_seen::timestamptz >= now()-(? * interval '1 hour')
+    WHERE l.status<>'duplicate' AND l.first_seen >= now()-(? * interval '1 hour')
       AND (s.lead_id IS NULL OR (s.status='failed' AND s.attempts<3 AND s.updated_at<now()-interval '5 minutes'))
     UNION ALL
     SELECT l.id,l.payload FROM lead_ai_scores s JOIN leads l ON l.id=s.lead_id
@@ -275,7 +275,7 @@ def score_pending(db,scorer=groq_score,limit=None,max_age=None):
     batch=[];settled=0
     with db:
         for row in rows:
-            try:lead=Lead(**json.loads(row['payload']))
+            try:lead=load_lead(row['payload'])
             except (TypeError,ValueError):
                 _store(db,row['id'],'skipped',{'category':'other'},error='некорректная запись');settled+=1;continue
             verdict=prefilter(lead)

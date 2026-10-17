@@ -185,7 +185,7 @@ def delay_clause(minutes, column='l.first_seen'):
     """SQL condition and parameters that hide leads younger than the plan's delivery delay."""
     if not minutes:
         return '', []
-    return f" AND {column}::timestamptz <= now()-(? * interval '1 minute')", [minutes]
+    return f" AND {column} <= now()-(? * interval '1 minute')", [minutes]
 
 
 def plan_summary(code):
