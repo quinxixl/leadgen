@@ -240,9 +240,11 @@ def feedback_examples(db,limit=3,exclude=()):
 
 # New leads within the age window, failed ones due for a retry, and rows reset to 'pending' by an admin
 # rescore (any age).
+# The id floor bounds the window branch to a backward walk of leads_id_key: first_seen has no index of its own,
+# and without it every 5 s poll scanned the whole leads table.
 PENDING='''SELECT id,payload FROM (
     SELECT l.id,l.payload FROM leads l LEFT JOIN lead_ai_scores s ON s.lead_id=l.id
-    WHERE l.status<>'duplicate' AND l.first_seen >= now()-(? * interval '1 hour')
+    WHERE l.id > ? AND l.status<>'duplicate' AND l.first_seen >= now()-(? * interval '1 hour')
       AND (s.lead_id IS NULL OR (s.status='failed' AND s.attempts<3 AND s.updated_at<now()-interval '5 minutes'))
     UNION ALL
     SELECT l.id,l.payload FROM lead_ai_scores s JOIN leads l ON l.id=s.lead_id
@@ -266,12 +268,14 @@ def _store(db,lead_id,status,result=None,model='',input_tokens=0,output_tokens=0
         max(0,int(input_tokens or 0)),max(0,int(output_tokens or 0)),1,(error or '')[:300]))
 
 
-def score_pending(db,scorer=groq_score,limit=None,max_age=None):
+def score_pending(db,scorer=groq_score,limit=None,max_age=None,on_limit=None):
     """Score one batch of new leads. Returns the number of leads settled (scored or skipped)."""
     if not scoring_enabled(db):return 0
     prompt=active_prompt(db,'scoring')
     size=limit or batch_size(prompt)
-    rows=db.execute(PENDING,(max_age or max_age_hours(),size*4)).fetchall()
+    from .product import lead_id_floor
+    hours=max_age or max_age_hours()
+    rows=db.execute(PENDING,(lead_id_floor(db,hours),hours,size*4)).fetchall()
     batch=[];settled=0
     with db:
         for row in rows:
@@ -284,7 +288,10 @@ def score_pending(db,scorer=groq_score,limit=None,max_age=None):
             elif len(batch)<size:batch.append((row['id'],lead))
     if not batch:return settled
     used=db.execute(USED_TODAY).fetchone()['n']
-    if used>=daily_limit(prompt):return settled
+    if used>=daily_limit(prompt):
+        # The same unscored leads would be read again on every poll until the 24 h window frees up.
+        if on_limit:on_limit()
+        return settled
     model=prompt['model'];prompt_id=prompt['id']
     try:
         examples=feedback_examples(db,fewshot_count(prompt))
@@ -311,23 +318,38 @@ def score_pending(db,scorer=groq_score,limit=None,max_age=None):
     return settled
 
 
-def run_scorer(db_target,interval=5,stop=None):
-    """Background loop with its own connection; the web request path never calls the LLM."""
-    from .database import db_open
+LIMIT_PAUSE_SECONDS=600  # daily limit reached: poll again after this long, not every few seconds
+
+
+def run_scorer(db_target,interval=5,stop=None,opener=None):
+    """Background loop with its own long-lived connection; the web request path never calls the LLM.
+
+    The connection is kept between polls (a new TLS session every 5 s cost more traffic than the polls) and replaced
+    only after an error."""
+    if opener is None:
+        from .database import db_open as opener
     stop=stop or threading.Event()
     print(f'AI-оценка лидов запущена: модель {scoring_model()}.',flush=True)
+    db=None;limited=[]
     while not stop.is_set():
-        pause=interval
+        pause=interval;limited.clear()
         try:
-            db=db_open(db_target)
-            try:
-                if score_pending(db)>=batch_size():pause=0.5
-            finally:db.close()
+            if db is None:db=opener(db_target)
+            if score_pending(db,on_limit=lambda:limited.append(True))>=batch_size():pause=0.5
+            db.release()
+            if limited:pause=LIMIT_PAUSE_SECONDS
         except Exception as exc:
             from .observability import capture_exception
             capture_exception(exc,component='ai_scoring')
             print('AI-оценка лидов: '+type(exc).__name__,flush=True);pause=60
+            if db is not None:
+                try:db.close()
+                except Exception:pass
+                db=None
         stop.wait(pause)
+    if db is not None:
+        try:db.close()
+        except Exception:pass
 
 
 def fetch_scores(db,lead_ids):

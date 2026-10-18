@@ -605,22 +605,37 @@ def notify_subscriptions(db,sender,limit=20):
     return sent
 
 
+ACTIVE_CACHE_SECONDS=10
+
+
 class ProductController:
     def __init__(self,db,base,sender):
         self.db,self.base,self.sender=db,base,sender
         self.manual=False;self.drain=False;self.last_chat=None
         self.active=False;self.callback=None;self._answered=True
+        self._active_cache=None;self._offset=None
 
     def get(self,key,default=None):
+        """Settings value. The worker loop asks for 'active' and 'offset' on every ~1 s iteration, so both are kept
+        in memory: 'offset' is written only by this process (put), 'active' is re-read after ACTIVE_CACHE_SECONDS
+        and after every handled update (monitoring switched in the bot applies at once, in the web cabinet within
+        the interval)."""
         if key=='active':
+            now=time.monotonic()
+            if self._active_cache and self._active_cache[0]>now:return self._active_cache[1]
             row=self.db.execute('SELECT 1 FROM user_preferences WHERE monitoring_active=true LIMIT 1').fetchone()
+            self._active_cache=(now+ACTIVE_CACHE_SECONDS,bool(row))
             return bool(row)
+        if key=='offset' and self._offset is not None:return self._offset
         row=self.db.execute('SELECT value FROM settings WHERE key=?',(key,)).fetchone()
-        return json.loads(row['value']) if row else default
+        value=json.loads(row['value']) if row else default
+        if key=='offset':self._offset=value
+        return value
 
     def put(self,key,value):
         with self.db:self.db.execute('''INSERT INTO settings(key,value) VALUES(?,?)
             ON CONFLICT(key) DO UPDATE SET value=excluded.value''',(key,json.dumps(value)))
+        if key=='offset':self._offset=value
 
     def config(self):return copy.deepcopy(self.base)
 
@@ -998,6 +1013,7 @@ class ProductController:
         self.last_chat=str(chat['id']);self.callback=callback;self._answered=not callback;self.active=False
         try:self._handle(callback,msg,actor,chat)
         finally:
+            self._active_cache=None  # the update may have switched monitoring
             if callback and not self._answered:
                 try:self._answer()
                 except RuntimeError:pass

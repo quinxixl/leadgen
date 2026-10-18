@@ -197,7 +197,8 @@ class WorkerLoop(unittest.TestCase):
                 patch('leadgen.telegram_monitor.ReaderThread') as threads,patch('leadgen.bot.beat') as beat,\
                 patch('leadgen.ai_scoring.scoring_enabled',return_value=False),\
                 patch('leadgen.integrations.integrations_enabled',return_value=False),\
-                patch('leadgen.reminders.deliver_due'),patch('leadgen.team_notifications.deliver_assignments'),\
+                patch('leadgen.reminders.deliver_due',return_value=0),\
+                patch('leadgen.team_notifications.deliver_assignments',return_value=0),\
                 patch('leadgen.product.notify_subscriptions'),patch('leadgen.product.backfill_pending'),\
                 patch('leadgen.feedback.send_surveys'),patch('leadgen.feedback.deliver_notifications'),\
                 patch('leadgen.product.deliver_registered',side_effect=deliver):
