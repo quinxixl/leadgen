@@ -57,24 +57,51 @@ def telegram(method, payload):
         raise RuntimeError('Telegram rejected request')
     return data['result']
 
+# Statuses a newer copy is checked against. The partial index leads_fp_live
+# (supabase/migrations/20261018120000_leads_dedup_index.sql) has exactly this predicate: keep them identical.
+LIVE_STATUSES = "('ready','sent','sending','uncertain')"
+# Two sargable variants instead of "origin_user_id=? OR (origin_user_id IS NULL AND ? IS NULL)".
+DUPLICATE_SQL = ("SELECT url FROM leads WHERE fingerprint=? AND url<>? AND status IN "+LIVE_STATUSES+
+                 " AND origin_user_id{} LIMIT 1")
+
+
+def find_duplicate(db, fp, url, origin_user_id=None):
+    """url of another live lead with the same fingerprint and origin, or None."""
+    if origin_user_id is None:
+        row = db.execute(DUPLICATE_SQL.format(' IS NULL'), (fp, url)).fetchone()
+    else:
+        row = db.execute(DUPLICATE_SQL.format('=?'), (fp, url, origin_user_id)).fetchone()
+    return row['url'] if row else None
+
+
 def ingest(db, lead, config, origin_user_id=None):
+    """Store or refresh one lead. Returns False when nothing was written.
+
+    Sources are rescanned every few minutes and mostly return leads already stored. Such a row is compared in the
+    database (payload equality returns one boolean, not the payload) and left untouched when nothing changed: no
+    duplicate lookup, no rewrite of the row and its indexes. A stored duplicate is re-checked as before, since the
+    lead it copied may be gone."""
     status,reason = classify_for_config(lead,config)
     fp = fingerprint(lead)
-    existing = db.execute('SELECT status FROM leads WHERE url=?',(lead.url,)).fetchone()
+    payload = json.dumps(lead.data(),ensure_ascii=False)
+    existing = db.execute('SELECT status,reason,fingerprint,payload=? AS same_payload FROM leads WHERE url=?',
+                          (payload,lead.url)).fetchone()
     if existing and existing['status'] in ('sent','uncertain','sending'):
-        return
-    duplicate = db.execute("""SELECT url FROM leads WHERE fingerprint=? AND url<>?
-        AND status IN ('ready','sent','sending','uncertain')
-        AND (origin_user_id=? OR (origin_user_id IS NULL AND CAST(? AS BIGINT) IS NULL)) LIMIT 1""",
-        (fp,lead.url,origin_user_id,origin_user_id)).fetchone()
+        return False
+    unchanged = bool(existing and existing['same_payload'] and existing['fingerprint'] == fp)
+    if unchanged and existing['status'] != 'duplicate' and (existing['status'],existing['reason']) == (status,reason):
+        return False
+    duplicate = find_duplicate(db,fp,lead.url,origin_user_id)
     if duplicate:
-        status,reason = 'duplicate','совпадает с '+duplicate['url']
+        status,reason = 'duplicate','совпадает с '+duplicate
+    if unchanged and (existing['status'],existing['reason']) == (status,reason):
+        return False
     db.execute('''INSERT INTO leads(url,fingerprint,payload,status,reason,first_seen,origin_user_id)
                   VALUES(?,?,?,?,?,?,?) ON CONFLICT(url) DO UPDATE SET
                   fingerprint=excluded.fingerprint,payload=excluded.payload,
                   status=excluded.status,reason=excluded.reason''',
-               (lead.url,fp,json.dumps(lead.data(),ensure_ascii=False),status,reason,
-                datetime.now(UTC).isoformat(),origin_user_id))
+               (lead.url,fp,payload,status,reason,datetime.now(UTC).isoformat(),origin_user_id))
+    return True
 
 def classify_for_config(lead,config,ai_topics=None):
     # The score is shared across projects; their budget floors only gate delivery.

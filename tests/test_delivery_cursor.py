@@ -112,7 +112,7 @@ class Cadence(unittest.TestCase):
     def test_environment_configures_intervals(self):
         with patch.dict(os.environ,{'LEAD_DELIVERY_MIN_SECONDS':'5','LEAD_DELIVERY_IDLE_SECONDS':'oops'}):
             gate=DeliveryGate()
-        self.assertEqual((gate.min_seconds,gate.idle_seconds),(5,15))
+        self.assertEqual((gate.min_seconds,gate.idle_seconds),(5,30))
 
 
 class ReadTransactions(unittest.TestCase):

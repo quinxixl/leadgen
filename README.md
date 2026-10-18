@@ -127,8 +127,8 @@ docker compose down
 Необязательные переменные `.env` (секунды):
 
 - `WORKER_HEARTBEAT_MAX_AGE` — после какого возраста heartbeat воркер считается зависшим, по умолчанию 300.
-- `LEAD_DELIVERY_MIN_SECONDS` — минимальный интервал между проходами доставки лидов, по умолчанию 2 (0–300).
-- `LEAD_DELIVERY_IDLE_SECONDS` — проход доставки не реже этого интервала, даже без новых лидов, по умолчанию 15 (1–3600).
+- `LEAD_DELIVERY_MIN_SECONDS` — минимальный интервал между проходами доставки лидов, по умолчанию 5 (0–300).
+- `LEAD_DELIVERY_IDLE_SECONDS` — проход доставки не реже этого интервала, даже без новых лидов, по умолчанию 30 (1–3600).
 - `LEAD_CURSOR_LAG_SECONDS` — насколько старым должен быть лид, чтобы курсор доставки пользователя прошёл его, по умолчанию 600 (60–86400).
 - `LEADGEN_MIGRATE_*` — `web_migrate` при занятых блокировках: `LOCK_ATTEMPTS` (5), `RETRY_BASE_SECONDS` (2), `RETRY_MAX_SECONDS` (30), `LOCK_TIMEOUT` (15s), `STATEMENT_TIMEOUT` (120s), `CONCURRENT_LOCK_TIMEOUT` (60s), `CONCURRENT_STATEMENT_TIMEOUT` (0 — без ограничения) для `CREATE INDEX CONCURRENTLY`.
 

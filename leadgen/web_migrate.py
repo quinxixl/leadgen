@@ -92,7 +92,8 @@ MIGRATIONS=('20260930143416_web_projects_crm.sql','20260930193638_lead_reminders
             '20261014120000_filtered_cleanup_keeps_cursor.sql',
             '20261014130000_user_leads_fk_indexes.sql',
             '20261014140000_typed_lead_columns.sql',
-            '20261014150000_lead_search_indexes.sql')
+            '20261014150000_lead_search_indexes.sql',
+            '20261018120000_leads_dedup_index.sql')
 MIGRATIONS_DIR=Path(__file__).resolve().parent.parent/'supabase'/'migrations'
 NO_TRANSACTION_MARKER='-- leadgen:no-transaction'
 ADVISORY_LOCK_KEY=734297159
