@@ -323,8 +323,27 @@ class StoreResult:
     inserted: bool    # the chat was new and has been registered, waiting for moderation
 
 
+# Only what a message needs: metadata (the registry's JSON) stays in the database.
+SOURCE_COLUMNS = 'username,title,status,enabled,check_reason,last_message_at'
+LAST_MESSAGE_WRITE_SECONDS = 300  # a busy chat's last_message_* is refreshed at most this often
+
+
 def _source(db, username):
-    return db.execute('SELECT * FROM telegram_sources WHERE username=?', (username,)).fetchone()
+    return db.execute('SELECT '+SOURCE_COLUMNS+' FROM telegram_sources WHERE username=?', (username,)).fetchone()
+
+
+def _marked_recently(row, now):
+    """The chat's realtime marker was written less than LAST_MESSAGE_WRITE_SECONDS before `now`.
+
+    Busy chats deliver many messages a minute; rewriting their telegram_sources row for each one only churns the
+    table. Readers of last_message_at (catalog, 24 h realtime count) need minute precision at most."""
+    if row['check_reason'] != REALTIME_REASON or not row['last_message_at']:
+        return False
+    try:
+        age = (datetime.fromisoformat(now)-datetime.fromisoformat(str(row['last_message_at']))).total_seconds()
+    except (TypeError, ValueError):
+        return False
+    return 0 <= age < LAST_MESSAGE_WRITE_SECONDS
 
 
 def store_public_message(db, chat, message, config, now, known=False):
@@ -343,8 +362,9 @@ def store_public_message(db, chat, message, config, now, known=False):
     if row is None or not (row['enabled'] and row['status'] == 'active'):
         return StoreResult(stored=False, inserted=inserted)
     ingest(db, to_lead(row, message), config)
-    db.execute('UPDATE telegram_sources SET last_message_id=?,last_message_at=?,check_reason=? WHERE username=?',
-               (message.id, now, REALTIME_REASON, chat.username))
+    if not _marked_recently(row, now):
+        db.execute('UPDATE telegram_sources SET last_message_id=?,last_message_at=?,check_reason=? WHERE username=?',
+                   (message.id, now, REALTIME_REASON, chat.username))
     return StoreResult(stored=True, inserted=inserted)
 
 
@@ -372,17 +392,32 @@ class SourceGate:
         self.active = dict(active)
 
 
-def load_source_flags(db):
-    """username -> True when the source is read, for every registered Telegram source."""
-    rows = db.execute('SELECT username,status,enabled FROM telegram_sources').fetchall()
+FLAGS_CHUNK = 500  # usernames per lookup when the gate is refreshed
+
+
+def load_source_flags(db, usernames=None):
+    """username -> True when the source is read; for the given usernames, or every registered source when None."""
+    if usernames is None:
+        rows = db.execute('SELECT username,status,enabled FROM telegram_sources').fetchall()
+    else:
+        names, rows = sorted(usernames), []
+        for start in range(0, len(names), FLAGS_CHUNK):
+            chunk = names[start:start+FLAGS_CHUNK]
+            rows += db.execute('SELECT username,status,enabled FROM telegram_sources WHERE username IN ('
+                               + ','.join('?'*len(chunk))+')', chunk).fetchall()
     return {row['username']: bool(row['enabled'] and row['status'] == 'active') for row in rows}
 
 
 async def refresh_sources(store, gate, log=_log):
     """Reload the gate's snapshot on the DB thread. On failure the old snapshot stays (it only drops
-    messages of chats known to be off; anything else is checked against the database)."""
+    messages of chats known to be off; anything else is checked against the database).
+
+    Only chats the gate already holds are reloaded: the gate is consulted only for chats this connection has seen
+    a message from, and each of those is remembered on its first message. Reading all ~30k registry rows every
+    minute was the reader's largest steady read."""
     try:
-        gate.replace(await store.run(load_source_flags))
+        names = set(gate.active)
+        gate.replace(await store.run(lambda db: load_source_flags(db, names)) if names else {})
     except Exception as exc:
         log('Монитор Telegram: список источников не обновлён: '+safe_error(exc))
 

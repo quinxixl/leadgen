@@ -26,6 +26,43 @@ def collect_batch(config):
     return result
 
 DB_RETRY_MAX_SECONDS=30
+# Outbox queues (reminders, webhooks, assignment notices) and first-run batches are polled on these intervals, not on
+# every ~1 s getUpdates iteration: each poll is several queries even when the queues are empty.
+QUEUE_SECONDS=15
+QUEUE_BATCH=5
+WEBHOOK_BATCH=2
+FIRST_RUN_CHECK_SECONDS=30
+
+
+class Cadence:
+    """due() is True on the first call and then at most once per `seconds`; wake() makes the next call due."""
+    def __init__(self,seconds,clock=time.monotonic):
+        self.seconds,self.clock,self.next_at=seconds,clock,None
+
+    def due(self):
+        now=self.clock()
+        if self.next_at is not None and now<self.next_at:return False
+        self.next_at=now+self.seconds
+        return True
+
+    def wake(self):
+        self.next_at=None
+
+
+def deliver_queues(db,send,limit=QUEUE_BATCH):
+    """One poll of the durable outboxes: due reminders, webhook events, assignment notifications.
+
+    True when a queue delivered a full batch: more may be waiting, so the caller polls again on the next iteration
+    instead of after QUEUE_SECONDS."""
+    from .reminders import deliver_due
+    full=deliver_due(db,send,limit=limit)>=limit
+    from .integrations import integrations_enabled
+    if integrations_enabled() and os.getenv('TELEGRAM_SESSION_ENCRYPTION_KEY'):
+        from .integrations import deliver_webhooks
+        # Few per poll: an external endpoint can be slow, and the bot loop waits for it.
+        full=deliver_webhooks(db,os.environ['TELEGRAM_SESSION_ENCRYPTION_KEY'],limit=WEBHOOK_BATCH)>=WEBHOOK_BATCH or full
+    from .team_notifications import deliver_assignments
+    return deliver_assignments(db,send,limit=limit)>=limit or full
 
 
 def db_retry_delay(failures):
@@ -54,6 +91,7 @@ def run_bot(db,config):
     ui=ProductController(db,config,send)
     gate=DeliveryGate()
     cleanup=FilteredCleanup()
+    queues=Cadence(QUEUE_SECONDS)
     webhook=send('getWebhookInfo',{})
     if webhook.get('url'):
         raise ValueError('У бота настроен webhook. Используйте отдельного бота без webhook для локального запуска.')
@@ -124,14 +162,9 @@ def run_bot(db,config):
                     next_scan=time.monotonic()+config['poll_seconds']
                 if (ui.manual or (ui.get('active',False) and time.monotonic()>=next_scan)) and future is None:
                     future=pool.submit(collect_batch,ui.config())
-                from .reminders import deliver_due
-                deliver_due(db,send)
-                from .integrations import integrations_enabled
-                if integrations_enabled() and os.getenv('TELEGRAM_SESSION_ENCRYPTION_KEY'):
-                    from .integrations import deliver_webhooks
-                    deliver_webhooks(db,os.environ['TELEGRAM_SESSION_ENCRYPTION_KEY'],limit=2)
-                from .team_notifications import deliver_assignments
-                deliver_assignments(db,send,limit=2)
+                if updates:queues.wake()  # a bot action may have queued something: check it right away
+                if queues.due() and deliver_queues(db,send):
+                    queues.wake()  # a full batch went out: drain the rest on the next iteration
                 if time.monotonic()>=next_subscription_check:
                     next_subscription_check=time.monotonic()+300
                     try:
@@ -152,7 +185,7 @@ def run_bot(db,config):
                         db.recover()
                 if time.monotonic()>=next_first_run_check:
                     # Before the live stream: monitoring enabled on the site gets the welcome batch too.
-                    next_first_run_check=time.monotonic()+10
+                    next_first_run_check=time.monotonic()+FIRST_RUN_CHECK_SECONDS
                     try:
                         from .product import backfill_pending
                         backfill_pending(db,config,send)

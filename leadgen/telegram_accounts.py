@@ -568,12 +568,29 @@ def personal_message_link(entity, message_id):
     return f'https://t.me/c/{entity.id}/{message_id}'
 
 
-def _load_monitor_targets(db):
-    connections = [dict(row) for row in db.execute("""SELECT user_id,session_cipher,updated_at FROM telegram_connections
+def _load_monitor_targets(db, running=None):
+    """Active connections and the enabled (user_id, peer_id) pairs.
+
+    `running` maps user_id -> version (str(updated_at)) of the clients already running: their encrypted session is
+    not read again (session_cipher is None in the result). The manager polls every MANAGER_INTERVAL seconds and the
+    sessions almost never change."""
+    running = running or {}
+    connections = [dict(row) for row in db.execute("""SELECT user_id,updated_at FROM telegram_connections
         WHERE status='active' AND session_cipher<>''""").fetchall()]
+    stale = [row['user_id'] for row in connections if running.get(row['user_id']) != str(row['updated_at'])]
+    ciphers = {}
+    if stale:
+        ciphers = {row['user_id']: row['session_cipher'] for row in db.execute(
+            'SELECT user_id,session_cipher FROM telegram_connections WHERE user_id IN ('+','.join('?'*len(stale))+')',
+            stale).fetchall()}
+    for row in connections:
+        row['session_cipher'] = ciphers.get(row['user_id'])
     enabled = {(row['user_id'], row['peer_id']) for row in db.execute(
         'SELECT user_id,peer_id FROM user_telegram_dialogs WHERE enabled=true').fetchall()}
     return connections, enabled
+
+
+LAST_MESSAGE_WRITE_SECONDS = 300
 
 
 def store_personal_message(db, user_id, chat_id, entity, message, config):
@@ -581,7 +598,7 @@ def store_personal_message(db, user_id, chat_id, entity, message, config):
     from .app import ingest
     from .core import Lead, UTC
     # Re-checked inside the write transaction: the manager's cache may be up to one cycle old.
-    source = db.execute('''SELECT title,username FROM user_telegram_dialogs
+    source = db.execute('''SELECT title,username,last_message_at FROM user_telegram_dialogs
         WHERE user_id=? AND peer_id=? AND enabled=true''', (user_id, chat_id)).fetchone()
     if not source:
         return False
@@ -591,9 +608,23 @@ def store_personal_message(db, user_id, chat_id, entity, message, config):
                 url=personal_message_link(entity, message.id), title=title, text=text,
                 published=message.date.astimezone(UTC).isoformat(), budget_text=text)
     ingest(db, lead, config, origin_user_id=user_id)
-    db.execute('''UPDATE user_telegram_dialogs SET last_message_at=now(),updated_at=now()
-        WHERE user_id=? AND peer_id=?''', (user_id, chat_id))
+    # A busy group's row is refreshed at most every LAST_MESSAGE_WRITE_SECONDS, not on every message.
+    if not _written_recently(source['last_message_at']):
+        db.execute('''UPDATE user_telegram_dialogs SET last_message_at=now(),updated_at=now()
+            WHERE user_id=? AND peer_id=?''', (user_id, chat_id))
     return True
+
+
+def _written_recently(value, now=None):
+    if not value:
+        return False
+    from .core import UTC
+    try:
+        stamp = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
+        age = ((now or datetime.now(UTC))-stamp).total_seconds()
+    except (TypeError, ValueError):
+        return False
+    return 0 <= age < LAST_MESSAGE_WRITE_SECONDS
 
 
 async def handle_personal_message(event, user_id, store, enabled, config):
@@ -748,7 +779,8 @@ def run_personal_monitors(db_target, config, store=None):
 
     async def sync_once():
         try:
-            rows, selected = await store.run(_load_monitor_targets)
+            running = {user_id: version for user_id, (version, task) in tasks.items() if not task.done()}
+            rows, selected = await store.run(lambda db: _load_monitor_targets(db, running))
         except Exception as exc:
             # Database unavailable: keep the running clients and retry on the next cycle.
             _log('Личные Telegram-подключения: база недоступна (' + type(exc).__name__ + '), повтор через 15 с.')
@@ -757,6 +789,9 @@ def run_personal_monitors(db_target, config, store=None):
         enabled.update(selected)
         wanted = {}
         for row in rows:
+            if row['session_cipher'] is None:
+                wanted[row['user_id']] = (str(row['updated_at']), None)  # running and unchanged
+                continue
             try:
                 wanted[row['user_id']] = (str(row['updated_at']), cipher.decrypt(row['session_cipher'])['session'])
             except TelegramAccountError:
@@ -775,6 +810,8 @@ def run_personal_monitors(db_target, config, store=None):
             current = tasks.get(user_id)
             if current and current[0] == version and not current[1].done():
                 continue
+            if session_string is None:
+                continue  # stopped since the snapshot: its session is read on the next cycle
             if current:
                 current[1].cancel()
             task = asyncio.create_task(connection_task(user_id, session_string))

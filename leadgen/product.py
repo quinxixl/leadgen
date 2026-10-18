@@ -406,6 +406,26 @@ def deliver_registered(db,base,sender,limit_per_user=1):
     return delivered
 
 
+READY_LIMIT=100   # deliverable leads considered per user and pass
+PAYLOAD_CHUNK=10  # payloads fetched per round trip; a pass usually stops at the first card it sends
+
+
+def _ready_payloads(db,ready,chunk=PAYLOAD_CHUNK):
+    """Yield (rows with id and payload, AI scores) for the ready ids, newest first, a chunk at a time.
+
+    A pass sends at most limit_per_user cards, so payloads past the first sent card are not needed: fetching them
+    in small chunks instead of all READY_LIMIT at once keeps a draining backlog from re-reading the same payloads
+    on every pass. The transaction ends before each chunk is handed out (Telegram calls follow)."""
+    from .ai_scoring import fetch_scores
+    for start in range(0,len(ready),chunk):
+        ids=ready[start:start+chunk]
+        marks=','.join('?'*len(ids))
+        rows=db.execute(f'SELECT id,payload FROM leads WHERE id IN ({marks}) ORDER BY id DESC',ids).fetchall()
+        scores=fetch_scores(db,ids)
+        db.release()
+        yield rows,scores
+
+
 def _deliver_user(db,base,sender,prefs,limit_per_user,timing,floor,horizon):
     config=user_config(base,prefs);limits=recipient_limits(prefs);user_id=prefs['id']
     projects=active_projects(db,user_id,limits)
@@ -416,33 +436,38 @@ def _deliver_user(db,base,sender,prefs,limit_per_user,timing,floor,horizon):
     # Free plan: a lead becomes deliverable only once the plan's delay has passed since it was found.
     delayed,delay_args=delay_clause(limits['delay_minutes'])
     scoring,wait=timing
-    candidates=db.execute('''SELECT l.id,((NOT ? OR EXISTS (SELECT 1 FROM lead_ai_scores s WHERE s.lead_id=l.id)
+    # Only the newest READY_LIMIT deliverable ids leave the database, plus the lowest id of every other unseen lead
+    # (not ready yet, or past the limit): the cursor needs nothing else (see next_cursor). Before, every unseen lead
+    # of the window came back, e.g. the whole Free-plan delay window on every pass.
+    candidates=db.execute('''WITH unseen AS (SELECT l.id,((NOT ? OR EXISTS (SELECT 1 FROM lead_ai_scores s WHERE s.lead_id=l.id)
             OR l.first_seen < now()-(? * interval '1 second'))'''+delayed+''') AS ready
-        FROM leads l WHERE l.id > ? AND '''+UNSEEN+' AND l.first_seen >= ? ORDER BY l.id DESC',
-        [scoring,wait]+delay_args+[since,user_id,user_id,user_id,prefs['registered_at']]).fetchall()
-    pending={row['id'] for row in candidates}
-    ready=[row['id'] for row in candidates if row['ready']][:100]
-    rows=[]
-    if ready:
-        from .ai_scoring import fetch_scores
-        marks=','.join('?'*len(ready))
-        rows=db.execute(f'SELECT id,payload FROM leads WHERE id IN ({marks}) ORDER BY id DESC',ready).fetchall()
-        scores=fetch_scores(db,ready)
+            FROM leads l WHERE l.id > ? AND '''+UNSEEN+''' AND l.first_seen >= ?),
+        ready AS (SELECT id FROM unseen WHERE ready ORDER BY id DESC LIMIT ?)
+        SELECT id,true AS ready FROM ready
+        UNION ALL SELECT min(id),false FROM unseen WHERE id NOT IN (SELECT id FROM ready)''',
+        [scoring,wait]+delay_args+[since,user_id,user_id,user_id,prefs['registered_at'],READY_LIMIT]).fetchall()
+    pending={row['id'] for row in candidates if row['id'] is not None}
+    ready=sorted((row['id'] for row in candidates if row['ready']),reverse=True)
     db.release()
     sent=0
-    for row in rows:
-        lead=load_lead(row['payload'])
-        allowed,reason,matches,ai,_=_ai_eligibility(db,row['id'],lead,config,prefs,projects,scores)
-        if not allowed:
-            with db:db.execute('''INSERT INTO user_leads(user_id,lead_id,delivery_status,filter_reason)
-                VALUES(?,?,'filtered',?) ON CONFLICT(user_id,lead_id) DO NOTHING''',(user_id,row['id'],reason))
-            pending.discard(row['id'])
-            continue
-        ok=_send_card(db,sender,prefs,row['id'],lead,reason,matches,ai=ai)
-        pending.discard(row['id'])  # recorded as sent or uncertain: settled either way
-        if not ok:break
-        sent+=1
-        if sent>=limit_per_user:break
+    for rows,scores in _ready_payloads(db,ready):
+        stop=False
+        for row in rows:
+            lead=load_lead(row['payload'])
+            allowed,reason,matches,ai,_=_ai_eligibility(db,row['id'],lead,config,prefs,projects,scores)
+            if not allowed:
+                with db:db.execute('''INSERT INTO user_leads(user_id,lead_id,delivery_status,filter_reason)
+                    VALUES(?,?,'filtered',?) ON CONFLICT(user_id,lead_id) DO NOTHING''',(user_id,row['id'],reason))
+                pending.discard(row['id'])
+                continue
+            ok=_send_card(db,sender,prefs,row['id'],lead,reason,matches,ai=ai)
+            pending.discard(row['id'])  # recorded as sent or uncertain: settled either way
+            if not ok:
+                stop=True;break
+            sent+=1
+            if sent>=limit_per_user:
+                stop=True;break
+        if stop:break
     moved=next_cursor(cursor,horizon,pending)
     if moved>cursor and 'delivery_cursor' in prefs.keys() and 'updated_at' in prefs.keys():
         # Compare-and-set: a filter change during this pass resets the cursor (trigger on user_leads) and bumps
@@ -462,8 +487,8 @@ class DeliveryGate:
     become deliverable without new inserts, and a late-committing lower id does not move max(id).
     Passes are at least LEAD_DELIVERY_MIN_SECONDS apart unless forced."""
     def __init__(self,min_seconds=None,idle_seconds=None,clock=time.monotonic):
-        self.min_seconds=_env_int('LEAD_DELIVERY_MIN_SECONDS',2,0,300) if min_seconds is None else min_seconds
-        self.idle_seconds=_env_int('LEAD_DELIVERY_IDLE_SECONDS',15,1,3600) if idle_seconds is None else idle_seconds
+        self.min_seconds=_env_int('LEAD_DELIVERY_MIN_SECONDS',5,0,300) if min_seconds is None else min_seconds
+        self.idle_seconds=_env_int('LEAD_DELIVERY_IDLE_SECONDS',30,1,3600) if idle_seconds is None else idle_seconds
         self.clock=clock;self.last_run=None;self.last_max=None;self.backlog=False
 
     def _latest(self,db):
@@ -580,22 +605,37 @@ def notify_subscriptions(db,sender,limit=20):
     return sent
 
 
+ACTIVE_CACHE_SECONDS=10
+
+
 class ProductController:
     def __init__(self,db,base,sender):
         self.db,self.base,self.sender=db,base,sender
         self.manual=False;self.drain=False;self.last_chat=None
         self.active=False;self.callback=None;self._answered=True
+        self._active_cache=None;self._offset=None
 
     def get(self,key,default=None):
+        """Settings value. The worker loop asks for 'active' and 'offset' on every ~1 s iteration, so both are kept
+        in memory: 'offset' is written only by this process (put), 'active' is re-read after ACTIVE_CACHE_SECONDS
+        and after every handled update (monitoring switched in the bot applies at once, in the web cabinet within
+        the interval)."""
         if key=='active':
+            now=time.monotonic()
+            if self._active_cache and self._active_cache[0]>now:return self._active_cache[1]
             row=self.db.execute('SELECT 1 FROM user_preferences WHERE monitoring_active=true LIMIT 1').fetchone()
+            self._active_cache=(now+ACTIVE_CACHE_SECONDS,bool(row))
             return bool(row)
+        if key=='offset' and self._offset is not None:return self._offset
         row=self.db.execute('SELECT value FROM settings WHERE key=?',(key,)).fetchone()
-        return json.loads(row['value']) if row else default
+        value=json.loads(row['value']) if row else default
+        if key=='offset':self._offset=value
+        return value
 
     def put(self,key,value):
         with self.db:self.db.execute('''INSERT INTO settings(key,value) VALUES(?,?)
             ON CONFLICT(key) DO UPDATE SET value=excluded.value''',(key,json.dumps(value)))
+        if key=='offset':self._offset=value
 
     def config(self):return copy.deepcopy(self.base)
 
@@ -973,6 +1013,7 @@ class ProductController:
         self.last_chat=str(chat['id']);self.callback=callback;self._answered=not callback;self.active=False
         try:self._handle(callback,msg,actor,chat)
         finally:
+            self._active_cache=None  # the update may have switched monitoring
             if callback and not self._answered:
                 try:self._answer()
                 except RuntimeError:pass

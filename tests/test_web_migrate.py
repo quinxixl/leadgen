@@ -253,6 +253,13 @@ class WebMigrateParsing(unittest.TestCase):
         self.assertTrue(search.no_transaction)
         names=[web_migrate.concurrent_index_name(statement) for statement in web_migrate.split_statements(search.sql)]
         self.assertEqual(names,['leads_source','leads_search_trgm'])
+        dedup=migrations['20261018120000_leads_dedup_index.sql']
+        self.assertTrue(dedup.no_transaction)
+        names=[web_migrate.concurrent_index_name(statement) for statement in web_migrate.split_statements(dedup.sql)]
+        self.assertEqual([name for name in names if name],['leads_fp_live'])
+        # The partial index predicate and the ingest lookup must stay in sync, or the planner cannot use the index.
+        from leadgen.app import LIVE_STATUSES
+        self.assertIn('WHERE status IN '+LIVE_STATUSES,dedup.sql)
 
 
 if __name__=='__main__':
