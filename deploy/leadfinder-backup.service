@@ -1,0 +1,25 @@
+[Unit]
+Description=Back up the IT Lead Finder Postgres database
+Wants=docker.service
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+# Not root: a dedicated account in the docker group (created by deploy/install-auto-update.sh).
+User=leadfinder-deploy
+Group=leadfinder-deploy
+SupplementaryGroups=docker
+WorkingDirectory=/opt/leadfinder
+ExecStart=/opt/leadfinder/deploy/leadfinder-backup.sh
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+# Only the backup directory is written; the docker CLI keeps its state in HOME.
+ReadWritePaths=/opt/leadfinder/backups /var/lib/leadfinder-deploy
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes

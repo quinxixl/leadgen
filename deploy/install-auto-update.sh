@@ -39,7 +39,8 @@ install -d -m 0750 -o "$DEPLOY_USER" -g "$DEPLOY_USER" "$DEPLOY_HOME"
 find "$APP_DIR" -path "$APP_DIR/leadgen/data" -prune -o ! -user "$DEPLOY_USER" \
     -exec chown -h "$DEPLOY_USER:$DEPLOY_USER" {} +
 
-chmod 0755 "$APP_DIR/deploy/leadfinder-update.sh" "$APP_DIR/deploy/leadfinder-renew.sh"
+chmod 0755 "$APP_DIR/deploy/leadfinder-update.sh" "$APP_DIR/deploy/leadfinder-renew.sh" \
+    "$APP_DIR/deploy/leadfinder-backup.sh" "$APP_DIR/deploy/postgres/init/10-leadgen.sh"
 install -m 0644 "$APP_DIR/deploy/leadfinder-update.service" /etc/systemd/system/leadfinder-update.service
 install -m 0644 "$APP_DIR/deploy/leadfinder-update.timer" /etc/systemd/system/leadfinder-update.timer
 install -d -m 0755 /etc/systemd/system/leadfinder-update.service.d
@@ -51,7 +52,19 @@ if [ -f /etc/systemd/system/leadfinder-renew.service ]; then
     install -m 0644 "$APP_DIR/deploy/leadfinder-renew.service" /etc/systemd/system/leadfinder-renew.service
 fi
 
+# Nightly Postgres backups (deploy/leadfinder-backup.sh). The unit may write only this directory.
+install -d -m 0700 -o "$DEPLOY_USER" -g "$DEPLOY_USER" "$APP_DIR/backups"
+install -m 0644 "$APP_DIR/deploy/leadfinder-backup.service" /etc/systemd/system/leadfinder-backup.service
+install -m 0644 "$APP_DIR/deploy/leadfinder-backup.timer" /etc/systemd/system/leadfinder-backup.timer
+
 systemctl daemon-reload
+# Backups need the self-hosted db (.env.db, DEPLOY.md). Without it the timer is installed but not enabled.
+if [ -f "$APP_DIR/.env.db" ]; then
+    chmod 0600 "$APP_DIR/.env.db"
+    systemctl enable --now leadfinder-backup.timer
+else
+    echo "Нет $APP_DIR/.env.db: таймер резервных копий не включён (см. DEPLOY.md, переезд на свой Postgres)." >&2
+fi
 systemctl enable --now leadfinder-update.timer
 systemctl start leadfinder-update.service
 systemctl status leadfinder-update.timer --no-pager
