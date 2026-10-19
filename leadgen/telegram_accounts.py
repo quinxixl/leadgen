@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from cryptography.fernet import Fernet, InvalidToken
 
 from .db_store import MonitorStore, _connection_lost  # noqa: F401  (re-exported for callers and tests)
+from .telegram_monitor import HEARTBEAT_KEY, HEARTBEAT_STALE_SECONDS, public_username
 
 
 PHONE = re.compile(r'^\+[1-9]\d{7,14}$')
@@ -656,6 +657,35 @@ def _load_monitor_targets(db, running=None):
     return connections, enabled
 
 
+SHARED_CHATS_SQL = """SELECT DISTINCT s.username FROM user_telegram_dialogs d
+    JOIN telegram_sources s ON s.username=lower(d.username)
+    WHERE d.enabled=true AND s.enabled=1 AND s.status='active'"""
+
+
+def _service_reader_running(db, now=None):
+    """True while the shared reader's heartbeat says it is connected and the heartbeat is fresh."""
+    from .core import UTC
+    row = db.execute('SELECT value FROM settings WHERE key=?', (HEARTBEAT_KEY,)).fetchone()
+    try:
+        beat = json.loads(row['value']) if row else {}
+        age = ((now or datetime.now(UTC))-datetime.fromisoformat(beat['at'])).total_seconds()
+    except (KeyError, TypeError, ValueError):
+        return False
+    return beat.get('state') == 'running' and bool(beat.get('connected')) and age <= HEARTBEAT_STALE_SECONDS
+
+
+def _load_shared_chats(db, now=None):
+    """Public @usernames of selected personal groups that the shared service reader already reads.
+
+    The reader stores every message of an active catalog chat as a global lead (origin_user_id NULL), which every
+    user's delivery already sees, so the personal monitor skips those chats instead of storing each message a second
+    time under 'Telegram · <title>'. Only the selected groups are looked up (telegram_sources by primary key), and
+    only while the reader is alive: if it is down, personal monitors keep ingesting these chats themselves."""
+    if not _service_reader_running(db, now):
+        return set()
+    return {row['username'] for row in db.execute(SHARED_CHATS_SQL).fetchall()}
+
+
 LAST_MESSAGE_WRITE_SECONDS = 300
 
 
@@ -693,8 +723,10 @@ def _written_recently(value, now=None):
     return 0 <= age < LAST_MESSAGE_WRITE_SECONDS
 
 
-async def handle_personal_message(event, user_id, store, enabled, config):
-    """Telegram work first (no DB held), then one short DB transaction on the DB thread."""
+async def handle_personal_message(event, user_id, store, enabled, config, shared=frozenset()):
+    """Telegram work first (no DB held), then one short DB transaction on the DB thread.
+
+    `shared` holds the public usernames the service reader already ingests (_load_shared_chats)."""
     if event.is_private or not event.is_group or not event.message.message:
         return False
     # Selected groups are cached by the manager: messages from other groups cost no DB call.
@@ -702,6 +734,8 @@ async def handle_personal_message(event, user_id, store, enabled, config):
         return False
     entity = await event.get_chat()
     if getattr(entity, 'broadcast', False) or not getattr(entity, 'megagroup', False):
+        return False
+    if shared and public_username(entity) in shared:
         return False
     chat_id, message = event.chat_id, event.message
     return await store.run(lambda db: store_personal_message(db, user_id, chat_id, entity, message, config))
@@ -810,7 +844,7 @@ def run_personal_monitors(db_target, config, store=None):
     api_id, api_hash = telegram_credentials()
     cipher = SessionCipher(os.environ.get('TELEGRAM_SESSION_ENCRYPTION_KEY', ''))
     store = store or MonitorStore(db_target)
-    enabled = set()
+    enabled, shared = set(), set()
 
     def record_error(user_id, text):
         # updated_at is the manager's version stamp: touching it would restart the task and reset backoff.
@@ -828,7 +862,7 @@ def run_personal_monitors(db_target, config, store=None):
 
         @client.on(events.NewMessage(incoming=True))
         async def live(event):
-            await handle_personal_message(event, user_id, store, enabled, config)
+            await handle_personal_message(event, user_id, store, enabled, config, shared)
 
         await serve_personal_client(client, user_id, on_ready=lambda: clear_error(user_id))
 
@@ -846,13 +880,16 @@ def run_personal_monitors(db_target, config, store=None):
     async def sync_once():
         try:
             running = {user_id: version for user_id, (version, task) in tasks.items() if not task.done()}
-            rows, selected = await store.run(lambda db: _load_monitor_targets(db, running))
+            (rows, selected), public = await store.run(
+                lambda db: (_load_monitor_targets(db, running), _load_shared_chats(db)))
         except Exception as exc:
             # Database unavailable: keep the running clients and retry on the next cycle.
             _log('Личные Telegram-подключения: база недоступна (' + type(exc).__name__ + '), повтор через 15 с.')
             return
         enabled.clear()
         enabled.update(selected)
+        shared.clear()
+        shared.update(public)
         wanted = {}
         for row in rows:
             if row['session_cipher'] is None:
