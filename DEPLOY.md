@@ -292,168 +292,232 @@ sudo docker compose up -d
 
 ### Зачем и как устроено
 
-Бесплатный тариф Supabase упёрся в лимит диска, и база перешла в режим только для чтения. Поэтому база переезжает на этот же VPS:
+Бесплатный тариф Supabase упёрся в лимит диска, и база стала доступна только для чтения. Поэтому база переезжает на этот же VPS.
 
-- Сервис `db` в `compose.yaml` — официальный образ `postgres:17.11-bookworm` с точной версией. Его используют оба стека: `-f compose.yaml` и `-f compose.yaml -f compose.web.yaml`. Порт наружу не публикуется: контейнеры обращаются к базе по адресу `db:5432` внутри сети compose. Администрирование: `docker compose exec db psql -U postgres -d leadgen`.
-- Данные лежат в именованном томе `pgdata`. Сервис перезапускается сам (`restart: unless-stopped`) и проверяется через `pg_isready`. `leadfinder` и `web` стартуют только после того, как база станет `healthy`.
-- Пароли хранятся в отдельном файле `.env.db` (шаблон — `.env.db.example`). Его читает только контейнер `db`, поэтому пароль суперпользователя `postgres` не попадает в контейнеры приложения. Приложение подключается ролью `leadgen`: это владелец базы без прав суперпользователя.
-- При первом запуске пустого тома `deploy/postgres/init/10-leadgen.sh` создаёт то, что раньше давал Supabase: роли `anon` и `authenticated` без входа, схему `extensions` с `pg_trgm` и `pg_stat_statements`, роль приложения.
-- Память рассчитана на сервер с 4 ГБ RAM без swap: `shared_buffers=512MB`, `effective_cache_size=2GB`, `work_mem=8MB`, `maintenance_work_mem=256MB`, `max_connections=50`. Запросы дольше 1 с и ожидания блокировок пишутся в журнал. Журнал контейнера ограничен тремя файлами по 10 МБ.
-- `deploy/leadfinder-update.sh` перед миграциями сначала поднимает `db` и ждёт статуса `healthy`. Это нужно, потому что `run --no-deps` зависимости не запускает.
-- Каждую ночь в 03:30 МСК таймер `leadfinder-backup.timer` делает `pg_dump -Fc` схемы `leadgen` в `/opt/leadfinder/backups/leadgen-<время>.dump`. Перед сохранением архив проверяется через `pg_restore --list`. Копии старше 14 дней удаляются, но только после успешной новой копии.
+- **Сервис `db` в `compose.yaml`.** Образ `postgres:17.11-bookworm`, закреплён по тегу и по digest. Его используют оба стека (`-f compose.yaml` и `-f compose.yaml -f compose.web.yaml`).
+  - Данные лежат в томе `pgdata`. Порт наружу не публикуется: контейнеры ходят к базе как `db:5432`.
+  - Healthcheck — `pg_isready`, политика перезапуска — `restart: unless-stopped`.
+  - `leadfinder` и `web` стартуют только после того, как база станет `healthy`.
+  - Каталог `/opt/leadfinder/backups` подключён в контейнер как `/backups` только для чтения. Дампы восстанавливаются из файла, а не через stdin.
+- **Пароли.** Хранятся в `.env.db` (права `600`, шаблон — `.env.db.example`), этот файл читает только контейнер `db`.
+  - Приложение подключается ролью `leadgen`: она владелец базы, но не суперпользователь.
+  - Суперпользователь `postgres` может войти только изнутри контейнера: через сокет или loopback. Вход по TCP извне для него запрещён правилом `reject` в `pg_hba.conf`.
+  - Почему не `secrets:` из compose: файлы-секреты compose без Swarm монтируются с правами файла на хосте, а entrypoint образа читает их от uid 999. Файл `600` от root он не прочитает, а `644` раскрыл бы пароль всем.
+- **Инициализация.** `deploy/postgres/init/10-leadgen.sh` выполняется при первом запуске пустого тома. Скрипт идемпотентен, пароли читает через `\getenv`, а не из командной строки. Он создаёт:
+  - роли `anon` и `authenticated` без входа;
+  - схему `extensions` с `pg_trgm` и `pg_stat_statements`;
+  - роль приложения;
+  - заглушку `public.rls_auto_enable()`, которую нужно отозвать по старой миграции;
+  - схема `public` остаётся за `postgres`, у приложения на ней только `USAGE`.
+- **Таймауты роли приложения** такие же, как были в Supabase: `statement_timeout=120s` и `idle_in_transaction_session_timeout=60s`. На них опирается курсор доставки: его задержка `LEAD_CURSOR_LAG_SECONDS=600` должна быть больше любой транзакции приложения (`leadgen/product.py`, `cursor_lag_seconds`).
+  - `web_migrate` повышает эти лимиты сам, только внутри своих транзакций.
+  - `pg_dump`/`pg_restore` выставляют свои лимиты.
+  - `vacuumdb` и резервные копии работают от `postgres`, на них эти лимиты не действуют.
+- **Память.** Рассчитана на 4 ГБ RAM без swap.
+  - Параметры базы: `shared_buffers=512MB`, `effective_cache_size=2GB`, `work_mem=8MB`, `maintenance_work_mem=256MB`, `max_connections=50`.
+  - У базы `oom_score_adj=-800`: при нехватке памяти ядро сначала завершит приложение, а не базу.
+  - Лимиты приложения: `leadfinder` 768 МБ, `web` 512 МБ. Проверка — `docker stats --no-stream`.
+- **Журнал базы.** Запросы дольше 1 с и ожидания блокировок пишутся в журнал. Значения параметров запросов туда не попадают (`log_parameter_max_length=0`). Размер журнала контейнера ограничен: 3 файла по 10 МБ.
+- **Автообновление.** `deploy/leadfinder-update.sh` запускает базу командой `up -d --no-recreate --wait db` до `web_migrate`. Пересоздаются только `leadfinder` и `web` (`--no-deps`). Обновление кода никогда не перезапускает базу. Изменения в настройках `db` применяются вручную (см. «Обслуживание»).
+- **Резервные копии.** `leadfinder-backup.timer` каждую ночь в 03:30 МСК делает `pg_dump -Fc` схемы `leadgen` в `backups/leadgen-<время>.dump`.
+  - Архив проверяется полным чтением (`pg_restore -f /dev/null`).
+  - Копии старше 14 дней удаляются, но только после успешной новой копии.
+  - При сбое `leadfinder-alert@.service` отправляет Telegram-алерт на `ERROR_ALERT_CHAT_ID` тем же механизмом, что и ошибки приложения. Токен остаётся в `.env`.
 
-Учёт миграций: `web_migrate` записывает применённые файлы в таблицу `leadgen.web_schema_versions` (имя и SHA-256 содержимого). Таблица лежит в схеме `leadgen` и попадает в дамп. Поэтому после восстановления применяются только миграции, которых ещё не было в Supabase. Если содержимое уже применённого файла изменилось, `web_migrate` остановится с ошибкой и ничего не изменит.
+Учёт миграций ведётся в `leadgen.web_schema_versions`: имя файла и SHA-256 его содержимого. Таблица лежит в схеме `leadgen` и попадает в дамп. Поэтому после восстановления применяются только миграции, которых ещё не было в Supabase. Если уже применённый файл изменён, `web_migrate` остановится и ничего не изменит.
 
 ### Переезд: команды по порядку
 
-Все команды выполняются на сервере от root. Строки после `#` — пояснения, их копировать не нужно.
+Всё выполняется от root на сервере, по одному блоку. Пользователя `leadfinder-deploy` может ещё не быть, поэтому до шага 11 не используйте `sudo -u`, `chown` и `install -o`. Не включайте `set -e` в интерактивной оболочке: при ошибке она закроется. Вместо этого каждый блок заканчивается проверкой. Если проверка не прошла, остановитесь и смотрите «Откат».
 
-**0. Подготовка.** Нужно не меньше 5 ГБ свободного места: база около 0,9 ГБ, плюс дамп, индексы и WAL. Выберите набор compose-файлов: с веб-кабинетом используется вариант с двумя файлами, только с ботом — с одним.
+**Не запускайте `deploy/install-auto-update.sh` до шага 11.** Он сразу стартует `leadfinder-update.service`, а тот поднимет приложение с текущим `.env`.
+
+**0. Подготовка.** Нужно не меньше 5 ГБ свободного места на диске.
 
 ```sh
 sudo -i
 cd /opt/leadfinder
-df -h /opt /var/lib/docker
-cat /etc/systemd/system/leadfinder-update.service.d/environment.conf   # LEADFINDER_WEB=1 → веб-кабинет включён
 F="-f compose.yaml -f compose.web.yaml"   # только бот: F="-f compose.yaml"
+PGIMG=postgres:17.11-bookworm@sha256:3645570cccdfa447589da9f57dd740faa29b30938e861289a5574b6ca6b03826
+df -h /opt /var/lib/docker
+free -h
 ```
 
-**1. Остановить автообновление и приложение.** Делается до загрузки нового кода.
+**1. Остановить автообновление и приложение; запомнить, что откатывать.**
 
 ```sh
-systemctl stop leadfinder-update.timer
+systemctl stop leadfinder-update.timer leadfinder-update.service
 systemctl stop leadfinder-renew.timer 2>/dev/null || true
-docker compose $F stop
+systemctl is-active leadfinder-update.timer leadfinder-update.service   # обе строки: inactive
+git -C /opt/leadfinder rev-parse HEAD > /root/leadfinder-rollback.sha && cat /root/leadfinder-rollback.sha
+install -m 600 .env /root/env-supabase.bak && ls -l /root/env-supabase.bak
+docker compose $F stop && docker compose $F ps
 ```
 
-**2. Получить новый код.** Делается после слияния PR.
+**2. Получить новый код** (после слияния PR).
 
 ```sh
-sudo -u leadfinder-deploy git -C /opt/leadfinder pull --ff-only
+git -C /opt/leadfinder pull --ff-only && git -C /opt/leadfinder log -1 --oneline
 ```
 
-**3. Создать `.env.db` со случайными паролями.** Права `600`, владелец `leadfinder-deploy`.
+**3. Создать `.env.db` со случайными паролями и каталог копий.**
 
 ```sh
-install -m 600 -o leadfinder-deploy -g leadfinder-deploy /dev/null .env.db
-printf 'POSTGRES_PASSWORD=%s\nLEADGEN_DB_USER=leadgen\nLEADGEN_DB_PASSWORD=%s\n' "$(openssl rand -hex 32)" "$(openssl rand -hex 32)" > .env.db
-install -d -m 700 -o leadfinder-deploy -g leadfinder-deploy backups
+(umask 077; printf 'POSTGRES_PASSWORD=%s\nLEADGEN_DB_USER=leadgen\nLEADGEN_DB_PASSWORD=%s\n' "$(openssl rand -hex 32)" "$(openssl rand -hex 32)" > .env.db)
+install -d -m 700 backups
+ls -l .env.db && ls -ld backups   # -rw------- и drwx------
 ```
 
-**4. Запустить базу.** Пустой том инициализируется скриптом `deploy/postgres/init/10-leadgen.sh`.
+**4. Запустить базу.**
 
 ```sh
 docker compose $F up -d --wait db
 docker compose $F exec db psql -U postgres -d leadgen -c '\du' -c '\dx'
+docker compose $F exec db psql -U postgres -d leadgen -Atc "SELECT rolconfig FROM pg_roles WHERE rolname='leadgen'"
 ```
 
-Ожидаемый результат: роли `leadgen`, `anon`, `authenticated`; расширения `pg_trgm` и `pg_stat_statements` в схеме `extensions`.
+Ожидаемый результат: роли `leadgen`, `anon`, `authenticated`; `pg_trgm` и `pg_stat_statements` в схеме `extensions`; у роли `leadgen` таймауты `{statement_timeout=120s,idle_in_transaction_session_timeout=60s}`.
 
-**5. Снять дамп из Supabase.** Клиент берётся той же версии, что и сервер `db`. Дамп работает и на базе в режиме только для чтения. `DATABASE_URL` должен указывать на **Session pooler**, порт `5432`. Transaction pooler (порт `6543`) для `pg_dump` не подходит: если в `.env` указан он, замените в переменной `:6543/` на `:5432/`.
+**5. Снять дамп из Supabase.** Адрес старой базы передаётся контейнеру через переменную окружения, а не аргументом команды.
+
+- Нужен **Session pooler**, порт `5432`. Transaction pooler (`6543`) не подходит.
+- Дамп снимается и с базы, которая доступна только для чтения.
+- Версия сервера должна быть 17.x или ниже. Если она 18 или выше, остановитесь: понадобится образ той же старшей версии.
 
 ```sh
-OLD_DATABASE_URL=$(grep '^DATABASE_URL=' .env | cut -d= -f2-)
-docker run --rm postgres:17.11-bookworm psql "$OLD_DATABASE_URL" -X -At -c 'SHOW server_version'   # должно быть 17.x или ниже
-docker run --rm postgres:17.11-bookworm pg_dump "$OLD_DATABASE_URL" --schema=leadgen --no-owner --no-privileges -Fc > backups/supabase-final.dump
+export PGURL="$(grep '^DATABASE_URL=' /root/env-supabase.bak | cut -d= -f2- | sed 's|:6543/|:5432/|')"
+docker run --rm -e PGURL "$PGIMG" sh -c 'exec psql "$PGURL" -X -At -c "SHOW server_version"'
+(umask 077; docker run --rm -e PGURL "$PGIMG" sh -c 'exec pg_dump "$PGURL" --schema=leadgen --no-owner --no-privileges -Fc' > backups/supabase-final.dump)
 ls -lh backups/supabase-final.dump
-docker compose $F exec -T db pg_restore --list < backups/supabase-final.dump | grep -c 'TABLE DATA'
 ```
 
-Если `SHOW server_version` вернул 18 или выше, остановитесь: тогда в `compose.yaml` и в этих командах нужен образ той же старшей версии.
-
-**6. Восстановить дамп в локальную базу.** Восстановление идёт от роли приложения, поэтому все объекты будут принадлежать `leadgen`. Всё выполняется одной транзакцией: при ошибке в базе ничего не останется, и команду можно повторить.
+Проверить, что в дампе нет чужих для этой базы объектов: политик RLS, event-триггеров, расширений, ссылок на `auth.` или `public.`.
 
 ```sh
-docker compose $F exec -T db pg_restore -U leadgen -d leadgen --no-owner --no-privileges --single-transaction --exit-on-error < backups/supabase-final.dump
+docker compose $F exec db pg_restore --list /backups/supabase-final.dump | grep -c 'TABLE DATA'
+docker compose $F exec db pg_restore --list /backups/supabase-final.dump | grep -E 'POLICY|EVENT TRIGGER|EXTENSION' || echo "Чужих объектов нет"
+docker compose $F exec db pg_restore --schema-only -f - /backups/supabase-final.dump | grep -nE 'auth\.|public\.' || echo "Ссылок на auth./public. нет"
 ```
 
-Права (`REVOKE … FROM anon, authenticated`) повторно выдавать не нужно. Таблицы закрыты для этих ролей с самого начала, а владелец `leadgen` имеет полный доступ.
+Если `grep` что-то нашёл, не восстанавливайте дамп, пока не разберётесь, что это за объекты.
 
-**7. Сверить количество строк с Supabase.** Сравнивается каждая таблица схемы `leadgen`.
+**6. Восстановить дамп в локальную базу и собрать статистику.** Восстановление идёт от роли приложения, одной транзакцией: при ошибке в базе ничего не останется.
 
 ```sh
-docker run --rm -i postgres:17.11-bookworm psql "$OLD_DATABASE_URL" -X -At < deploy/postgres/row-counts.sql > /root/counts-supabase.txt
+docker compose $F exec db pg_restore -U leadgen -d leadgen --no-owner --no-privileges --single-transaction --exit-on-error /backups/supabase-final.dump && echo RESTORE_OK
+docker compose $F exec db vacuumdb -U postgres -d leadgen --analyze-in-stages
+docker compose $F exec db psql -U postgres -d leadgen -c 'VACUUM (ANALYZE) leadgen.leads' -c 'VACUUM (ANALYZE) leadgen.user_leads'
+```
+
+**7. Сверить количество строк в каждой таблице.**
+
+```sh
+docker run --rm -i -e PGURL "$PGIMG" sh -c 'exec psql "$PGURL" -X -At' < deploy/postgres/row-counts.sql > /root/counts-supabase.txt
 docker compose $F exec -T db psql -X -At -U leadgen -d leadgen < deploy/postgres/row-counts.sql > /root/counts-local.txt
 diff /root/counts-supabase.txt /root/counts-local.txt && echo "Количество строк совпадает"
+unset PGURL
 docker compose $F exec db psql -U leadgen -d leadgen -c 'SELECT count(*) AS applied, max(name) AS last FROM leadgen.web_schema_versions'
 ```
 
-`diff` не должен ничего вывести. В `web_schema_versions` должны быть миграции, которые уже применялись в Supabase.
-
-**8. Переключить `DATABASE_URL` на локальную базу.** Старый `.env` сохраняется для отката.
+**8. Переключить `DATABASE_URL` на локальную базу.** Пароль не попадает в аргументы команд: `grep -v` и встроенный `printf`.
 
 ```sh
-cp -p .env backups/env-supabase.bak
-APP_PW=$(grep '^LEADGEN_DB_PASSWORD=' .env.db | cut -d= -f2-)
-sed -i "s|^DATABASE_URL=.*|DATABASE_URL=postgresql://leadgen:${APP_PW}@db:5432/leadgen|" .env
-sed -i 's/^DB_PREPARE_THRESHOLD=none$/DB_PREPARE_THRESHOLD=/' .env   # prepared statements снова можно использовать
-chown leadfinder-deploy:leadfinder-deploy .env && chmod 600 .env
-grep '^DATABASE_URL=' .env | sed 's/:[^:@]*@/:***@/'
+(umask 077; { grep -v -e '^DATABASE_URL=' -e '^DB_PREPARE_THRESHOLD=' /root/env-supabase.bak; printf 'DATABASE_URL=postgresql://leadgen:%s@db:5432/leadgen\nDB_PREPARE_THRESHOLD=\n' "$(grep '^LEADGEN_DB_PASSWORD=' .env.db | cut -d= -f2-)"; } > .env.new) && mv .env.new .env
+grep -c '^DATABASE_URL=' .env                         # 1
+grep '^DATABASE_URL=' .env | sed 's/:[^:@]*@/:***@/'  # ...leadgen:***@db:5432/leadgen
 ```
 
-**9. Применить новые миграции.** Таймауты увеличены, потому что `20261014140000_typed_lead_columns.sql` переписывает таблицу `leads` (около 0,6 ГБ). Индексы `CONCURRENTLY` строятся без ограничения по времени.
+**9. Применить новые миграции.** `20261014140000_typed_lead_columns.sql` переписывает таблицу `leads` (около 0,6 ГБ), поэтому лимит времени поднят до 2 часов. Во второй SSH-сессии можно следить за диском и памятью: `watch -n 10 'df -h /var/lib/docker; docker stats --no-stream'`.
 
 ```sh
 docker compose $F build --pull
-docker compose $F run --rm --no-deps -e LEADGEN_MIGRATE_STATEMENT_TIMEOUT=30min -e LEADGEN_MIGRATE_LOCK_TIMEOUT=1min leadfinder python -m leadgen.web_migrate
+docker compose $F run --rm --no-deps -e LEADGEN_MIGRATE_STATEMENT_TIMEOUT=2h -e LEADGEN_MIGRATE_LOCK_TIMEOUT=1min leadfinder python -m leadgen.web_migrate
+docker compose $F exec db vacuumdb -U postgres -d leadgen --analyze-in-stages
+docker compose $F exec db psql -U postgres -d leadgen -c 'VACUUM (ANALYZE) leadgen.leads' -c 'VACUUM (ANALYZE) leadgen.user_leads'
 ```
 
-Ожидаемый результат: строки «Применена миграция …» только для файлов, которых ещё не было в `web_schema_versions`, и в конце «Схема веб-кабинета готова.».
+Ожидаемый результат: «Применена миграция …» только для тех файлов, которых не было в `web_schema_versions`, и в конце «Схема веб-кабинета готова.».
 
 **10. Запустить приложение и проверить.**
 
 ```sh
-docker compose $F up -d --remove-orphans --wait --wait-timeout 300
+docker compose $F up -d --wait --wait-timeout 300
 docker compose $F ps
 docker compose $F exec leadfinder python -m leadgen.app status
 docker compose $F logs --since 10m leadfinder | tail -n 50
 ```
 
-Проверьте в Telegram `/start` у бота. Если веб-кабинет включён, откройте сайт и войдите.
+Проверьте `/start` у бота и вход в веб-кабинет. Если что-то не так, смотрите «Откат», вариант А.
 
-**11. Вернуть автообновление и включить резервные копии.** Значение `LEADFINDER_WEB` должно совпадать с шагом 0. Установщик теперь ставит и таймер резервных копий.
+**11. Только теперь: автообновление, права и резервные копии.** Установщик создаёт `leadfinder-deploy`, передаёт ему каталог, ставит таймеры и сразу запускает обновление. `LEADFINDER_WEB` укажите как раньше (`/etc/systemd/system/leadfinder-update.service.d/environment.conf`, если файл есть).
 
 ```sh
-LEADFINDER_WEB=1 deploy/install-auto-update.sh   # только бот: LEADFINDER_WEB=0
-systemctl start leadfinder-backup.service
-journalctl -u leadfinder-backup.service -n 20 --no-pager
+LEADFINDER_WEB=1 sh deploy/install-auto-update.sh   # только бот: LEADFINDER_WEB=0
+systemctl start leadfinder-backup.service && journalctl -u leadfinder-backup.service -n 20 --no-pager
 ls -lh backups/
 systemctl start leadfinder-renew.timer 2>/dev/null || true   # если продление было включено
 ```
 
-`backups/supabase-final.dump` и `backups/env-supabase.bak` автоматически не удаляются. Удалите их вручную, когда откат больше не понадобится.
+**12. Через 1–2 недели, когда откат точно не понадобится.**
 
-### Откат на Supabase
+- Смените пароль базы в Supabase или поставьте проект на паузу и удалите его.
+- Удалите локальные следы старой базы:
 
-Откат возможен, пока Supabase доступна на запись: после перехода на платный тариф или после освобождения места. Всё, что бот записал в локальную базу после шага 10, в Supabase не попадёт. Чтобы перенести эти данные, снимите дамп локальной базы (как в «Восстановлении из резервной копии» ниже) и восстановите его в Supabase.
+```sh
+rm -f /root/env-supabase.bak /root/counts-supabase.txt /root/counts-local.txt /root/leadfinder-rollback.sha /opt/leadfinder/backups/supabase-final.dump
+```
+
+### Откат
+
+**А. До шага 10 или сразу после него, если приложение на новой базе не заработало.** Возвращаются старый код и старый `.env`. Приложение будет работать как до переезда, то есть с Supabase только на чтение. Контейнер `db` остаётся как «осиротевший» сервис и ничему не мешает. Не используйте `--remove-orphans`.
+
+```sh
+cd /opt/leadfinder
+docker compose $F stop
+git -C /opt/leadfinder checkout --detach "$(cat /root/leadfinder-rollback.sha)"
+install -m 600 /root/env-supabase.bak .env
+docker compose $F build && docker compose $F up -d --wait
+```
+
+Чтобы потом повторить переезд: `git -C /opt/leadfinder checkout main` и снова шаг 2.
+
+**Б. После переключения, когда в локальной базе уже есть новые данные.** Старый код с этими данными работать не может: в них уже типизированные колонки. Пока Supabase доступна только для чтения, вернуться на неё нельзя. Когда запись там снова открыта (платный тариф или освобождено место), новые данные переносятся дампом при новом коде:
 
 ```sh
 cd /opt/leadfinder
 docker compose $F stop leadfinder web   # только бот: docker compose $F stop leadfinder
-cp -p backups/env-supabase.bak .env && chown leadfinder-deploy:leadfinder-deploy .env && chmod 600 .env
+(umask 077; docker compose $F exec -T db pg_dump -U postgres -d leadgen --schema=leadgen --no-owner --no-privileges -Fc > /root/local-final.dump)
+export PGURL="$(grep '^DATABASE_URL=' /root/env-supabase.bak | cut -d= -f2-)"
+docker run --rm -e PGURL "$PGIMG" sh -c 'exec psql "$PGURL" -X -v ON_ERROR_STOP=1 -c "CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA extensions" -c "DROP SCHEMA leadgen CASCADE"'
+docker run --rm -i -e PGURL "$PGIMG" sh -c 'exec pg_restore -d "$PGURL" --no-owner --no-privileges --single-transaction --exit-on-error' < /root/local-final.dump
+unset PGURL
+install -m 600 /root/env-supabase.bak .env
 docker compose $F up -d --wait
-docker compose $F exec leadfinder python -m leadgen.app status
 ```
 
-Контейнер `db` при этом продолжает работать, приложению он не мешает. Новый код совместим с Supabase: Supabase-роли и схема `extensions` там уже есть.
+`DROP SCHEMA leadgen CASCADE` удаляет старые данные в Supabase. Выполняйте его только после того, как файл `/root/local-final.dump` создан и не пустой.
 
 ### Восстановление из резервной копии
 
-Перед восстановлением сделайте свежую копию текущего состояния: `systemctl start leadfinder-backup.service`. Затем:
+Текущая схема переименовывается и удаляется только после проверки, поэтому до конца процедуры к ней можно вернуться. На время процедуры нужно вдвое больше места под базу.
 
 ```sh
 cd /opt/leadfinder
+systemctl start leadfinder-backup.service       # свежая копия текущего состояния
 ls -lh backups/
-docker compose $F stop leadfinder web   # только бот: docker compose $F stop leadfinder
-docker compose $F exec db psql -U postgres -d leadgen -c 'DROP SCHEMA leadgen CASCADE'
-docker compose $F exec -T db pg_restore -U leadgen -d leadgen --no-owner --no-privileges --single-transaction --exit-on-error < backups/leadgen-ДАТА.dump
+docker compose $F stop leadfinder web           # только бот: docker compose $F stop leadfinder
+docker compose $F exec db psql -U leadgen -d leadgen -c 'ALTER SCHEMA leadgen RENAME TO leadgen_old'
+docker compose $F exec db pg_restore -U leadgen -d leadgen --no-owner --no-privileges --single-transaction --exit-on-error /backups/leadgen-ДАТА.dump && echo RESTORE_OK
+docker compose $F exec -T db psql -X -At -U leadgen -d leadgen < deploy/postgres/row-counts.sql
 docker compose $F run --rm --no-deps leadfinder python -m leadgen.web_migrate
+docker compose $F exec db vacuumdb -U postgres -d leadgen --analyze-in-stages
 docker compose $F up -d --wait
+docker compose $F exec db psql -U leadgen -d leadgen -c 'DROP SCHEMA leadgen_old CASCADE'   # после проверки
 ```
 
-Если потерян весь том `pgdata`, выполните `docker compose $F up -d --wait db`: скрипт инициализации создаст роли и схему `extensions` заново. После этого нужны только команды `pg_restore` и следующие за ней.
+Если восстановление не удалось, верните прежнюю схему: `ALTER SCHEMA leadgen_old RENAME TO leadgen`. Если частично созданная схема `leadgen` всё же осталась, сначала удалите её. Если потерян весь том `pgdata`, выполните `docker compose $F up -d --wait db`: инициализация создаст роли и схему `extensions`. Затем сразу переходите к `pg_restore`.
 
-Пустую базу без дампа (например, для теста) можно собрать из файлов миграций: сначала три начальных файла, затем `web_migrate`.
+Пустую базу без дампа (например, для теста) можно собрать из файлов миграций: три начальных файла, затем `web_migrate`.
 
 ```sh
 for f in 20260929134042_create_leadgen_schema 20260930092451_add_multiuser_product 20260930093818_harden_multiuser_schema; do
@@ -462,14 +526,74 @@ done
 docker compose $F run --rm --no-deps leadfinder python -m leadgen.web_migrate
 ```
 
-### Наблюдение за базой
+Необязательная еженедельная проверка: свежая копия восстанавливается во временную базу, затем база удаляется.
+
+```sh
+f=$(ls -t backups/leadgen-*.dump | head -n 1); echo "$f"
+docker compose $F exec db createdb -U postgres -O leadgen leadgen_check
+docker compose $F exec db psql -U postgres -d leadgen_check -c 'CREATE SCHEMA extensions' -c 'CREATE EXTENSION pg_trgm WITH SCHEMA extensions' -c 'GRANT USAGE ON SCHEMA extensions TO leadgen'
+docker compose $F exec db pg_restore -U leadgen -d leadgen_check --no-owner --no-privileges --single-transaction --exit-on-error "/backups/$(basename "$f")" && echo RESTORE_OK
+docker compose $F exec db dropdb -U postgres leadgen_check
+```
+
+**Копия вне сервера (рекомендуется, вручную).** Если сервер потерян, локальные копии пропадут вместе с ним. Зашифруйте копию паролем, который хранится отдельно, и унесите к себе:
+
+```sh
+gpg --symmetric --cipher-algo AES256 --output /root/leadgen-ДАТА.dump.gpg /opt/leadfinder/backups/leadgen-ДАТА.dump
+# на своём компьютере: scp root@SERVER_IP:/root/leadgen-ДАТА.dump.gpg . && ssh root@SERVER_IP rm /root/leadgen-ДАТА.dump.gpg
+```
+
+Никогда не храните и не копируйте дампы вместе с `.env`, `.env.db`, Telegram-сессией или ключами: вместе они дают полный доступ к данным и аккаунтам.
+
+### Обслуживание
+
+**Изменить настройки `db`** (параметры `command`, память) или **обновить минорную версию**. Для обновления поменяйте тег и digest в `compose.yaml` и `PGIMG` в этом разделе; digest берётся из `docker buildx imagetools inspect postgres:<тег>`. Автообновление базу не пересоздаёт (`--no-recreate`), поэтому изменения применяются вручную. База будет недоступна несколько секунд.
+
+```sh
+cd /opt/leadfinder
+systemctl start leadfinder-backup.service
+docker compose $F stop leadfinder web   # только бот: docker compose $F stop leadfinder
+docker compose $F up -d --force-recreate --wait db
+docker compose $F up -d --wait
+```
+
+Раз в квартал проверяйте, не вышла ли новая минорная версия 17.x (https://www.postgresql.org/support/versioning/). Обновления безопасности выходят только в минорных версиях.
+
+**Сменить пароль роли приложения.**
+
+```sh
+cd /opt/leadfinder
+NEW=$(openssl rand -hex 32)
+(umask 077; { grep -v '^LEADGEN_DB_PASSWORD=' .env.db; printf 'LEADGEN_DB_PASSWORD=%s\n' "$NEW"; } > .env.db.new) && mv .env.db.new .env.db
+(umask 077; { grep -v '^DATABASE_URL=' .env; printf 'DATABASE_URL=postgresql://leadgen:%s@db:5432/leadgen\n' "$NEW"; } > .env.new) && mv .env.new .env
+unset NEW
+chown leadfinder-deploy:leadfinder-deploy .env .env.db
+docker compose $F up -d --force-recreate --wait db
+docker compose $F exec db sh /docker-entrypoint-initdb.d/10-leadgen.sh
+docker compose $F up -d --force-recreate --wait
+```
+
+Пароль `postgres` по TCP не используется: вход по TCP для этой роли запрещён. При необходимости его меняют интерактивно: `docker compose $F exec db psql -U postgres -c '\password postgres'`, затем обновляют `POSTGRES_PASSWORD` в `.env.db`.
+
+**Swap (по желанию владельца, вручную).** На сервере с 4 ГБ без swap страхует от OOM при пиках.
+
+```sh
+fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
+echo '/swapfile none swap sw 0 0' >> /etc/fstab
+echo 'vm.swappiness=10' > /etc/sysctl.d/99-swappiness.conf && sysctl --system
+```
+
+**Наблюдение.**
 
 ```sh
 docker compose $F exec db psql -U leadgen -d leadgen -c "SELECT pg_size_pretty(pg_database_size('leadgen'))"
 docker compose $F exec db psql -U leadgen -d leadgen -c 'SELECT calls, round(mean_exec_time) AS ms, left(query, 80) FROM extensions.pg_stat_statements ORDER BY total_exec_time DESC LIMIT 10'
 docker compose $F logs --since 1h db | grep -E 'duration|lock|ERROR' | tail -n 30
 docker stats --no-stream
+systemctl list-timers leadfinder-backup.timer --no-pager
 ```
+
+**Технический долг.** Роль `leadgen` сейчас и владеет схемой, и используется приложением. Следующий шаг — разделить их: роль-владелец выполняет миграции через отдельный `MIGRATE_DATABASE_URL`, а роль, под которой работает приложение, получает только `SELECT/INSERT/UPDATE/DELETE`.
 
 ## Типичные ошибки
 
