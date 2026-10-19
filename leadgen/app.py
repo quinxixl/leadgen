@@ -235,8 +235,10 @@ def status(db, exact=False):
     registry = registry_stats(db)
     enabled = read_count(db)  # chats the service account reads; registry statuses are public-page checks
     reader = reader_status(db) | {'session_file': SESSION_FILE.exists()}
+    from .filtered_cleanup import last_stats
     print(json.dumps({'counts':counts,'counts_mode':counts_mode,'worker':worker_status(db),'sources':[dict(r) for r in db.execute('SELECT * FROM health')],
-                      'telegram_registry':registry,'telegram_enabled':enabled,'telegram_reader':reader},ensure_ascii=False,indent=2))
+                      'telegram_registry':registry,'telegram_enabled':enabled,'telegram_reader':reader,
+                      'cleanup':last_stats(db)},ensure_ascii=False,indent=2))
 
 def setup():
     path = ROOT.parent/'.env'

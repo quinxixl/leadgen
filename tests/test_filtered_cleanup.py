@@ -83,10 +83,19 @@ class Cadence(unittest.TestCase):
 
     def test_run_if_due_skips_work_between_runs(self):
         now=[0.0];timer=FilteredCleanup(interval_seconds=3600,clock=lambda:now[0])
-        with patch('leadgen.filtered_cleanup.cleanup_filtered',return_value=5) as cleanup:
-            self.assertEqual(timer.run_if_due('db',CONFIG),5)
+        with patch('leadgen.filtered_cleanup.cleanup_filtered',return_value=5) as cleanup,\
+                patch('leadgen.filtered_cleanup.cleanup_rejected',return_value=7) as rejected,\
+                patch('leadgen.filtered_cleanup.save_stats') as saved:
+            self.assertEqual(timer.run_if_due('db',CONFIG),{'filtered':5,'leads':7})
             now[0]=10;self.assertIsNone(timer.run_if_due('db',CONFIG))
-        cleanup.assert_called_once_with('db',CONFIG)
+        cleanup.assert_called_once_with('db',CONFIG);rejected.assert_called_once_with('db',CONFIG)
+        stats=saved.call_args.args[1]
+        self.assertEqual((stats['filtered'],stats['leads'],stats['rejected_retention_hours']),(5,7,98))
+
+    def test_rejected_retention_never_enters_the_freshness_window(self):
+        for days,hours in (('1',retention_hours(CONFIG)),('3',98),('',98),('10',240),('0',0),('oops',98)):
+            with patch.dict(os.environ,{'LEAD_REJECTED_RETENTION_DAYS':days}):
+                self.assertEqual(filtered_cleanup.rejected_retention_hours(CONFIG),hours,days)
 
     def test_failed_run_waits_for_the_next_interval(self):
         now=[0.0];timer=FilteredCleanup(interval_seconds=3600,clock=lambda:now[0])
@@ -159,9 +168,10 @@ class CleanupPostgres(unittest.TestCase):
     def setUpClass(cls):
         fixtures.WebPostgres.setUpClass.__func__(cls)
         # The no-transaction index file, statement by statement, as web_migrate runs it.
-        sql=(Path('supabase/migrations')/'20261014130000_user_leads_fk_indexes.sql').read_text()
-        with psycopg.connect(fixtures.DSN,autocommit=True) as connection:
-            for statement in web_migrate.split_statements(sql):connection.execute(statement)
+        for name in ('20261014130000_user_leads_fk_indexes.sql','20261019120000_project_leads_lead_index.sql'):
+            sql=(Path('supabase/migrations')/name).read_text()
+            with psycopg.connect(fixtures.DSN,autocommit=True) as connection:
+                for statement in web_migrate.split_statements(sql):connection.execute(statement)
 
     @classmethod
     def tearDownClass(cls):fixtures.WebPostgres.tearDownClass.__func__(cls)
@@ -239,10 +249,137 @@ class CleanupPostgres(unittest.TestCase):
         self.assertEqual(sent,[])
 
     def test_fk_indexes_exist_and_are_valid(self):
-        for name in ('lead_assignments_owner_lead','telegram_replies_owner_lead'):
+        for name in ('lead_assignments_owner_lead','telegram_replies_owner_lead','project_leads_lead'):
             row=self.db.execute('''SELECT i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid
                 JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='leadgen' AND c.relname=?''',(name,)).fetchone()
             self.assertTrue(row and row['indisvalid'],name)
+        self.db.release()
+
+    # --- retention of rejected / duplicate leads -------------------------------------------------------------
+
+    def lead(self,n,hours,status='rejected'):
+        lead=self.add(n,hours)
+        with self.db:self.db.execute('UPDATE leads SET status=? WHERE id=?',(status,lead))
+        return lead
+
+    def lead_ids(self):
+        return {row['id'] for row in self.db.execute('SELECT id FROM leads').fetchall()}
+
+    def protect_with_every_kind_of_work(self,start):
+        """One old rejected lead per kind of user work; returns their ids."""
+        kept=[]
+        def lead():
+            kept.append(self.lead(start+len(kept),150));return kept[-1]
+        def filtered():
+            lid=lead()
+            self.db.execute("INSERT INTO user_leads(user_id,lead_id,delivery_status) VALUES(?,?,'filtered')",(self.u,lid))
+            return lid
+        with self.db:
+            self.db.execute("INSERT INTO user_leads(user_id,lead_id,delivery_status) VALUES(?,?,'sent')",(self.u,lead()))
+            for column,value in (('pipeline_status',"'won'"),('crm_note',"'позвонить'"),('deal_amount','1000'),
+                                 ('replied_at','now()'),('won_at','now()')):
+                self.db.execute("INSERT INTO user_leads(user_id,lead_id,delivery_status,"+column+") VALUES(?,?,'filtered',"
+                                +value+")",(self.u,lead()))
+            self.db.execute("INSERT INTO lead_activity(user_id,lead_id,kind,detail) VALUES(?,?,'note','x')",(self.u,filtered()))
+            self.db.execute('INSERT INTO lead_reminders(user_id,lead_id,due_at) VALUES(?,?,now())',(self.u,filtered()))
+            self.db.execute("INSERT INTO lead_tags(user_id,lead_id,tag) VALUES(?,?,'vip')",(self.u,filtered()))
+            self.db.execute('INSERT INTO lead_assignments(workspace_id,owner_user_id,lead_id,assignee_user_id,assigned_by) '
+                            'VALUES(?,?,?,?,?)',(self.ws,self.u,filtered(),self.u,self.u))
+            self.db.execute('INSERT INTO telegram_replies(id,actor_id,owner_id,lead_id,mode,body,source_url,target_cipher,'
+                            'sender_label,recipient_label,account_id,random_id,expires_at) '
+                            "VALUES(?,?,?,?,'dm','привет','u','c','s','r',1,1,now())",('a'*32,self.u,self.u,filtered()))
+            self.db.execute('INSERT INTO ai_offer_generations(workspace_id,owner_user_id,lead_id,requested_by,model,'
+                            "prompt_fingerprint) VALUES(?,?,?,?,'m',?)",(self.ws,self.u,filtered(),self.u,'f'*64))
+            self.db.execute("INSERT INTO lead_feedback(user_id,lead_id,label) VALUES(?,?,'not_service')",(self.u,lead()))
+            project=self.db.execute("INSERT INTO projects(user_id,workspace_id,name) VALUES(?,?,'Сайты') RETURNING id",
+                                    (self.u,self.ws)).fetchone()['id']
+            self.db.execute('INSERT INTO project_leads(project_id,user_id,lead_id) VALUES(?,?,?)',(project,self.u,lead()))
+        return kept
+
+    def test_retention_deletes_only_unworked_old_rejected_and_duplicate_leads(self):
+        dead=[self.lead(1,150),self.lead(2,150,'duplicate'),self.lead(3,200)]
+        for lead in dead[:2]:
+            self.mark(self.u,lead,'filtered');self.mark(self.other,lead,'filtered')
+        with self.db:self.db.execute("INSERT INTO lead_ai_scores(lead_id,status) VALUES(?,'pending')",(dead[0],))
+        kept=[self.lead(10+i,150,status) for i,status in enumerate(('ready','review','sent','sending','uncertain'))]
+        kept+=self.protect_with_every_kind_of_work(20)
+        kept+=[self.lead(40,80),self.lead(41,1)]                  # inside the window + margin (98 h): per-user re-check
+        fresh=self.lead(42,1,'ready')
+        with self.db:self.db.execute('UPDATE user_preferences SET delivery_cursor=?',(fresh,))
+        cursors=self.cursors()
+        before=self.lead_ids()
+        with patch.dict(os.environ,{'LEAD_REJECTED_RETENTION_DAYS':'3'}):
+            self.assertEqual(filtered_cleanup.cleanup_rejected(self.db,CONFIG,batch_size=2,max_batches=1),2)  # bounded
+            self.assertEqual(filtered_cleanup.cleanup_rejected(self.db,CONFIG,batch_size=2,max_batches=10),1)
+            self.assertEqual(filtered_cleanup.cleanup_rejected(self.db,CONFIG),0)
+        self.assertEqual(self.lead_ids(),before-set(dead))
+        self.assertTrue(set(kept)<=self.lead_ids())
+        self.assertIsNone(self.db.execute('SELECT 1 FROM user_leads WHERE lead_id = ANY(?)',(dead,)).fetchone())
+        self.assertIsNone(self.db.execute('SELECT 1 FROM lead_ai_scores WHERE lead_id=?',(dead[0],)).fetchone())
+        self.assertEqual(self.cursors(),cursors)                   # cascade of filtered rows kept every cursor
+        for table in ('lead_activity','lead_reminders','lead_tags','lead_assignments','telegram_replies',
+                      'ai_offer_generations','lead_feedback','project_leads'):
+            self.assertIsNotNone(self.db.execute('SELECT 1 FROM '+table).fetchone(),table)
+        self.db.release()
+        self.assertEqual(self.db.connection.info.transaction_status.name,'IDLE')
+
+    def test_retention_age_follows_the_environment(self):
+        lead=self.lead(1,150)
+        with patch.dict(os.environ,{'LEAD_REJECTED_RETENTION_DAYS':'10'}):
+            self.assertEqual(filtered_cleanup.cleanup_rejected(self.db,CONFIG),0)
+        with patch.dict(os.environ,{'LEAD_REJECTED_RETENTION_DAYS':'0'}):
+            self.assertEqual(filtered_cleanup.cleanup_rejected(self.db,CONFIG),0)
+        self.assertIn(lead,self.lead_ids())
+        self.assertEqual(filtered_cleanup.cleanup_rejected(self.db,CONFIG),1)
+        self.db.release()
+
+    def test_locked_lead_is_skipped_not_waited_for(self):
+        busy,free=self.lead(1,150),self.lead(2,150)
+        other=psycopg.connect(fixtures.DSN)
+        try:
+            other.execute('SELECT 1 FROM leadgen.leads WHERE id=%s FOR UPDATE',(busy,))
+            self.assertEqual(filtered_cleanup.cleanup_rejected(self.db,CONFIG),1)
+        finally:
+            other.rollback();other.close()
+        self.assertEqual(self.lead_ids()&{busy,free},{busy})
+        self.db.release()
+
+    def test_rescraped_deleted_lead_is_not_delivered_again(self):
+        from leadgen.app import ingest
+        from leadgen.core import Lead
+        published=(datetime.now(timezone.utc)-timedelta(hours=150)).isoformat()
+        lead=Lead(source='FL.ru',url='https://www.fl.ru/projects/1/',title='Нужен сайт для клиники',
+                  text='Нужен сайт для клиники, бюджет 80 000 рублей',published=published,budget_text='80 000 рублей')
+        with self.db:ingest(self.db,lead,CONFIG)
+        old=self.db.execute('SELECT id,status,reason FROM leads WHERE url=?',(lead.url,)).fetchone()
+        self.assertEqual(old['status'],'rejected')
+        with self.db:self.db.execute("UPDATE leads SET first_seen=now()-interval '150 hours' WHERE id=?",(old['id'],))
+        self.assertEqual(filtered_cleanup.cleanup_rejected(self.db,CONFIG),1)
+        with self.db:ingest(self.db,lead,CONFIG)                   # the 5-minute re-scan finds it again
+        again=self.db.execute('SELECT id,status,reason FROM leads WHERE url=?',(lead.url,)).fetchone()
+        self.assertGreater(again['id'],old['id'])
+        self.assertEqual((again['status'],again['reason']),(old['status'],old['reason']))
+        sent=[]
+        with patch.dict(os.environ,{'LEAD_CURSOR_LAG_SECONDS':'60'}):
+            with self.db:self.db.execute("UPDATE leads SET first_seen=now()-interval '2 minutes' WHERE id=?",(again['id'],))
+            product.deliver_registered(self.db,CONFIG,lambda method,data:sent.append(data),limit_per_user=10)
+        self.assertEqual(sent,[])
+
+    def test_run_stats_are_saved_and_shown_in_status(self):
+        import contextlib
+        import io
+        from leadgen import app
+        self.lead(1,150)
+        timer=FilteredCleanup(interval_seconds=3600)
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(timer.run_if_due(self.db,CONFIG),{'filtered':0,'leads':1})
+        self.assertIn('отклонённых лидов 1',out.getvalue())
+        stats=filtered_cleanup.last_stats(self.db)
+        self.assertEqual((stats['filtered'],stats['leads']),(0,1))
+        with patch('leadgen.telegram_monitor.reader_status',return_value={}),\
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            app.status(self.db)
+        self.assertEqual(json.loads(out.getvalue())['cleanup']['leads'],1)
         self.db.release()
 
     def test_cascade_reaches_assignments_and_replies(self):
