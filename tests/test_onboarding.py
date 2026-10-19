@@ -149,6 +149,21 @@ class BotUX(unittest.TestCase):
         self.assertEqual(deliver_registered(self.db,CONFIG,send,limit_per_user=10),0)
         self.assertEqual(len(sent),2)
 
+    def test_monitor_on_hands_the_welcome_batch_to_the_delivery_worker(self):
+        from leadgen.bot import FirstLeads
+        first=FirstLeads();held=[]
+        self.ui=ProductController(self.db,CONFIG,lambda method,data:(self.sent.append((method,data)),
+                                                                      held.append(first.held())),first_leads=first)
+        with self.db:self.db.execute('UPDATE user_preferences SET monitoring_active=false WHERE user_id=?',(self.u,))
+        with patch('leadgen.product.backfill_first_leads',side_effect=AssertionError('ran inline')):
+            self.text(MONITOR_OFF)  # the «выкл» button switches monitoring on
+        self.assertTrue(self.prefs(1)['monitoring_active'])
+        self.assertTrue(self.calls('sendMessage')[-1]['text'].startswith('🔔 Мониторинг включён'))
+        # The user is held out of live delivery while the confirmation goes out, then queued for the worker.
+        self.assertEqual(held[-1],frozenset({self.u}))
+        self.assertEqual(first.next(),self.u);self.assertIsNone(first.next())
+        self.assertTrue(self.ui.manual)  # the worker is asked to scan sources right away
+
     def test_start_shows_wizard_only_until_configured(self):
         self.text('/start')
         self.assertIn('keyboard',self.calls('sendMessage')[-1]['reply_markup'])

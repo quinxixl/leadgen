@@ -173,38 +173,41 @@ class StopLoop(Exception):
     pass
 
 
+def worker_patches(stack,deliver,sleeps,extra=()):
+    """The DeliveryWorker's collaborators, faked: only deliver_registered does something."""
+    for target,kwargs in [('leadgen.bot.capture_exception',{}),('leadgen.bot.time.sleep',{'side_effect':sleeps.append}),
+            ('leadgen.ai_scoring.scoring_enabled',{'return_value':False}),
+            ('leadgen.integrations.integrations_enabled',{'return_value':False}),
+            ('leadgen.reminders.deliver_due',{'return_value':0}),
+            ('leadgen.team_notifications.deliver_assignments',{'return_value':0}),
+            ('leadgen.product.notify_subscriptions',{}),('leadgen.product.backfill_pending',{}),
+            ('leadgen.feedback.send_surveys',{}),('leadgen.feedback.deliver_notifications',{}),
+            ('leadgen.product.deliver_registered',{'side_effect':deliver}),*extra]:
+        yield target,stack.enter_context(patch(target,**kwargs))
+
+
 @unittest.skipUnless(psycopg,'psycopg is not installed')
 class WorkerLoop(unittest.TestCase):
-    """run_bot survives statement timeouts and lost connections and never waits on Telegram inside a transaction."""
-    def run_loop(self,deliveries,iterations=3,connection=None,extra_env=None):
+    """DeliveryWorker survives statement timeouts and lost connections and never waits on Telegram inside a transaction."""
+    def run_worker(self,deliveries,connection=None,extra_env=None):
+        from contextlib import ExitStack
         from leadgen import bot
         self.connection=connection or FakeConnection(self.answer);db=Database(self.connection,'postgres','dsn')
-        self.max_id=0;self.polls=[];self.sleeps=[];self.calls=0
-        def telegram(method,payload):
-            if method=='getWebhookInfo':return {}
-            self.polls.append(db.connection.info.transaction_status.name)
-            if len(self.polls)>iterations:raise StopLoop()
-            return []
+        self.max_id=0;self.sleeps=[];self.calls=0;self.states=[]
+        worker=bot.DeliveryWorker(lambda:db,{'poll_seconds':300,'sources':[]},lambda method,payload:{},bot.FirstLeads(),tick=0)
         def deliver(*args,**kwargs):
+            self.states.append(db.connection.info.transaction_status.name)
             self.calls+=1;outcome=deliveries[min(self.calls,len(deliveries))-1]
+            if self.calls>=len(deliveries):worker.stop()
             if isinstance(outcome,BaseException):raise outcome
             return outcome
-        env={'TELEGRAM_CHAT_ID':'1','LEAD_DELIVERY_MIN_SECONDS':'0',**(extra_env or {})}
-        with patch.dict(os.environ,env),patch('leadgen.bot.telegram',telegram),patch('leadgen.bot.env_load'),\
-                patch('leadgen.bot.capture_exception') as captured,\
-                patch('leadgen.bot.time.sleep',side_effect=self.sleeps.append),\
-                patch('leadgen.telegram_monitor.reader_configured',return_value=False),\
-                patch('leadgen.telegram_monitor.ReaderThread') as threads,patch('leadgen.bot.beat') as beat,\
-                patch('leadgen.ai_scoring.scoring_enabled',return_value=False),\
-                patch('leadgen.integrations.integrations_enabled',return_value=False),\
-                patch('leadgen.reminders.deliver_due',return_value=0),\
-                patch('leadgen.team_notifications.deliver_assignments',return_value=0),\
-                patch('leadgen.product.notify_subscriptions'),patch('leadgen.product.backfill_pending'),\
-                patch('leadgen.feedback.send_surveys'),patch('leadgen.feedback.deliver_notifications'),\
-                patch('leadgen.product.deliver_registered',side_effect=deliver):
-            with self.assertRaises(StopLoop):
-                bot.run_bot(db,{'poll_seconds':300,'sources':[]})
-        self.captured=captured;self.beats=beat.call_count;self.threads=threads
+        env={'LEAD_DELIVERY_MIN_SECONDS':'0',**(extra_env or {})}
+        with ExitStack() as stack:
+            stack.enter_context(patch.dict(os.environ,env))
+            mocks=dict(worker_patches(stack,deliver,self.sleeps))
+            worker.gate=product.DeliveryGate()  # reads LEAD_DELIVERY_MIN_SECONDS
+            self.worker=worker;self.captured=mocks['leadgen.bot.capture_exception']
+            worker.run()
         return db
 
     def answer(self,query,params):
@@ -215,38 +218,115 @@ class WorkerLoop(unittest.TestCase):
 
     def test_query_canceled_rolls_back_backs_off_and_continues(self):
         canceled=psycopg.errors.QueryCanceled('canceling statement due to statement timeout')
-        self.run_loop([canceled,0,0])
+        self.run_worker([canceled,0,0])
         self.assertEqual(self.calls,3)              # delivery kept running after the timeout
         self.assertEqual(self.sleeps,[2])           # one short back-off
         self.assertGreaterEqual(self.connection.rollbacks,1)
         self.captured.assert_called_once()
-        self.assertEqual(self.beats,2)              # heartbeat only after the two passes that completed
-        # Every long-poll starts outside a transaction: no ACCESS SHARE locks held while waiting for Telegram.
-        self.assertEqual(set(self.polls),{'IDLE'})
-
-    def test_personal_monitors_thread_is_supervised_by_the_loop(self):
-        env={'TELEGRAM_API_ID':'1','TELEGRAM_API_HASH':'h','TELEGRAM_SESSION_ENCRYPTION_KEY':'k'}
-        self.run_loop([0,0,0],extra_env=env)
-        names=[c.kwargs.get('name') for c in self.threads.call_args_list]
-        self.assertIn('personal-monitors',names)
-        # Started once, then re-checked on every pass: a dead manager thread is restarted (rate-limited).
-        self.assertGreaterEqual(self.threads.return_value.ensure.call_count,4)
+        # Every delivery pass starts outside a transaction: no ACCESS SHARE locks held while it talks to Telegram.
+        self.assertEqual(set(self.states),{'IDLE'})
+        self.assertTrue(self.connection.closed)     # the worker's own connection is closed when it stops
 
     def test_lost_connection_is_reopened(self):
         lost=psycopg.OperationalError('server closed the connection unexpectedly')
         connection=FakeConnection(self.answer);fresh=FakeConnection(self.answer)
         connection.broken=True  # what psycopg reports after the server dropped the session
         with patch('leadgen.database.db_open',return_value=SimpleNamespace(connection=fresh)) as reopen:
-            db=self.run_loop([lost,0],connection=connection)
+            db=self.run_worker([lost,0],connection=connection)
         reopen.assert_called_once_with('dsn')
         self.assertIs(db.connection,fresh)
 
-    def test_programming_errors_still_stop_the_worker(self):
+    def test_programming_errors_are_kept_for_the_update_loop(self):
         from leadgen import bot
         with self.assertRaises(psycopg.errors.UndefinedColumn):
-            self.run_loop([psycopg.errors.UndefinedColumn('column "x" does not exist')])
+            self.run_worker([psycopg.errors.UndefinedColumn('column "x" does not exist')])
+        self.assertIsInstance(self.worker.fatal,psycopg.errors.UndefinedColumn)
         self.assertEqual(self.sleeps,[])
         self.assertTrue(bot.db_retry_delay(1)==2 and bot.db_retry_delay(10)==bot.DB_RETRY_MAX_SECONDS)
+
+    def test_pending_welcome_batch_runs_first_and_its_user_is_skipped_meanwhile(self):
+        from contextlib import ExitStack
+        from leadgen import bot
+        db=Database(FakeConnection(self.answer),'postgres','dsn');self.max_id=0
+        first=bot.FirstLeads();order=[]
+        worker=bot.DeliveryWorker(lambda:db,{'poll_seconds':300,'sources':[]},lambda method,payload:{},first,tick=0)
+        first.reserve(7)  # a handler is switching monitoring on for user 7
+        def deliver(*args,**kwargs):order.append(('live',kwargs['skip']));return 0
+        with ExitStack() as stack:
+            stack.enter_context(patch.dict(os.environ,{'LEAD_DELIVERY_MIN_SECONDS':'0'}))
+            dict(worker_patches(stack,deliver,[],[('leadgen.product.backfill_first_leads',
+                {'side_effect':lambda db,base,send,user_id:order.append(('welcome',user_id))})]))
+            worker.gate=product.DeliveryGate();worker._connect()
+            worker.run_once()
+            first.release(7)  # its confirmation messages are out
+            worker.run_once();worker.run_once()
+        # Every pass delivers (new max(id) each time); the welcome batch runs once, before user 7's first live pass.
+        self.assertEqual(order,[('live',frozenset({7})),('welcome',7),('live',frozenset()),('live',frozenset())])
+        self.assertEqual(first.held(),frozenset())
+
+
+@unittest.skipUnless(psycopg,'psycopg is not installed')
+class UpdateLoop(unittest.TestCase):
+    """run_bot only long-polls and handles updates; delivery runs on the worker thread with its own connection."""
+    def run_bot(self,poll,deliver_queues=None,iterations=2):
+        """poll(n) answers the n-th getUpdates (0-based); the loop is stopped after `iterations` polls."""
+        from contextlib import ExitStack
+        import threading
+        from leadgen import bot
+        answer=lambda query,params:Cursor({'id':1}) if 'max(id)' in query else Cursor()
+        db=Database(FakeConnection(answer),'postgres','dsn');self.polls=[];self.handled=[]
+        self.worker_connection=FakeConnection(answer)
+        def telegram(method,payload):
+            if method!='getUpdates':return {}
+            self.polls.append(payload)
+            if len(self.polls)>iterations:raise StopLoop()
+            return poll(len(self.polls)-1)
+        with ExitStack() as stack:
+            stack.enter_context(patch('leadgen.bot.telegram',telegram))
+            stack.enter_context(patch('leadgen.bot.env_load'));stack.enter_context(patch('leadgen.bot.beat'))
+            stack.enter_context(patch('leadgen.telegram_monitor.reader_configured',return_value=False))
+            stack.enter_context(patch('leadgen.database.db_open',
+                                      return_value=Database(self.worker_connection,'postgres','dsn')))
+            stack.enter_context(patch('leadgen.product.ProductController.handle',
+                lambda ui,update:self.handled.append((update['update_id'],threading.current_thread().name))))
+            dict(worker_patches(stack,lambda *a,**k:0,[],
+                [('leadgen.bot.deliver_queues',{'side_effect':deliver_queues or (lambda db,send:False)})]))
+            with self.assertRaises(StopLoop):
+                bot.run_bot(db,{'poll_seconds':300,'sources':[]})
+
+    def test_long_poll_timeout_is_shorter_than_the_http_timeout(self):
+        from leadgen import bot
+        from leadgen.app import bot_api_timeout
+        self.run_bot(lambda n:[])
+        self.assertEqual({payload['timeout'] for payload in self.polls},{bot.LONG_POLL_SECONDS})
+        self.assertTrue(20<=bot.LONG_POLL_SECONDS<=25)
+        self.assertGreater(bot_api_timeout('getUpdates',self.polls[0]),bot.LONG_POLL_SECONDS)
+
+    def test_updates_are_handled_while_the_worker_waits_for_a_slow_webhook(self):
+        import threading
+        stuck=threading.Event();release=threading.Event()
+        def slow_webhook(db,send):
+            stuck.set();release.wait(10)  # an external endpoint that hangs
+            return False
+        def poll(n):
+            if n==0:
+                stuck.wait(5)  # the worker is inside the webhook call now
+                return [{'update_id':5}]
+            return []
+        try:self.run_bot(poll,slow_webhook)
+        finally:release.set()
+        self.assertTrue(stuck.is_set())
+        self.assertEqual(self.handled,[(5,'MainThread')])  # handled at once, on the update loop
+        self.assertTrue(self.worker_connection.statements)  # the worker queried on its own connection
+
+    def test_programming_errors_in_the_worker_still_stop_the_bot(self):
+        import time as clock
+        def broken(db,send):raise psycopg.errors.UndefinedColumn('column "x" does not exist')
+        def poll(n):
+            clock.sleep(0.1)  # a long poll: the worker fails meanwhile
+            return []
+        with self.assertRaises(psycopg.errors.UndefinedColumn):
+            self.run_bot(poll,broken,iterations=20)
 
 
 CONFIG={'min_budget':0,'max_age_hours':72,'sources':[]}

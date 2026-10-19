@@ -104,51 +104,41 @@ class Cadence(unittest.TestCase):
             self.assertEqual(FilteredCleanup().interval,3600)
 
 
-class StopLoop(Exception):
-    pass
-
-
 @unittest.skipUnless(psycopg,'psycopg is not installed')
 class WorkerLoop(unittest.TestCase):
     def run_loop(self,cleanup_effect,iterations=4):
+        from contextlib import ExitStack
         from leadgen import bot
+        from test_delivery_cursor import worker_patches
         def answer(query,params):
             if 'max(id)' in query:return Cursor({'id':1})
             if 'monitoring_active=true' in query:return Cursor({'?column?':1})
             return Cursor()
-        connection=FakeConnection(answer);db=Database(connection,'postgres','dsn')
-        polls=[]
-        def telegram(method,payload):
-            if method=='getWebhookInfo':return {}
-            polls.append(1)
-            if len(polls)>iterations:raise StopLoop()
-            return []
-        with patch.dict(os.environ,{'TELEGRAM_CHAT_ID':'1'}),patch('leadgen.bot.telegram',telegram),\
-                patch('leadgen.bot.env_load'),patch('leadgen.bot.capture_exception') as captured,\
-                patch('leadgen.bot.time.sleep'),patch('leadgen.bot.beat'),\
-                patch('leadgen.telegram_monitor.reader_configured',return_value=False),\
-                patch('leadgen.telegram_monitor.ReaderThread'),\
-                patch('leadgen.ai_scoring.scoring_enabled',return_value=False),\
-                patch('leadgen.integrations.integrations_enabled',return_value=False),\
-                patch('leadgen.reminders.deliver_due',return_value=0),\
-                patch('leadgen.team_notifications.deliver_assignments',return_value=0),\
-                patch('leadgen.product.notify_subscriptions'),patch('leadgen.product.backfill_pending'),\
-                patch('leadgen.feedback.send_surveys'),patch('leadgen.feedback.deliver_notifications'),\
-                patch('leadgen.product.deliver_registered',return_value=0),\
-                patch('leadgen.filtered_cleanup.cleanup_filtered',side_effect=cleanup_effect) as cleanup:
-            with self.assertRaises(StopLoop):
-                bot.run_bot(db,{'poll_seconds':300,'sources':[],'max_age_hours':72})
-        return cleanup,captured,len(polls)
+        db=Database(FakeConnection(answer),'postgres','dsn')
+        worker=bot.DeliveryWorker(lambda:db,{'poll_seconds':300,'sources':[],'max_age_hours':72},
+                                  lambda method,payload:{},bot.FirstLeads(),tick=0)
+        passes=[]
+        def deliver(*args,**kwargs):
+            passes.append(1)
+            if len(passes)>=iterations:worker.stop()
+            return 0
+        with ExitStack() as stack:
+            stack.enter_context(patch.dict(os.environ,{'LEAD_DELIVERY_MIN_SECONDS':'0'}))
+            mocks=dict(worker_patches(stack,deliver,[]))
+            cleanup=stack.enter_context(patch('leadgen.filtered_cleanup.cleanup_filtered',side_effect=cleanup_effect))
+            worker.gate=product.DeliveryGate();worker.gate.idle_seconds=0  # one delivery pass per worker pass
+            worker.run()
+        return cleanup,mocks['leadgen.bot.capture_exception'],len(passes)
 
     def test_cleanup_runs_once_not_per_iteration(self):
         cleanup,captured,polls=self.run_loop(lambda db,base:0)
-        self.assertEqual(polls,5)                                  # four full iterations ran
+        self.assertEqual(polls,4)                                  # four full passes ran
         self.assertEqual(cleanup.call_count,1)
         captured.assert_not_called()
 
     def test_cleanup_failure_does_not_stop_the_worker(self):
         cleanup,captured,polls=self.run_loop(ValueError('boom'))
-        self.assertEqual(polls,5)
+        self.assertEqual(polls,4)
         self.assertEqual(cleanup.call_count,1)                     # not retried on the next iteration
         self.assertEqual(captured.call_args.kwargs['component'],'filtered_cleanup')
 
