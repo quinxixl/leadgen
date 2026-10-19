@@ -161,7 +161,7 @@ class AIAdminPostgres(unittest.TestCase):
 
     def setUp(self):
         fixtures.WebPostgres.setUp(self)
-        ai_prompts.clear_cache();self.addCleanup(ai_prompts.clear_cache)
+        ai_prompts.clear_cache();self.addCleanup(ai_prompts.clear_cache);ai_scoring._feedback_cache.clear()
         with self.db:
             self.db.execute('DELETE FROM settings WHERE key LIKE ? OR key=?',('rl:%',ai_prompts.PAUSE_KEY))
             self.db.execute('DELETE FROM user_leads')

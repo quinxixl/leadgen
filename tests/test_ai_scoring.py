@@ -5,6 +5,7 @@ import os
 import unittest
 import urllib.error
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import test_web_postgres as fixtures
@@ -118,6 +119,24 @@ class Pure(unittest.TestCase):
         with patch.dict(os.environ,{'GROQ_API_KEY':''}):
             self.assertEqual(score_pending(None),0)
 
+    def test_feedback_examples_are_cached_for_the_scorer_only(self):
+        payload=json.dumps({'source':'t','url':'u','title':'Нужен сайт','text':'Сделать лендинг','published':None})
+        class Db:
+            target='cache-test';queries=0
+            def execute(self,query,params=()):
+                Db.queries+=1
+                return SimpleNamespace(fetchall=lambda:[{'lead_id':1,'label':'fit','payload':payload}])
+        ai_scoring._feedback_cache.clear()
+        try:
+            for _ in range(5):
+                self.assertEqual(len(ai_scoring.feedback_examples(Db(),3,max_age=ai_scoring.FEEDBACK_CACHE_SECONDS)),1)
+            self.assertEqual(Db.queries,1)                      # one sort of lead_feedback per 10 minutes
+            self.assertEqual(ai_scoring.feedback_examples(Db(),3,exclude={1},max_age=600),[])  # exclusion still applies
+            ai_scoring.feedback_examples(Db(),3)                # the /admin sandbox reads fresh rows
+            self.assertEqual(Db.queries,2)
+            self.assertEqual(ai_scoring.FEEDBACK_CACHE_SECONDS,600)
+        finally:ai_scoring._feedback_cache.clear()
+
 
 @unittest.skipUnless(fixtures.DSN,'WEB_TEST_DATABASE_URL is not configured')
 class ScoringPostgres(unittest.TestCase):
@@ -128,6 +147,7 @@ class ScoringPostgres(unittest.TestCase):
 
     def setUp(self):
         fixtures.WebPostgres.setUp(self)
+        ai_scoring._feedback_cache.clear()  # few-shot rows are cached per database for the scorer
         self.env=patch.dict(os.environ,{'GROQ_API_KEY':'test-key','AI_SCORING_WAIT_SECONDS':'25','WEB_PUBLIC_URL':''})
         self.env.start()
         with self.db:
