@@ -609,6 +609,8 @@ def notify_subscriptions(db,sender,limit=20):
 
 ACTIVE_CACHE_SECONDS=10
 MONITORING_ON_TEXT='🔔 Мониторинг включён. Новые заказы по вашим услугам будут приходить сюда сразу после публикации.'
+# Activity is shown with minute precision in /admin: one row write per user per 5 minutes, not one per update.
+LAST_SEEN_SQL="UPDATE app_users SET last_seen_at=now() WHERE id=? AND last_seen_at<now()-interval '5 minutes'"
 
 
 class ProductController:
@@ -1075,7 +1077,7 @@ class ProductController:
                 self.say(*wizard_directions(selected_topics(user)),chat_id=chat_id)
             else:self.say(register_text(),REGISTER,chat_id)
             return
-        with self.db:self.db.execute('UPDATE app_users SET last_seen_at=now() WHERE id=?',(user['id'],))
+        with self.db:self.db.execute(LAST_SEEN_SQL,(user['id'],))
         if user['status']=='blocked':
             self._answer();self.say('Аккаунт заблокирован. Обратитесь в поддержку.');return
         if callback:

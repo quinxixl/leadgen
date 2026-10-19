@@ -164,6 +164,17 @@ class BotUX(unittest.TestCase):
         self.assertEqual(first.next(),self.u);self.assertIsNone(first.next())
         self.assertTrue(self.ui.manual)  # the worker is asked to scan sources right away
 
+    def test_last_seen_is_written_at_most_every_five_minutes(self):
+        def seen():
+            return self.db.execute('SELECT last_seen_at FROM app_users WHERE id=?',(self.u,)).fetchone()['last_seen_at']
+        with self.db:self.db.execute("UPDATE app_users SET last_seen_at=now()-interval '1 minute' WHERE id=?",(self.u,))
+        before=seen();self.text(HELP)
+        self.assertEqual(seen(),before)
+        with self.db:self.db.execute("UPDATE app_users SET last_seen_at=now()-interval '6 minutes' WHERE id=?",(self.u,))
+        before=seen();self.text(HELP)
+        self.assertGreater(seen(),before)
+        self.assertIn("last_seen_at<now()-interval '5 minutes'",product.LAST_SEEN_SQL)
+
     def test_start_shows_wizard_only_until_configured(self):
         self.text('/start')
         self.assertIn('keyboard',self.calls('sendMessage')[-1]['reply_markup'])
