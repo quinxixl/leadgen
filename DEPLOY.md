@@ -604,6 +604,95 @@ systemctl list-timers leadfinder-backup.timer --no-pager
 
 **Технический долг.** Роль `leadgen` сейчас и владеет схемой, и используется приложением. Следующий шаг — разделить их: роль-владелец выполняет миграции через отдельный `MIGRATE_DATABASE_URL`, а роль, под которой работает приложение, получает только `SELECT/INSERT/UPDATE/DELETE`.
 
+## 17. Nginx для веб-кабинета (HTTPS, сжатие, статика, лимиты)
+
+Полная конфигурация сайта лежит в `deploy/nginx/signalid.ru.conf` (nginx 1.24 из Ubuntu 24.04). В ней:
+
+- редирект `http://` → `https://` для `signalid.ru` и `www.signalid.ru`;
+- HTTPS с HTTP/2 и сертификатом certbot. Кэш TLS-сессий и `ssl_session_tickets off` уже задаёт
+  `/etc/letsencrypt/options-ssl-nginx.conf`, поэтому в файле их нет: повтор директивы nginx не примет.
+  OCSP stapling не включён: Let's Encrypt больше не поддерживает OCSP;
+- gzip для CSS, JS, SVG, JSON и текста (`app.css` — примерно 53 КБ → 13 КБ);
+- `/web_static/` и `/favicon.ico` nginx отдаёт сам из `/opt/leadfinder/leadgen/web_static`, без gunicorn.
+  Файлы с `?v=…` кэшируются на год (`immutable`), без версии — на час, иконка — на сутки;
+- `X-Forwarded-Host` ставит сам nginx: заголовок клиента в приложение не попадает;
+- лимиты на IP: вход (`/login`, `/tg/auth`, подключение Telegram-аккаунта: телефон, код, пароль) — 10 запросов
+  в минуту с запасом 10, `/api/` — 60 в минуту с запасом 30. Сверх лимита — ответ 429;
+- соединения к приложению переиспользуются (`keepalive`).
+
+`default_server` из Ubuntu этот файл не трогает. Автообновление конфигурацию nginx не ставит: после изменений
+в `deploy/nginx/` повторите шаги ниже вручную.
+
+**Первая установка на новом сервере.** Сначала выпустите сертификат, потом ставьте файл — без сертификата
+`nginx -t` не пройдёт:
+
+```sh
+sudo apt install -y nginx certbot python3-certbot-nginx
+sudo certbot certonly --nginx -d signalid.ru -d www.signalid.ru
+```
+
+**Установка и обновление.** Все команды — на сервере, после того как автообновление подтянуло код
+(`git -C /opt/leadfinder log -1 --oneline` показывает нужный коммит).
+
+1. Узнать имя файла сайта и сделать копию текущей версии:
+
+   ```sh
+   ls -l /etc/nginx/sites-enabled/
+   SITE=leadfinder          # имя из вывода ls, если оно другое — подставьте своё
+   SITE_FILE=$(readlink -f /etc/nginx/sites-enabled/$SITE)
+   echo "$SITE_FILE"
+   sudo cp "$SITE_FILE" /root/nginx-signalid.bak
+   ```
+
+2. Проверить, что nginx (`www-data`) может читать статику. Каталоги по пути должны быть открыты на проход
+   (`x` для всех), файлы — на чтение (`644`):
+
+   ```sh
+   sudo namei -l /opt/leadfinder/leadgen/web_static/app.css
+   sudo -u www-data test -r /opt/leadfinder/leadgen/web_static/app.css && echo OK
+   ```
+
+   Если нет `OK`, откройте только проход по каталогам и чтение статики. `.env` и `leadgen/data` остаются закрытыми:
+
+   ```sh
+   sudo chmod o+x /opt/leadfinder /opt/leadfinder/leadgen
+   sudo find /opt/leadfinder/leadgen/web_static -type d -exec chmod 755 {} + -o -type f -exec chmod 644 {} +
+   ```
+
+3. Поставить новый файл, проверить и применить:
+
+   ```sh
+   sudo install -m 0644 /opt/leadfinder/deploy/nginx/signalid.ru.conf "$SITE_FILE"
+   sudo nginx -t && sudo systemctl reload nginx
+   ```
+
+   `reload` не обрывает текущие соединения. Если `nginx -t` выдал ошибку, ничего не применилось — верните копию
+   (шаг «Откат») и пришлите вывод.
+
+4. Проверить:
+
+   ```sh
+   curl -sI --http2 https://signalid.ru/ | head -1                      # HTTP/2 200
+   curl -sI -H 'Accept-Encoding: gzip' https://signalid.ru/web_static/app.css | grep -i -E 'content-encoding|cache-control'
+   # content-encoding: gzip, cache-control: public, max-age=3600
+   curl -sI -H 'Accept-Encoding: gzip' 'https://signalid.ru/web_static/app.css?v=1' | grep -i cache-control
+   # cache-control: public, max-age=31536000, immutable
+   curl -sI https://signalid.ru/favicon.ico | grep -i -E '^HTTP|cache-control'   # 200, max-age=86400
+   curl -sI http://www.signalid.ru/ | grep -i -E '^HTTP|location'      # 301 на https://www.signalid.ru/
+   curl -s -o /dev/null -w '%{http_code}\n' https://signalid.ru/login    # 200
+   sudo tail -n 20 /var/log/nginx/error.log
+   ```
+
+   Затем откройте кабинет в браузере, войдите и убедитесь, что стили и скрипты загрузились.
+
+**Откат.**
+
+```sh
+SITE_FILE=$(readlink -f /etc/nginx/sites-enabled/leadfinder)   # имя из шага 1
+sudo cp /root/nginx-signalid.bak "$SITE_FILE"
+sudo nginx -t && sudo systemctl reload nginx
+```
+
 ## Типичные ошибки
 
 ### `Conflict: terminated by other getUpdates request`
