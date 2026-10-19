@@ -258,10 +258,10 @@ class WorkerLoop(unittest.TestCase):
         first=bot.FirstLeads();order=[]
         worker=bot.DeliveryWorker(lambda:db,{'poll_seconds':300,'sources':[]},lambda method,payload:{},first,tick=0)
         first.reserve(7)  # a handler is switching monitoring on for user 7
-        def deliver(*args,**kwargs):order.append(('live',kwargs['skip']));return 0
+        def deliver(*args,**kwargs):order.append(('live',kwargs['skip']()));return 0
         with ExitStack() as stack:
             stack.enter_context(patch.dict(os.environ,{'LEAD_DELIVERY_MIN_SECONDS':'0'}))
-            dict(worker_patches(stack,deliver,[],[('leadgen.product.backfill_first_leads',
+            mocks=dict(worker_patches(stack,deliver,[],[('leadgen.product.backfill_first_leads',
                 {'side_effect':lambda db,base,send,user_id:order.append(('welcome',user_id))})]))
             worker.gate=product.DeliveryGate();worker._connect()
             worker.run_once()
@@ -270,6 +270,45 @@ class WorkerLoop(unittest.TestCase):
         # Every pass delivers (new max(id) each time); the welcome batch runs once, before user 7's first live pass.
         self.assertEqual(order,[('live',frozenset({7})),('welcome',7),('live',frozenset()),('live',frozenset())])
         self.assertEqual(first.held(),frozenset())
+        # The site's first-run batches skip held users too: it must not run between the handler's commit and its reply.
+        self.assertEqual(mocks['leadgen.product.backfill_pending'].call_args.kwargs['skip'],first.held)
+
+    def test_unreachable_database_at_start_is_retried_without_alerts(self):
+        from contextlib import ExitStack
+        from leadgen import bot
+        db=Database(FakeConnection(self.answer),'postgres','dsn');self.max_id=0;attempts=[]
+        def open_db():
+            attempts.append(1)
+            if len(attempts)==1:raise RuntimeError('Supabase Postgres: не удалось подключиться после 3 попыток')
+            return db
+        worker=bot.DeliveryWorker(open_db,{'poll_seconds':300,'sources':[]},lambda method,payload:{},bot.FirstLeads(),tick=0)
+        sleeps=[]
+        def deliver(*args,**kwargs):
+            worker.stop();return 0
+        with ExitStack() as stack:
+            stack.enter_context(patch.dict(os.environ,{'LEAD_DELIVERY_MIN_SECONDS':'0'}))
+            mocks=dict(worker_patches(stack,deliver,sleeps))
+            worker.run()
+        self.assertEqual((len(attempts),sleeps),(2,[3]))
+        mocks['leadgen.bot.capture_exception'].assert_not_called()
+
+    def test_held_users_are_read_after_the_recipients(self):
+        # A handler reserves before it commits monitoring_active=true: reading held() after the recipients means a
+        # recipient list that already contains the user always comes with its reservation.
+        events=[]
+        def answer(query,params):
+            if 'monitoring_active=true' in query:
+                events.append('recipients');return Cursor(rows=[{'id':7}])
+            return Cursor()
+        db=Database(FakeConnection(answer),'postgres','dsn')
+        def held():
+            events.append('held');return frozenset({7})
+        with patch('leadgen.ai_scoring.scoring_enabled',return_value=False),\
+                patch('leadgen.product._deliver_user',side_effect=AssertionError('held user delivered')),\
+                patch('leadgen.product.backfill_first_leads',side_effect=AssertionError('held user backfilled')):
+            self.assertEqual(product.deliver_registered(db,{'max_age_hours':72},print,skip=held),0)
+            self.assertEqual(product.backfill_pending(db,{},print,skip=held),0)
+        self.assertEqual(events,['recipients','held','recipients','held'])
 
 
 @unittest.skipUnless(psycopg,'psycopg is not installed')

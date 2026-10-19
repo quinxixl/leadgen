@@ -39,7 +39,8 @@ def page_problem(soup):
 FETCH_TIMEOUT = 30          # seconds for connecting and for each read, as with urllib before
 MAX_BODY = 4_000_000
 POOL_HOSTS = 16             # per-host pools kept: Bot API, the scraped sites, hh.ru
-POOL_CONNECTIONS = 4        # idle keep-alive connections kept per host; extra concurrent ones are opened and dropped
+POOL_CONNECTIONS = 16       # keep-alive connections kept per host (verify_pending checks t.me from 14 threads);
+                            # with block=False extra concurrent ones are opened and dropped
 _http_lock = threading.Lock()
 _http_state = None          # (pid, cafile, PoolManager)
 
@@ -67,7 +68,7 @@ def http_pool():
         if state and state[0] == pid and state[1] == cafile:
             return state[2]
         import urllib3
-        pool = urllib3.PoolManager(num_pools=POOL_HOSTS, maxsize=POOL_CONNECTIONS,
+        pool = urllib3.PoolManager(num_pools=POOL_HOSTS, maxsize=POOL_CONNECTIONS, block=False,
                                    ssl_context=ssl.create_default_context(cafile=cafile))
         _http_state = (pid, cafile, pool)
         return pool

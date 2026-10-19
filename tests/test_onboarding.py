@@ -133,6 +133,21 @@ class BotUX(unittest.TestCase):
                    for b in buttons(data.get('reply_markup')) if 'callback_data' in b]
         self.assertLessEqual(max(len(item.encode()) for item in callbacks),64)
 
+    def test_site_backfill_skips_users_a_bot_handler_is_switching_on(self):
+        from leadgen.product import backfill_pending
+        with self.db:
+            self.db.execute('DELETE FROM user_leads WHERE user_id=?',(self.u,))
+            self.db.execute('UPDATE user_preferences SET monitoring_active=true,show_without_budget=true WHERE user_id=?',(self.u,))
+            self.db.execute('UPDATE user_preferences SET monitoring_active=false WHERE user_id=?',(self.other,))
+            self.db.execute("UPDATE leads SET first_seen=(now()-interval '3 hours')")
+        sent=[];send=lambda method,data:sent.append(data)
+        self.assertEqual(backfill_pending(self.db,CONFIG,send,skip=lambda:frozenset({self.u})),0)
+        self.assertEqual(sent,[])
+        # Not claimed: the delivery worker still sends this user's one-time batch after the confirmation.
+        self.assertFalse(self.db.execute('SELECT 1 FROM settings WHERE key=?',(f'first_run:{self.u}',)).fetchone())
+        self.assertGreater(backfill_pending(self.db,CONFIG,send),0)  # cards sent once nothing is held
+        self.assertTrue(self.db.execute('SELECT 1 FROM settings WHERE key=?',(f'first_run:{self.u}',)).fetchone())
+
     def test_first_leads_for_monitoring_enabled_on_the_site(self):
         from leadgen.product import backfill_pending
         with self.db:

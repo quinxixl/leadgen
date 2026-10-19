@@ -40,6 +40,11 @@ class Registry(unittest.TestCase):
             <div class="tgme_page_extra">@ivan</div><a class="tgme_action_button_new">Send Message</a>'''
         self.assertEqual(inspect_public_page('ivan_public')['status'],'not_chat')
 
+    @patch('leadgen.source_registry.fetch',side_effect=ConnectionResetError('reset'))
+    def test_dropped_connection_is_retried_later(self,fetch):
+        # The keep-alive client reports a connection dropped mid-response as ConnectionError, as urllib did.
+        self.assertEqual(inspect_public_page('business_chat'),{'status':'retry','reason':'ConnectionResetError'})
+
     def add(self,username,group='Потенциальные клиенты',segment='Бизнес',metadata='{}',status='active',
             enabled=1,members=100,online=5,reason='83 онлайн при проверке'):
         with self.db:

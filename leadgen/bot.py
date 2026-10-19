@@ -175,13 +175,16 @@ class DeliveryWorker:
         failures=0
         try:
             while not self._stop.is_set():
+                connecting=self.db is None
                 try:
                     self._connect()
                     self.run_once()
                     self.db.release()
                     failures=0;self.last_pass=time.monotonic()
                 except RuntimeError as exc:
-                    if not str(exc).startswith('Telegram'):capture_exception(exc,component='delivery_worker')
+                    # Telegram errors are expected; so is an unreachable database while connecting (db_open already
+                    # retried): reporting those every few seconds would flood the alerts.
+                    if not (connecting or str(exc).startswith('Telegram')):capture_exception(exc,component='delivery_worker')
                     print(str(exc),flush=True)
                     try:
                         if self.db:self.db.release()
@@ -233,7 +236,7 @@ class DeliveryWorker:
             if self.gate.due(db,force=self.drain):
                 self._welcome()  # released while this pass was waiting: before the live stream
                 from .product import deliver_registered
-                self.gate.ran(deliver_registered(db,self.config,send,limit_per_user=1,skip=self.first_leads.held()))
+                self.gate.ran(deliver_registered(db,self.config,send,limit_per_user=1,skip=self.first_leads.held))
             self.drain=False
 
     def _scan_sources(self):
@@ -288,7 +291,7 @@ class DeliveryWorker:
             self.next_first_run_check=time.monotonic()+FIRST_RUN_CHECK_SECONDS
             try:
                 from .product import backfill_pending
-                backfill_pending(db,self.config,send)
+                backfill_pending(db,self.config,send,skip=self.first_leads.held)
             except RuntimeError:raise
             except Exception as exc:
                 capture_exception(exc,component='first_leads')

@@ -380,16 +380,24 @@ def _query_canceled():
     return (QueryCanceled,)
 
 
+def _skipped(skip):
+    return frozenset(skip() if callable(skip) else skip)
+
+
 def deliver_registered(db,base,sender,limit_per_user=1,skip=()):
     """Send each active user the newest unseen matching leads; returns the number of cards sent.
 
-    skip: user ids left out of this pass (their one-time welcome batch is still pending, see bot.FirstLeads).
+    skip: user ids left out of this pass (their one-time welcome batch is still pending, see bot.FirstLeads), or a
+    callable returning them; it is called after the recipients are read, so a handler that reserved a user before
+    committing monitoring_active=true is always seen.
 
     While AI scoring is on, a fresh lead waits up to AI_SCORING_WAIT_SECONDS for its shared score.
     Each user is scanned only above user_preferences.delivery_cursor (or the freshness window), see _deliver_user.
     No transaction stays open between users or across Telegram calls."""
     from .ai_scoring import scoring_enabled,wait_seconds
-    users=[row for row in db.execute(RECIPIENTS+' ORDER BY u.id').fetchall() if row['id'] not in skip]
+    rows=db.execute(RECIPIENTS+' ORDER BY u.id').fetchall()
+    held=_skipped(skip)
+    users=[row for row in rows if row['id'] not in held]
     if not users:
         db.release();return 0
     timing=(scoring_enabled(db),wait_seconds())
@@ -554,11 +562,15 @@ def backfill_first_leads(db,base,sender,user_id,limit=FIRST_RUN_LIMIT,hours=FIRS
     return sent
 
 
-def backfill_pending(db,base,sender,limit_users=5):
-    """First-run batches for users who enabled monitoring outside the bot: web cabinet or Mini App."""
+def backfill_pending(db,base,sender,limit_users=5,skip=()):
+    """First-run batches for users who enabled monitoring outside the bot: web cabinet or Mini App.
+
+    skip (ids or a callable, see deliver_registered): users a bot handler is switching on right now; their batch
+    is sent by the delivery worker after the handler's confirmation message."""
     rows=db.execute(RECIPIENTS+''' AND NOT EXISTS (SELECT 1 FROM settings st WHERE st.key='first_run:'||u.id)
         ORDER BY u.id LIMIT ?''',(limit_users,)).fetchall()
-    return sum(backfill_first_leads(db,base,sender,row['id']) for row in rows)
+    held=_skipped(skip)
+    return sum(backfill_first_leads(db,base,sender,row['id']) for row in rows if row['id'] not in held)
 
 
 def notify_subscriptions(db,sender,limit=20):
