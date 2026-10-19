@@ -1,10 +1,12 @@
+import io
 import json
 import os
 import re
+import socket
 import ssl
 import sys
+import threading
 import urllib.error
-import urllib.request
 import urllib.parse
 from datetime import datetime, timedelta, timezone
 from bs4 import BeautifulSoup
@@ -34,16 +36,104 @@ def page_problem(soup):
         return 'доступ заблокирован проверкой на робота (капча)'
     return None
 
-def fetch(url, data=None, headers=None):
+FETCH_TIMEOUT = 30          # seconds for connecting and for each read, as with urllib before
+MAX_BODY = 4_000_000
+POOL_HOSTS = 16             # per-host pools kept: Bot API, the scraped sites, hh.ru
+POOL_CONNECTIONS = 4        # idle keep-alive connections kept per host; extra concurrent ones are opened and dropped
+_http_lock = threading.Lock()
+_http_state = None          # (pid, cafile, PoolManager)
+
+
+def _cafile():
     cafile = os.getenv('SSL_CERT_FILE')
     if not cafile and sys.platform == 'darwin' and os.path.exists('/etc/ssl/cert.pem'):
         cafile = '/etc/ssl/cert.pem'
-    request = urllib.request.Request(url, data=data, headers=headers or {'User-Agent': 'ITLeadFinder/0.1'})
-    with urllib.request.urlopen(request, timeout=30, context=ssl.create_default_context(cafile=cafile)) as response:
-        body = response.read(4_000_001)
-        if len(body) > 4_000_000:
+    return cafile
+
+
+def http_pool():
+    """The shared keep-alive client: one urllib3 PoolManager with one SSL context per process.
+
+    Bot API calls (getUpdates, sendMessage...) and scraper requests reuse its connections instead of a new
+    TCP+TLS handshake per call (urllib.request always sent "Connection: close"). Rebuilt after a fork
+    (gunicorn workers) or when SSL_CERT_FILE changes; urllib3 pools are thread-safe."""
+    global _http_state
+    pid, cafile = os.getpid(), _cafile()
+    state = _http_state
+    if state and state[0] == pid and state[1] == cafile:
+        return state[2]
+    with _http_lock:
+        state = _http_state
+        if state and state[0] == pid and state[1] == cafile:
+            return state[2]
+        import urllib3
+        pool = urllib3.PoolManager(num_pools=POOL_HOSTS, maxsize=POOL_CONNECTIONS,
+                                   ssl_context=ssl.create_default_context(cafile=cafile))
+        _http_state = (pid, cafile, pool)
+        return pool
+
+
+def _no_retries():
+    """As with urllib: a request is never repeated (a resent sendMessage would duplicate a card); redirects are followed."""
+    import urllib3
+    return urllib3.Retry(total=None, connect=0, read=0, other=0, status=0, redirect=10, raise_on_redirect=True)
+
+
+def _first(items, kind):
+    return next((item for item in items if isinstance(item, kind)), None)
+
+
+def _urllib_error(exc):
+    """The exception urllib.request raised for the same failure: callers keep their except clauses and messages."""
+    from urllib3 import exceptions as u3
+    if isinstance(exc, u3.MaxRetryError):
+        if exc.reason is None or isinstance(exc.reason, u3.ResponseError):
+            return urllib.error.URLError('too many redirects')
+        return _urllib_error(exc.reason)
+    if isinstance(exc, u3.ReadTimeoutError):
+        return TimeoutError('The read operation timed out')
+    related = (*exc.args, exc.__cause__, exc.__context__)
+    # Before ConnectTimeoutError: urllib3 derives NewConnectionError (and NameResolutionError) from it.
+    if isinstance(exc, u3.NameResolutionError):
+        return urllib.error.URLError(_first(related, socket.gaierror) or socket.gaierror(type(exc).__name__))
+    if isinstance(exc, u3.NewConnectionError):
+        return urllib.error.URLError(_first(related, OSError) or ConnectionError(type(exc).__name__))
+    if isinstance(exc, u3.ConnectTimeoutError):
+        return urllib.error.URLError(TimeoutError('timed out'))
+    if isinstance(exc, u3.SSLError):
+        return urllib.error.URLError(_first(related, ssl.SSLError) or ssl.SSLError(type(exc).__name__))
+    if isinstance(exc, u3.ProtocolError):
+        return _first(related, OSError) or ConnectionError(type(exc).__name__)
+    return urllib.error.URLError(exc)
+
+
+def fetch(url, data=None, headers=None, timeout=FETCH_TIMEOUT):
+    """GET (POST when data is given) over the shared keep-alive pool; returns at most MAX_BODY bytes.
+
+    Errors are urllib's: HTTPError for non-2xx statuses, URLError, TimeoutError or ConnectionError otherwise."""
+    from urllib3 import exceptions as u3
+    try:
+        response = http_pool().request('POST' if data is not None else 'GET', url, body=data,
+                                       headers=headers or {'User-Agent': 'ITLeadFinder/0.1'},
+                                       timeout=timeout, retries=_no_retries(), preload_content=False)
+    except u3.HTTPError as exc:
+        raise _urllib_error(exc) from None
+    complete = False
+    try:
+        try:
+            body = response.read(MAX_BODY + 1)
+        except u3.HTTPError as exc:
+            raise _urllib_error(exc) from None
+        if len(body) > MAX_BODY:
             raise ValueError('Response too large')
-        return body
+        complete = True
+    finally:
+        if not complete:
+            response.close()  # bytes left unread: the connection must not go back to the pool
+        response.release_conn()
+    if not 200 <= response.status < 300:
+        raise urllib.error.HTTPError(url, response.status, response.reason or '', response.headers, io.BytesIO(body))
+    return body
 
 def txt(node, selector=None):
     element = node.select_one(selector) if selector else node

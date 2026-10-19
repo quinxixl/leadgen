@@ -10,7 +10,7 @@ from pathlib import Path
 import time
 from datetime import datetime
 from urllib.error import HTTPError, URLError
-from .adapters import collect, error_label, fetch, parse
+from .adapters import FETCH_TIMEOUT, collect, error_label, fetch, parse
 from .core import UTC, classify, ensure_enriched, fingerprint, lead_data, load_lead, message
 from .database import db_open, database_url
 
@@ -24,7 +24,18 @@ def env_load():
                 k,v = line.split('=',1)
                 os.environ.setdefault(k.strip(),v.strip())
 
+LONG_POLL_MARGIN = 10  # seconds the HTTP read timeout exceeds a getUpdates long-poll timeout
+
+
+def bot_api_timeout(method, payload):
+    """HTTP timeout of one Bot API call: a getUpdates long poll legitimately waits `timeout` seconds for an answer."""
+    if method == 'getUpdates':
+        return max(FETCH_TIMEOUT, int(payload.get('timeout') or 0) + LONG_POLL_MARGIN)
+    return FETCH_TIMEOUT
+
+
 def telegram(method, payload):
+    """One Bot API call over the shared keep-alive pool (adapters.http_pool)."""
     token = os.environ.get('TELEGRAM_BOT_TOKEN','')
     if not token:
         raise ValueError('TELEGRAM_BOT_TOKEN is missing')
@@ -32,7 +43,8 @@ def telegram(method, payload):
         raise ValueError('Неверный формат токена: вставьте только токен BotFather, без кавычек и пробелов')
     try:
         data = json.loads(fetch('https://api.telegram.org/bot'+token+'/'+method,
-                          json.dumps(payload).encode(),{'Content-Type':'application/json'}))
+                          json.dumps(payload).encode(),{'Content-Type':'application/json'},
+                          timeout=bot_api_timeout(method, payload)))
     except HTTPError as exc:
         # Do not log the URL: it contains the token.
         raise RuntimeError(f'Telegram HTTP {exc.code}') from None
