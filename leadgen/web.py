@@ -1,11 +1,15 @@
 """Server-rendered customer portal. All customer queries are owner scoped."""
 import csv
+import hashlib
 import io
 import json
 import os
 import re
 import secrets
 import hmac
+import threading
+import time
+from functools import lru_cache
 from datetime import date, datetime, timedelta, timezone
 from urllib.parse import quote, urlsplit
 
@@ -13,9 +17,10 @@ from flask import Flask, abort, current_app, flash, g, has_request_context, json
 from flask.sessions import SecureCookieSessionInterface
 from itsdangerous import BadSignature
 from werkzeug.middleware.proxy_fix import ProxyFix
+from werkzeug.security import safe_join
 from .app import env_load
 from .database import db_pooled
-from .core import TOPICS, TOPIC_CATEGORIES, stored_lead
+from .core import TOPICS, TOPIC_CATEGORIES, Lead, ensure_enriched, lead_data, stored_lead
 from .product import PIPELINE, FEEDBACK
 from .crm import NOTE_LIMIT as CRM_NOTE_LIMIT, normalize as normalize_status
 from .web_auth import begin_login, consume_handoff, consume_login, login_status
@@ -115,6 +120,61 @@ class SplitSessionInterface(SecureCookieSessionInterface):
         except BadSignature:return self.session_class()
 
 
+# Static files: url_for('static',...) adds ?v=<content hash>; a URL with the current hash is cached for a year.
+# A new deploy changes the hash, so browsers fetch the new file at once. Unversioned URLs keep revalidating.
+STATIC_MAX_AGE=365*24*3600
+STATIC_VERSION_LENGTH=10
+
+
+@lru_cache(maxsize=256)
+def _file_digest(path,mtime_ns,size):
+    digest=hashlib.sha256()
+    with open(path,'rb') as file:
+        for chunk in iter(lambda:file.read(65536),b''):digest.update(chunk)
+    return digest.hexdigest()[:STATIC_VERSION_LENGTH]
+
+
+def static_version(folder,filename):
+    """Short content hash of a static file, or '' when it does not exist."""
+    path=safe_join(folder,filename or '')
+    try:
+        info=os.stat(path) if path else None
+    except OSError:
+        return ''
+    if info is None or not os.path.isfile(path):return ''
+    return _file_digest(path,info.st_mtime_ns,info.st_size)
+
+
+class SiteFlask(Flask):
+    def get_send_file_max_age(self,filename):
+        version=request.args.get('v','') if has_request_context() and request.endpoint=='static' else ''
+        if version and filename and hmac.compare_digest(version,static_version(self.static_folder,filename)):
+            return STATIC_MAX_AGE
+        return super().get_send_file_max_age(filename)
+
+
+class TTLCache:
+    """A small thread-safe in-process cache: entries expire after ttl seconds, the oldest go past max_size."""
+    def __init__(self,ttl,max_size,clock=time.monotonic):
+        self.ttl,self.max_size,self.clock=ttl,max_size,clock
+        self._items={};self._lock=threading.Lock()
+
+    def get(self,key,load):
+        now=self.clock()
+        with self._lock:
+            entry=self._items.get(key)
+            if entry and entry[0]>now:return entry[1]
+        value=load()
+        with self._lock:
+            self._items.pop(key,None)
+            while len(self._items)>=self.max_size:self._items.pop(next(iter(self._items)))
+            self._items[key]=(now+self.ttl,value)
+        return value
+
+    def clear(self):
+        with self._lock:self._items.clear()
+
+
 def owner_lead(db,owner_id,lid):
     """The owner's delivered lead with CRM state, or None."""
     return db.execute('''SELECT l.*,ul.pipeline_status,ul.deal_amount,ul.filter_reason,ul.crm_note,
@@ -173,6 +233,73 @@ def start_user_session(db,user_id,permanent=True):
 LEAD_SEARCH_TEXT="(coalesce(l.payload->>'title','') || ' ' || coalesce(l.payload->>'text',''))"
 
 
+# Lists and exports show the stored title, source, link, date and score: the message text (the bulk of the
+# payload) is left in the database. Rows stored without a score keep the text, which enrich() needs.
+LEAD_LIST_PAYLOAD=("CASE WHEN coalesce(l.payload->>'summary','')<>'' AND coalesce(l.payload->>'temperature','')<>'' "
+                   "THEN l.payload-'text' ELSE l.payload END AS payload")
+SOURCES_CACHE_SECONDS=300
+SOURCES_CACHE_OWNERS=1024
+READER_COUNTS_CACHE_SECONDS=60
+EXPORT_LIMIT=10000
+EXPORT_HEADINGS=('Название','Источник','Ссылка','Дата','Оценка','Статус','Сумма сделки')
+EXPORT_WIDTHS=(55,32,45,28,12,24,20)
+CSV_CHUNK_ROWS=500
+
+
+def list_lead(payload):
+    """stored_lead() for a LEAD_LIST_PAYLOAD row: the same Lead, with an empty text when it was left out."""
+    data=lead_data(payload)
+    data.setdefault('text','')
+    return ensure_enriched(Lead(**data))
+
+
+def export_safe(value):
+    """Spreadsheet cell text that a spreadsheet will not run as a formula."""
+    value=str(value or '')
+    return "'"+value if value.lstrip().startswith(('=','+','-','@','\t','\r')) else value
+
+
+def export_values(rows):
+    for row in rows:
+        lead=row['lead']
+        yield [export_safe(x) for x in (lead.title,lead.source,lead.url,lead.published,lead.score,PIPELINE[row['pipeline_status']],row['deal_amount'])]
+
+
+def export_xlsx(rows):
+    """leads.xlsx in openpyxl's write-only mode: rows go straight to the file instead of an in-memory sheet."""
+    from openpyxl import Workbook
+    from openpyxl.cell import WriteOnlyCell
+    from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter
+    book=Workbook(write_only=True);sheet=book.create_sheet('Лиды')
+    sheet.freeze_panes='A2'
+    sheet.auto_filter.ref=f'A1:{get_column_letter(len(EXPORT_HEADINGS))}{len(rows)+1}'
+    for i,width in enumerate(EXPORT_WIDTHS,1):sheet.column_dimensions[get_column_letter(i)].width=width
+    font,fill=Font(color='FFFFFF',bold=True),PatternFill('solid',fgColor='08182F')
+    alignment=Alignment(vertical='top',wrap_text=True)
+    def cell(value,**style):
+        item=WriteOnlyCell(sheet,value=value)
+        for name,item_style in style.items():setattr(item,name,item_style)
+        return item
+    sheet.append([cell(heading,font=font,fill=fill) for heading in EXPORT_HEADINGS])
+    for values in export_values(rows):
+        sheet.append([cell(ILLEGAL_CHARACTERS_RE.sub('',value)[:32767],alignment=alignment) for value in values])
+    buffer=io.BytesIO();book.save(buffer)
+    return buffer.getvalue()
+
+
+def export_csv(rows):
+    """leads.csv (UTF-8 with BOM, «;» separated) as a stream of chunks."""
+    stream=io.StringIO();writer=csv.writer(stream,delimiter=';')
+    stream.write('\ufeff');writer.writerow(EXPORT_HEADINGS)
+    for count,values in enumerate(export_values(rows),1):
+        writer.writerow(values)
+        if count%CSV_CHUNK_ROWS==0:
+            yield stream.getvalue();stream.seek(0);stream.truncate()
+    yield stream.getvalue()
+
+
 def like_pattern(value):
     """Literal substring for ILIKE: user input must not act as a wildcard."""
     return '%'+value.replace('\\','\\\\').replace('%','\\%').replace('_','\\_')+'%'
@@ -195,7 +322,7 @@ def create_app(test_config=None):
     from .observability import init_alerts, init_sentry
     init_alerts('web')
     init_sentry('web')
-    app = Flask(__name__, template_folder='web_templates', static_folder='web_static')
+    app = SiteFlask(__name__, template_folder='web_templates', static_folder='web_static')
     # compose.web.yaml exposes this process only on loopback behind one HTTPS proxy.
     app.wsgi_app=ProxyFix(app.wsgi_app,x_for=1,x_proto=1,x_host=1)
     app.session_interface=SplitSessionInterface()
@@ -214,6 +341,11 @@ def create_app(test_config=None):
     if not app.config['SECRET_KEY'] or len(app.config['SECRET_KEY']) < 32:
         raise ValueError('WEB_SECRET_KEY должен содержать минимум 32 символа')
 
+    source_names=TTLCache(SOURCES_CACHE_SECONDS,SOURCES_CACHE_OWNERS)
+    app.extensions['lead_source_names']=source_names
+    # Registry counts on /admin scan telegram_sources; a minute-old figure is fine there.
+    reader_counts=TTLCache(READER_COUNTS_CACHE_SECONDS,1)
+
     def db():
         if 'db' not in g:g.db=app.config['DB_FACTORY']()
         return g.db
@@ -223,8 +355,16 @@ def create_app(test_config=None):
         connection=g.pop('db',None)
         if connection:connection.close()
 
+    @app.url_defaults
+    def static_cache_buster(endpoint,values):
+        if endpoint=='static' and 'v' not in values:
+            version=static_version(app.static_folder,values.get('filename'))
+            if version:values['v']=version
+
     @app.before_request
     def protect():
+        # Static files need no session, CSRF token or user lookup (and must not set a cookie).
+        if request.endpoint=='static':return
         tg=is_tg_path(request.path)
         session.setdefault('csrf',secrets.token_urlsafe(32))
         # /webhooks/* are server-to-server notifications (YooKassa): verified by source IP and an API re-fetch.
@@ -258,7 +398,8 @@ def create_app(test_config=None):
         if g.user and (request.path.startswith('/app') or tg_private):
             from .teams import load_workspace
             g.workspaces,g.workspace=load_workspace(db(),g.user,session.get('workspace_id'))
-            session['workspace_id']=g.workspace['id'];g.role='owner' if is_platform_admin(g.user) else g.workspace['role'];g.owner_id=g.workspace['owner_user_id']
+            if session.get('workspace_id')!=g.workspace['id']:session['workspace_id']=g.workspace['id']
+            g.role='owner' if is_platform_admin(g.user) else g.workspace['role'];g.owner_id=g.workspace['owner_user_id']
             # Team members work under the workspace owner's subscription. An ended trial or paid
             # period does not close the cabinet: the account continues on the Free plan.
             g.subscription=owner_subscription(db(),g.owner_id)
@@ -295,7 +436,9 @@ def create_app(test_config=None):
         frames=f"; frame-src blob:{yandex}" if public else ''
         response.headers['Content-Security-Policy']=(f"default-src 'self'; style-src {styles}; img-src 'self' data:{yandex}; "
             f"script-src 'self'{yandex}; connect-src 'self'{yandex}{frames}; frame-ancestors {ancestors}; base-uri 'self'; form-action 'self' https://yoomoney.ru https://yookassa.ru")
-        if not request.path.startswith('/web_static/'):
+        if request.endpoint=='static':
+            if response.cache_control.max_age==STATIC_MAX_AGE:response.cache_control.immutable=True
+        else:
             response.headers['Cache-Control']='no-store'
         return response
 
@@ -460,36 +603,8 @@ def create_app(test_config=None):
         try:days=int(request.args.get('days','30'))
         except ValueError:abort(400)
         if days not in (7,30,90):abort(400)
-        owner=(g.owner_id,days)
-        base="ul.user_id=? AND ul.delivery_status<>'filtered' AND ul.updated_at IS NOT NULL AND l.first_seen >= now()-(? * interval '1 day')"
-        stats=db().execute("""SELECT count(*) AS total,
-            count(*) FILTER (WHERE ul.pipeline_status='won') AS won,
-            count(*) FILTER (WHERE f.label='fit') AS fit,
-            sum(ul.deal_amount) FILTER (WHERE ul.pipeline_status='won') AS revenue
-            FROM user_leads ul JOIN leads l ON l.id=ul.lead_id
-            LEFT JOIN lead_feedback f ON f.user_id=ul.user_id AND f.lead_id=ul.lead_id
-            WHERE """+base,owner).fetchone()
-        stages=db().execute("SELECT ul.pipeline_status,count(*) AS count FROM user_leads ul JOIN leads l ON l.id=ul.lead_id WHERE "+base+" GROUP BY ul.pipeline_status",owner).fetchall()
-        sources=db().execute("""SELECT l.source AS name,count(*) AS count,
-            count(f.label) AS reviewed,count(*) FILTER (WHERE f.label='fit') AS fit,
-            count(*) FILTER (WHERE f.label='ad') AS ads,
-            count(*) FILTER (WHERE ul.pipeline_status='won') AS won
-            FROM user_leads ul JOIN leads l ON l.id=ul.lead_id
-            LEFT JOIN lead_feedback f ON f.user_id=ul.user_id AND f.lead_id=ul.lead_id
-            WHERE """+base+" GROUP BY name ORDER BY won DESC,fit DESC,count DESC LIMIT 20",owner).fetchall()
-        daily=db().execute("SELECT (l.first_seen AT TIME ZONE 'UTC')::date AS day,count(*) AS count FROM user_leads ul JOIN leads l ON l.id=ul.lead_id WHERE "+base+" GROUP BY day ORDER BY day",owner).fetchall()
-        quality=db().execute("""SELECT f.label,count(*) AS count FROM user_leads ul JOIN leads l ON l.id=ul.lead_id
-            JOIN lead_feedback f ON f.user_id=ul.user_id AND f.lead_id=ul.lead_id
-            WHERE """+base+" GROUP BY f.label ORDER BY count DESC",owner).fetchall()
-        response=db().execute("""SELECT avg(extract(epoch FROM (a.first_response-ul.sent_at)))/60 AS minutes,count(a.first_response) AS samples
-            FROM user_leads ul JOIN leads l ON l.id=ul.lead_id
-            JOIN LATERAL (SELECT min(created_at) AS first_response FROM lead_activity
-                WHERE user_id=ul.user_id AND lead_id=ul.lead_id AND kind='status' AND detail='Написали') a ON true
-            WHERE """+base+" AND ul.sent_at IS NOT NULL AND a.first_response>=ul.sent_at",owner).fetchone()
-        projects=db().execute("""SELECT p.name,count(*) AS count,count(*) FILTER (WHERE ul.pipeline_status='won') AS won
-            FROM project_leads pl JOIN projects p ON p.id=pl.project_id AND p.user_id=pl.user_id
-            JOIN user_leads ul ON ul.user_id=pl.user_id AND ul.lead_id=pl.lead_id JOIN leads l ON l.id=ul.lead_id
-            WHERE """+base+" GROUP BY p.id ORDER BY count DESC",owner).fetchall()
+        from .dashboard import dashboard_report
+        report=dashboard_report(db(),g.owner_id,days)
         team=db().execute('''SELECT u.display_name,m.role,count(a.lead_id) AS assigned,
             count(a.lead_id) FILTER(WHERE ul.pipeline_status='won') AS won
             FROM workspace_members m JOIN app_users u ON u.id=m.user_id
@@ -498,8 +613,8 @@ def create_app(test_config=None):
             WHERE m.workspace_id=? GROUP BY u.id,m.role ORDER BY won DESC,assigned DESC,u.display_name''',
             (g.workspace['id'],)).fetchall()
         from .crm import results
-        return render_template('dashboard.html',results=results(db(),g.owner_id),stats=stats,stages=stages,sources=sources,days=days,daily=daily,
-            peak=max((r['count'] for r in daily),default=1),quality=quality,response=response,projects=projects,team=team)
+        return render_template('dashboard.html',results=results(db(),g.owner_id),days=days,team=team,
+            peak=max((r['count'] for r in report['daily']),default=1),**report)
 
     def filtered_leads(export=False):
         try:page=max(1,min(10000,int(request.args.get('page','1'))))
@@ -538,17 +653,18 @@ def create_app(test_config=None):
             if not normalize_status(status):abort(400)
             where+=' AND ul.pipeline_status=?';args.append(normalize_status(status))
         count=db().execute('SELECT count(*) AS n FROM user_leads ul JOIN leads l ON l.id=ul.lead_id WHERE '+where,args).fetchone()['n']
-        if export and count>10000:abort(400,description='Сузьте выборку до 10 000 лидов для экспорта.')
-        rows=db().execute('''SELECT l.id,l.payload,ul.pipeline_status,ul.deal_amount
+        if export and count>EXPORT_LIMIT:abort(400,description='Сузьте выборку до 10 000 лидов для экспорта.')
+        rows=db().execute('SELECT l.id,'+LEAD_LIST_PAYLOAD+''',ul.pipeline_status,ul.deal_amount
             FROM user_leads ul JOIN leads l ON l.id=ul.lead_id WHERE '''+where+
-            ' ORDER BY l.id DESC LIMIT ? OFFSET ?',args+([10000,0] if export else [30,(page-1)*30])).fetchall()
-        return [dict(row)|{'lead':stored_lead(row['payload'])} for row in rows],count,page
+            ' ORDER BY l.id DESC LIMIT ? OFFSET ?',args+([EXPORT_LIMIT,0] if export else [30,(page-1)*30])).fetchall()
+        return [dict(row)|{'lead':list_lead(row['payload'])} for row in rows],count,page
 
     @app.get('/app/leads')
     def leads():
         rows,count,page=filtered_leads()
         projects=db().execute('SELECT id,name FROM projects WHERE workspace_id=? ORDER BY name',(g.workspace['id'],)).fetchall()
-        sources=db().execute("SELECT DISTINCT l.source AS name FROM user_leads ul JOIN leads l ON l.id=ul.lead_id WHERE ul.user_id=? AND ul.delivery_status<>'filtered' ORDER BY name",(g.owner_id,)).fetchall()
+        # The source filter list changes rarely and costs a scan of all the owner's leads: kept for a few minutes.
+        sources=source_names.get(g.owner_id,lambda:db().execute("SELECT DISTINCT l.source AS name FROM user_leads ul JOIN leads l ON l.id=ul.lead_id WHERE ul.user_id=? AND ul.delivery_status<>'filtered' ORDER BY name",(g.owner_id,)).fetchall())
         members=db().execute('''SELECT m.user_id,u.display_name FROM workspace_members m JOIN app_users u ON u.id=m.user_id
             WHERE m.workspace_id=? ORDER BY u.display_name''',(g.workspace['id'],)).fetchall()
         filters={k:request.args.get(k,'') for k in ('q','status','project','source','feedback','from','to')}
@@ -559,31 +675,9 @@ def create_app(test_config=None):
     @app.get('/app/leads/export')
     def export():
         rows,_,_=filtered_leads(True)
-        headings=['Название','Источник','Ссылка','Дата','Оценка','Статус','Сумма сделки']
-        values=[]
-        def safe(v):
-            v=str(v or '')
-            return "'"+v if v.lstrip().startswith(('=','+','-','@','\t','\r')) else v
-        for r in rows:
-            l=r['lead'];values.append([safe(x) for x in [l.title,l.source,l.url,l.published,l.score,PIPELINE[r['pipeline_status']],r['deal_amount']]])
         if request.args.get('format')=='xlsx':
-            from openpyxl import Workbook
-            from openpyxl.styles import Font, PatternFill, Alignment
-            from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
-            from openpyxl.utils import get_column_letter
-            book=Workbook();sheet=book.active;sheet.title='Лиды';sheet.append(headings)
-            for values_row in values:
-                sheet.append([ILLEGAL_CHARACTERS_RE.sub('',v)[:32767] for v in values_row])
-            for cell in sheet[1]:
-                cell.font=Font(color='FFFFFF',bold=True);cell.fill=PatternFill('solid',fgColor='08182F')
-            sheet.freeze_panes='A2';sheet.auto_filter.ref=sheet.dimensions
-            for i,width in enumerate((55,32,45,28,12,24,20),1):sheet.column_dimensions[get_column_letter(i)].width=width
-            for cells in sheet.iter_rows(min_row=2):
-                for cell in cells:cell.alignment=Alignment(vertical='top',wrap_text=True)
-            buffer=io.BytesIO();book.save(buffer)
-            return Response(buffer.getvalue(),mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',headers={'Content-Disposition':'attachment; filename=leads.xlsx'})
-        stream=io.StringIO();writer=csv.writer(stream,delimiter=';');writer.writerow(headings);writer.writerows(values)
-        return Response('\ufeff'+stream.getvalue(),mimetype='text/csv',headers={'Content-Disposition':'attachment; filename=leads.csv'})
+            return Response(export_xlsx(rows),mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',headers={'Content-Disposition':'attachment; filename=leads.xlsx'})
+        return Response(export_csv(rows),mimetype='text/csv',headers={'Content-Disposition':'attachment; filename=leads.csv'})
 
     @app.route('/app/leads/<int:lid>',methods=['GET','POST'])
     def detail(lid):
@@ -687,11 +781,11 @@ def create_app(test_config=None):
         from . import feedback as fb
         from . import plan_requests as pr
         from .billing import PERIODS,is_unlimited
-        from .telegram_monitor import reader_status
+        from .telegram_monitor import reader_status,source_counts
         from .payments import reason_text,recent_payments
         from .source_registry import moderation_queue
         return render_template('admin.html',health=health,users=pr.admin_users(db()),feedback_rows=fb.recent(db()),fb=fb,
-                               reader=reader_status(db()),plan_requests=pr.open_requests(db()),plan_changes=pr.recent_changes(db()),
+                               reader=reader_status(db(),counts=lambda conn,now:reader_counts.get('reader',lambda:source_counts(conn,now))),plan_requests=pr.open_requests(db()),plan_changes=pr.recent_changes(db()),
                                terms=pr.TERMS,periods=PERIODS,is_unlimited=is_unlimited,
                                payments=recent_payments(db()),payment_reason=reason_text,
                                moderation=moderation_queue(db()))
