@@ -56,6 +56,8 @@ fi
 install -d -m 0700 -o "$DEPLOY_USER" -g "$DEPLOY_USER" "$APP_DIR/backups"
 install -m 0644 "$APP_DIR/deploy/leadfinder-backup.service" /etc/systemd/system/leadfinder-backup.service
 install -m 0644 "$APP_DIR/deploy/leadfinder-backup.timer" /etc/systemd/system/leadfinder-backup.timer
+# OnFailure= target: a Telegram alert through the app's ERROR_ALERT_CHAT_ID (no secrets in the unit).
+install -m 0644 "$APP_DIR/deploy/leadfinder-alert@.service" /etc/systemd/system/leadfinder-alert@.service
 
 systemctl daemon-reload
 # Backups need the self-hosted db (.env.db, DEPLOY.md). Without it the timer is installed but not enabled.

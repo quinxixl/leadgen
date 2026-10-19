@@ -1,13 +1,17 @@
 #!/bin/sh
 # Nightly logical backup of the self-hosted Postgres (compose service db): pg_dump -Fc of schema leadgen
-# (all application data, including web_schema_versions) into $BACKUP_DIR, checked with pg_restore --list
-# before it is kept. Old leadgen-*.dump files are removed only after a new backup succeeded. Restore: DEPLOY.md, «Восстановление из резервной копии».
+# (all application data, including web_schema_versions) into $APP_DIR/backups. Before it is kept the archive
+# is read in full by pg_restore (every data block decompressed). Old leadgen-*.dump files are removed only
+# after a new backup succeeded. Restore: DEPLOY.md, «Восстановление из резервной копии».
+# A failure triggers leadfinder-alert@ (OnFailure= in leadfinder-backup.service).
 set -eu
 
 APP_DIR=${LEADFINDER_DIR:-/opt/leadfinder}
-BACKUP_DIR=${LEADFINDER_BACKUP_DIR:-$APP_DIR/backups}
 KEEP_DAYS=${LEADFINDER_BACKUP_KEEP_DAYS:-14}
 DB_NAME=leadgen
+# compose.yaml mounts $APP_DIR/backups into the db container as /backups (read-only).
+BACKUP_DIR=$APP_DIR/backups
+CONTAINER_DIR=/backups
 
 case "$KEEP_DAYS" in ''|*[!0-9]*) echo "LEADFINDER_BACKUP_KEEP_DAYS должен быть целым числом дней." >&2; exit 1;; esac
 
@@ -15,22 +19,22 @@ cd "$APP_DIR"
 umask 077
 mkdir -p "$BACKUP_DIR"
 
-target="$BACKUP_DIR/$DB_NAME-$(date -u +%Y%m%dT%H%M%SZ).dump"
-partial="$target.partial"
+name="$DB_NAME-$(date -u +%Y%m%dT%H%M%SZ).dump"
+partial="$BACKUP_DIR/$name.partial"
 trap 'rm -f "$partial"' EXIT
 
 # The db service lives in compose.yaml; exec reaches it whichever stack (bot only or bot + web) is running.
-# Same shape as the Supabase dump in DEPLOY.md: roles and schema extensions come from deploy/postgres/init,
-# so a backup restores the same way, as the app role, into a freshly initialised volume.
+# Local socket as postgres (TCP logins as postgres are rejected). Same shape as the Supabase dump in DEPLOY.md:
+# roles and schema extensions come from deploy/postgres/init, so a backup restores the same way.
 docker compose -f compose.yaml exec -T db pg_dump -U postgres -d "$DB_NAME" --schema=leadgen -Fc > "$partial"
 if [ ! -s "$partial" ]; then
     echo "pg_dump вернул пустой файл." >&2
     exit 1
 fi
 # A truncated or corrupt archive fails here instead of silently replacing good backups.
-docker compose -f compose.yaml exec -T db pg_restore --list < "$partial" > /dev/null
-mv "$partial" "$target"
+docker compose -f compose.yaml exec -T db pg_restore -f /dev/null "$CONTAINER_DIR/$name.partial"
+mv "$partial" "$BACKUP_DIR/$name"
 trap - EXIT
 
 find "$BACKUP_DIR" -maxdepth 1 -type f -name "$DB_NAME-*.dump" -mtime +"$KEEP_DAYS" -exec rm -f {} +
-echo "Резервная копия: $target ($(du -h "$target" | cut -f1))"
+echo "Резервная копия: $BACKUP_DIR/$name ($(du -h "$BACKUP_DIR/$name" | cut -f1))"

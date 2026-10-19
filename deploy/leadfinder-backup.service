@@ -2,10 +2,14 @@
 Description=Back up the IT Lead Finder Postgres database
 Wants=docker.service
 After=network-online.target docker.service
+# Telegram alert to ERROR_ALERT_CHAT_ID when the backup fails (deploy/leadfinder-alert@.service).
+OnFailure=leadfinder-alert@%n.service
 
 [Service]
 Type=oneshot
 # Not root: a dedicated account in the docker group (created by deploy/install-auto-update.sh).
+# Note: docker group membership is effectively root through the Docker API; the hardening below limits
+# what this script itself can do on the host, not what the Docker daemon may do.
 User=leadfinder-deploy
 Group=leadfinder-deploy
 SupplementaryGroups=docker
@@ -13,8 +17,10 @@ WorkingDirectory=/opt/leadfinder
 ExecStart=/opt/leadfinder/deploy/leadfinder-backup.sh
 Nice=10
 IOSchedulingClass=idle
+UMask=0077
 NoNewPrivileges=yes
 PrivateTmp=yes
+PrivateDevices=yes
 ProtectSystem=strict
 # Only the backup directory is written; the docker CLI keeps its state in HOME.
 ReadWritePaths=/opt/leadfinder/backups /var/lib/leadfinder-deploy
@@ -23,3 +29,6 @@ ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
 RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=

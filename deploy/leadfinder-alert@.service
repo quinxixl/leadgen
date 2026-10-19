@@ -1,0 +1,29 @@
+[Unit]
+Description=Telegram alert: %i failed
+Wants=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+# Sends through the app's own alert path (leadgen.observability --alert): TELEGRAM_BOT_TOKEN and
+# ERROR_ALERT_CHAT_ID stay in .env inside the container and never appear on a command line.
+User=leadfinder-deploy
+Group=leadfinder-deploy
+SupplementaryGroups=docker
+WorkingDirectory=/opt/leadfinder
+ExecStart=/usr/bin/docker compose -f compose.yaml run --rm --no-deps -T leadfinder python -m leadgen.observability --alert "Сбой %i на сервере: journalctl -u %i -n 50"
+TimeoutStartSec=5min
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/leadfinder-deploy
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
