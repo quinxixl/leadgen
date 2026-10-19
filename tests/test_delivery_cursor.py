@@ -227,6 +227,13 @@ class WorkerLoop(unittest.TestCase):
         self.assertEqual(set(self.states),{'IDLE'})
         self.assertTrue(self.connection.closed)     # the worker's own connection is closed when it stops
 
+    def test_heartbeat_waits_for_a_completed_worker_pass(self):
+        from leadgen import bot
+        self.run_worker([0])
+        self.assertTrue(self.worker.healthy())
+        self.worker.last_pass-=bot.WORKER_STALE_SECONDS+1  # failing on every pass since then
+        self.assertFalse(self.worker.healthy())
+
     def test_lost_connection_is_reopened(self):
         lost=psycopg.OperationalError('server closed the connection unexpectedly')
         connection=FakeConnection(self.answer);fresh=FakeConnection(self.answer)

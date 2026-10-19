@@ -33,6 +33,9 @@ DB_RETRY_MAX_SECONDS=30
 # getUpdates long-poll timeout. The HTTP read timeout is longer (app.bot_api_timeout); nothing else runs on this loop.
 LONG_POLL_SECONDS=25
 WORKER_TICK_SECONDS=1  # DeliveryWorker pass interval, as the old ~1 s getUpdates iteration; wake() skips the wait
+# The worker heartbeat (healthcheck max age 300 s) is written only while the delivery worker completed a pass within
+# this many seconds: a worker failing on every pass makes the container unhealthy, as the single loop did.
+WORKER_STALE_SECONDS=240
 # Outbox queues (reminders, webhooks, assignment notices) and first-run batches are polled on these intervals, not on
 # every ~1 s worker pass: each poll is several queries even when the queues are empty.
 QUEUE_SECONDS=15
@@ -130,7 +133,7 @@ class DeliveryWorker:
         self.open_db,self.config,self.telegram_call,self.first_leads,self.tick=open_db,config,telegram_call,first_leads,tick
         self.db=None;self.send=None;self.fatal=None;self.drain=False;self.manual=False
         self.future=None;self.pool=None;self.next_scan=0;self.next_subscription_check=0;self.next_first_run_check=0
-        self._active=None
+        self._active=None;self.last_pass=time.monotonic()
         self._poked=threading.Event();self._scan=threading.Event();self._wakeup=threading.Event();self._stop=threading.Event()
         from .filtered_cleanup import FilteredCleanup
         from .product import DeliveryGate
@@ -146,6 +149,9 @@ class DeliveryWorker:
 
     def stop(self):
         self._stop.set();self._wakeup.set()
+
+    def healthy(self):
+        return time.monotonic()-self.last_pass<WORKER_STALE_SECONDS
 
     # --- worker thread --------------------------------------------------------------------------------
 
@@ -173,7 +179,7 @@ class DeliveryWorker:
                     self._connect()
                     self.run_once()
                     self.db.release()
-                    failures=0
+                    failures=0;self.last_pass=time.monotonic()
                 except RuntimeError as exc:
                     if not str(exc).startswith('Telegram'):capture_exception(exc,component='delivery_worker')
                     print(str(exc),flush=True)
@@ -185,7 +191,8 @@ class DeliveryWorker:
                     failures+=1;delay=db_retry_delay(failures)
                     capture_exception(exc,component='delivery_worker')
                     print(f'База данных: {type(exc).__name__}: {str(exc).strip()[:300]}; повтор через {delay} с.',flush=True)
-                    try:self.db.recover()
+                    try:
+                        if self.db:self.db.recover()
                     except (RuntimeError,*transient_errors()) as again:
                         print('База данных недоступна: '+type(again).__name__,flush=True)
                     time.sleep(delay)
@@ -376,8 +383,8 @@ def run_bot(db,config):
                 if updates:worker.wake()
                 db.release()
                 db_failures=0
-                # Only after a full pass: a loop failing every iteration (DB errors, crashes) goes stale and unhealthy.
-                beat(db_target)  # throttled, own autocommit connection, never raises
+                # Only after a full pass of both loops: failing on every pass (DB errors, crashes) goes stale and unhealthy.
+                if worker.healthy():beat(db_target)  # throttled, own autocommit connection, never raises
             except RuntimeError as exc:
                 # Telegram network/API errors are expected here; report only unexpected ones.
                 if not str(exc).startswith('Telegram'):capture_exception(exc,component='bot_loop')
