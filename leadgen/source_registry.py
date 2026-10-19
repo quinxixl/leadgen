@@ -153,7 +153,7 @@ def inspect_public_page(username):
         body = fetch(url)
     except HTTPError as exc:
         return {'status':'retry' if exc.code in (429,500,502,503,504) else 'unavailable','reason':f'HTTP {exc.code}'}
-    except (URLError,TimeoutError) as exc:
+    except (URLError,TimeoutError,ConnectionError) as exc:
         return {'status':'retry','reason':type(exc).__name__}
     soup = BeautifulSoup(body,'html.parser')
     title_node = soup.select_one('.tgme_page_title')

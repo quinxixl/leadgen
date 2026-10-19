@@ -12,6 +12,7 @@ import os
 import re
 import socket
 import threading
+import time
 import urllib.error
 import urllib.request
 
@@ -221,13 +222,33 @@ def groq_score(items,examples=(),api_key=None,model=None,opener=urllib.request.u
     return parse_response(raw,[lead_id for lead_id,_ in items])
 
 
-def feedback_examples(db,limit=3,exclude=()):
-    """Newest user-labelled lead per category: few-shot calibration from the 👍/👎 buttons."""
+FEEDBACK_CACHE_SECONDS=600
+_feedback_cache={}  # db target -> (expires at, labelled rows); only the scorer thread uses max_age
+_feedback_lock=threading.Lock()
+
+
+def _labelled_rows(db,max_age=None,clock=time.monotonic):
+    """The 50 newest labelled leads; with max_age they are reused for that many seconds (few-shot hints only)."""
+    key=getattr(db,'target',None)
+    if max_age:
+        with _feedback_lock:cached=_feedback_cache.get(key)
+        if cached and cached[0]>clock():return cached[1]
+    rows=[dict(row) for row in db.execute('''SELECT f.lead_id,f.label,l.payload FROM lead_feedback f
+        JOIN leads l ON l.id=f.lead_id WHERE f.label IN ('fit','ad','competitor','job','vacancy')
+        ORDER BY f.updated_at DESC LIMIT 50''').fetchall()]
+    if max_age:
+        with _feedback_lock:_feedback_cache[key]=(clock()+max_age,rows)
+    return rows
+
+
+def feedback_examples(db,limit=3,exclude=(),max_age=None):
+    """Newest user-labelled lead per category: few-shot calibration from the 👍/👎 buttons.
+
+    max_age: seconds the labelled rows may be reused (the scorer passes FEEDBACK_CACHE_SECONDS instead of sorting
+    lead_feedback on every batch); None reads them fresh (the /admin sandbox)."""
     if limit<=0:return []
-    rows=db.execute('''SELECT f.lead_id,f.label,l.payload FROM lead_feedback f JOIN leads l ON l.id=f.lead_id
-        WHERE f.label IN ('fit','ad','competitor','job','vacancy') ORDER BY f.updated_at DESC LIMIT 50''').fetchall()
     examples=[];seen=set();exclude=set(exclude)
-    for row in rows:
+    for row in _labelled_rows(db,max_age):
         if row['lead_id'] in exclude:continue
         category=FEEDBACK_CATEGORY[row['label']]
         if category in seen:continue
@@ -294,7 +315,7 @@ def score_pending(db,scorer=groq_score,limit=None,max_age=None,on_limit=None):
         return settled
     model=prompt['model'];prompt_id=prompt['id']
     try:
-        examples=feedback_examples(db,fewshot_count(prompt))
+        examples=feedback_examples(db,fewshot_count(prompt),max_age=FEEDBACK_CACHE_SECONDS)
         # The reads above opened an implicit transaction: never hold it (idle in transaction) during the LLM call.
         db.release()
         results,usage=scorer(batch,examples,model=model,prompt=prompt)

@@ -133,6 +133,21 @@ class BotUX(unittest.TestCase):
                    for b in buttons(data.get('reply_markup')) if 'callback_data' in b]
         self.assertLessEqual(max(len(item.encode()) for item in callbacks),64)
 
+    def test_site_backfill_skips_users_a_bot_handler_is_switching_on(self):
+        from leadgen.product import backfill_pending
+        with self.db:
+            self.db.execute('DELETE FROM user_leads WHERE user_id=?',(self.u,))
+            self.db.execute('UPDATE user_preferences SET monitoring_active=true,show_without_budget=true WHERE user_id=?',(self.u,))
+            self.db.execute('UPDATE user_preferences SET monitoring_active=false WHERE user_id=?',(self.other,))
+            self.db.execute("UPDATE leads SET first_seen=(now()-interval '3 hours')")
+        sent=[];send=lambda method,data:sent.append(data)
+        self.assertEqual(backfill_pending(self.db,CONFIG,send,skip=lambda:frozenset({self.u})),0)
+        self.assertEqual(sent,[])
+        # Not claimed: the delivery worker still sends this user's one-time batch after the confirmation.
+        self.assertFalse(self.db.execute('SELECT 1 FROM settings WHERE key=?',(f'first_run:{self.u}',)).fetchone())
+        self.assertGreater(backfill_pending(self.db,CONFIG,send),0)  # cards sent once nothing is held
+        self.assertTrue(self.db.execute('SELECT 1 FROM settings WHERE key=?',(f'first_run:{self.u}',)).fetchone())
+
     def test_first_leads_for_monitoring_enabled_on_the_site(self):
         from leadgen.product import backfill_pending
         with self.db:
@@ -148,6 +163,32 @@ class BotUX(unittest.TestCase):
         self.assertEqual(backfill_pending(self.db,CONFIG,send),0)
         self.assertEqual(deliver_registered(self.db,CONFIG,send,limit_per_user=10),0)
         self.assertEqual(len(sent),2)
+
+    def test_monitor_on_hands_the_welcome_batch_to_the_delivery_worker(self):
+        from leadgen.bot import FirstLeads
+        first=FirstLeads();held=[]
+        self.ui=ProductController(self.db,CONFIG,lambda method,data:(self.sent.append((method,data)),
+                                                                      held.append(first.held())),first_leads=first)
+        with self.db:self.db.execute('UPDATE user_preferences SET monitoring_active=false WHERE user_id=?',(self.u,))
+        with patch('leadgen.product.backfill_first_leads',side_effect=AssertionError('ran inline')):
+            self.text(MONITOR_OFF)  # the «выкл» button switches monitoring on
+        self.assertTrue(self.prefs(1)['monitoring_active'])
+        self.assertTrue(self.calls('sendMessage')[-1]['text'].startswith('🔔 Мониторинг включён'))
+        # The user is held out of live delivery while the confirmation goes out, then queued for the worker.
+        self.assertEqual(held[-1],frozenset({self.u}))
+        self.assertEqual(first.next(),self.u);self.assertIsNone(first.next())
+        self.assertTrue(self.ui.manual)  # the worker is asked to scan sources right away
+
+    def test_last_seen_is_written_at_most_every_five_minutes(self):
+        def seen():
+            return self.db.execute('SELECT last_seen_at FROM app_users WHERE id=?',(self.u,)).fetchone()['last_seen_at']
+        with self.db:self.db.execute("UPDATE app_users SET last_seen_at=now()-interval '1 minute' WHERE id=?",(self.u,))
+        before=seen();self.text(HELP)
+        self.assertEqual(seen(),before)
+        with self.db:self.db.execute("UPDATE app_users SET last_seen_at=now()-interval '6 minutes' WHERE id=?",(self.u,))
+        before=seen();self.text(HELP)
+        self.assertGreater(seen(),before)
+        self.assertIn("last_seen_at<now()-interval '5 minutes'",product.LAST_SEEN_SQL)
 
     def test_start_shows_wizard_only_until_configured(self):
         self.text('/start')

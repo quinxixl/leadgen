@@ -380,14 +380,24 @@ def _query_canceled():
     return (QueryCanceled,)
 
 
-def deliver_registered(db,base,sender,limit_per_user=1):
+def _skipped(skip):
+    return frozenset(skip() if callable(skip) else skip)
+
+
+def deliver_registered(db,base,sender,limit_per_user=1,skip=()):
     """Send each active user the newest unseen matching leads; returns the number of cards sent.
+
+    skip: user ids left out of this pass (their one-time welcome batch is still pending, see bot.FirstLeads), or a
+    callable returning them; it is called after the recipients are read, so a handler that reserved a user before
+    committing monitoring_active=true is always seen.
 
     While AI scoring is on, a fresh lead waits up to AI_SCORING_WAIT_SECONDS for its shared score.
     Each user is scanned only above user_preferences.delivery_cursor (or the freshness window), see _deliver_user.
     No transaction stays open between users or across Telegram calls."""
     from .ai_scoring import scoring_enabled,wait_seconds
-    users=db.execute(RECIPIENTS+' ORDER BY u.id').fetchall()
+    rows=db.execute(RECIPIENTS+' ORDER BY u.id').fetchall()
+    held=_skipped(skip)
+    users=[row for row in rows if row['id'] not in held]
     if not users:
         db.release();return 0
     timing=(scoring_enabled(db),wait_seconds())
@@ -552,11 +562,15 @@ def backfill_first_leads(db,base,sender,user_id,limit=FIRST_RUN_LIMIT,hours=FIRS
     return sent
 
 
-def backfill_pending(db,base,sender,limit_users=5):
-    """First-run batches for users who enabled monitoring outside the bot: web cabinet or Mini App."""
+def backfill_pending(db,base,sender,limit_users=5,skip=()):
+    """First-run batches for users who enabled monitoring outside the bot: web cabinet or Mini App.
+
+    skip (ids or a callable, see deliver_registered): users a bot handler is switching on right now; their batch
+    is sent by the delivery worker after the handler's confirmation message."""
     rows=db.execute(RECIPIENTS+''' AND NOT EXISTS (SELECT 1 FROM settings st WHERE st.key='first_run:'||u.id)
         ORDER BY u.id LIMIT ?''',(limit_users,)).fetchall()
-    return sum(backfill_first_leads(db,base,sender,row['id']) for row in rows)
+    held=_skipped(skip)
+    return sum(backfill_first_leads(db,base,sender,row['id']) for row in rows if row['id'] not in held)
 
 
 def notify_subscriptions(db,sender,limit=20):
@@ -606,11 +620,15 @@ def notify_subscriptions(db,sender,limit=20):
 
 
 ACTIVE_CACHE_SECONDS=10
+MONITORING_ON_TEXT='🔔 Мониторинг включён. Новые заказы по вашим услугам будут приходить сюда сразу после публикации.'
+# Activity is shown with minute precision in /admin: one row write per user per 5 minutes, not one per update.
+LAST_SEEN_SQL="UPDATE app_users SET last_seen_at=now() WHERE id=? AND last_seen_at<now()-interval '5 minutes'"
 
 
 class ProductController:
-    def __init__(self,db,base,sender):
-        self.db,self.base,self.sender=db,base,sender
+    def __init__(self,db,base,sender,first_leads=None):
+        """first_leads: bot.FirstLeads of the delivery worker; None sends the welcome batch inline (tests, one-off use)."""
+        self.db,self.base,self.sender,self.first_leads=db,base,sender,first_leads
         self.manual=False;self.drain=False;self.last_chat=None
         self.active=False;self.callback=None;self._answered=True
         self._active_cache=None;self._offset=None
@@ -878,11 +896,11 @@ class ProductController:
             self._answer('Сначала выберите хотя бы одну услугу')
             return self._edit(*wizard_directions(selected))
         self._answer('Мониторинг запущен')
-        self._update_pref(user['id'],'monitoring_active',True);self.active=True;self.manual=True
-        self._edit('🚀 Мониторинг запущен.\n\n'+_selection_line(selected)+
-                   '\n\nИзменить услуги и бюджет можно кнопкой «🎯 Услуги и бюджет».')
-        self.say('🔔 Мониторинг включён. Новые заказы по вашим услугам будут приходить сюда сразу после публикации.')
-        self._first_leads(user)
+        def confirm():
+            self._edit('🚀 Мониторинг запущен.\n\n'+_selection_line(selected)+
+                       '\n\nИзменить услуги и бюджет можно кнопкой «🎯 Услуги и бюджет».')
+            self.say(MONITORING_ON_TEXT)
+        self._enable_monitoring(user,confirm)
 
     def _wizard(self,user,parts):
         selected=selected_topics(user);step=parts[1] if len(parts)>1 else ''
@@ -924,9 +942,23 @@ class ProductController:
         if not selected_topics(user):
             self.say('Сначала выберите услуги — без них мониторинг не найдёт подходящих заказов.')
             return self.say(*wizard_directions([]))
-        self._update_pref(user['id'],'monitoring_active',True);self.active=True;self.manual=True
-        self.say('🔔 Мониторинг включён. Новые заказы по вашим услугам будут приходить сюда сразу после публикации.')
-        self._first_leads(user)
+        self._enable_monitoring(user,lambda:self.say(MONITORING_ON_TEXT))
+
+    def _enable_monitoring(self,user,confirm):
+        """Switch monitoring on, send the confirmation (confirm()), then the one-time welcome batch.
+
+        In the bot the batch is handed to the delivery worker: the reply does not wait for it, and the worker's
+        live stream skips the user until the batch is done, so the order of messages stays the same."""
+        queue=self.first_leads
+        if queue is None:
+            self._update_pref(user['id'],'monitoring_active',True);self.active=True;self.manual=True
+            confirm()
+            return self._first_leads(user)
+        queue.reserve(user['id'])
+        try:
+            self._update_pref(user['id'],'monitoring_active',True);self.active=True;self.manual=True
+            confirm()
+        finally:queue.release(user['id'])
 
     def _latest(self,user):
         rows=self.db.execute('''SELECT l.id,l.payload,ul.filter_reason,f.label AS feedback FROM user_leads ul
@@ -1057,7 +1089,7 @@ class ProductController:
                 self.say(*wizard_directions(selected_topics(user)),chat_id=chat_id)
             else:self.say(register_text(),REGISTER,chat_id)
             return
-        with self.db:self.db.execute('UPDATE app_users SET last_seen_at=now() WHERE id=?',(user['id'],))
+        with self.db:self.db.execute(LAST_SEEN_SQL,(user['id'],))
         if user['status']=='blocked':
             self._answer();self.say('Аккаунт заблокирован. Обратитесь в поддержку.');return
         if callback:

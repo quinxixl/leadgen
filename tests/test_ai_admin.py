@@ -161,7 +161,7 @@ class AIAdminPostgres(unittest.TestCase):
 
     def setUp(self):
         fixtures.WebPostgres.setUp(self)
-        ai_prompts.clear_cache();self.addCleanup(ai_prompts.clear_cache)
+        ai_prompts.clear_cache();self.addCleanup(ai_prompts.clear_cache);ai_scoring._feedback_cache.clear()
         with self.db:
             self.db.execute('DELETE FROM settings WHERE key LIKE ? OR key=?',('rl:%',ai_prompts.PAUSE_KEY))
             self.db.execute('DELETE FROM user_leads')
@@ -296,6 +296,16 @@ class AIAdminPostgres(unittest.TestCase):
         ai_offers.generate_for_lead(self.db,self.ws,self.u,self.u,self.ids[0],lead,generator=generator)
         self.assertEqual(captured,[('openai/gpt-oss-20b',prompt_id)])
         self.assertEqual(self.db.execute('SELECT model FROM ai_offer_generations ORDER BY id DESC LIMIT 1').fetchone()['model'],'openai/gpt-oss-20b')
+
+    def test_offer_timeout_marks_the_pending_generation_failed(self):
+        def slow(request,timeout):raise TimeoutError('The read operation timed out')
+        def generator(*args,**kwargs):return ai_offers.groq_offer_drafts(*args,**kwargs,opener=slow)
+        with self.db:self.db.execute("INSERT INTO user_leads(user_id,lead_id,delivery_status) VALUES(?,?,'sent')",(self.u,self.ids[0]))
+        lead=Lead(**lead_data(self.db.execute('SELECT payload FROM leads WHERE id=?',(self.ids[0],)).fetchone()['payload']))
+        with self.assertRaisesRegex(ai_offers.AIOfferError,'Не удалось связаться с Groq'):
+            ai_offers.generate_for_lead(self.db,self.ws,self.u,self.u,self.ids[0],lead,generator=generator)
+        row=self.db.execute('SELECT status,error,completed_at FROM ai_offer_generations ORDER BY id DESC LIMIT 1').fetchone()
+        self.assertEqual(row['status'],'failed');self.assertIn('Groq',row['error']);self.assertIsNotNone(row['completed_at'])
 
     # --- delivery -------------------------------------------------------------------------------------
     def test_delivery_filter_by_ai_category_and_services(self):
