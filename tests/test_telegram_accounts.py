@@ -1,4 +1,5 @@
 import asyncio
+import json
 import sqlite3
 import tempfile
 import threading
@@ -161,6 +162,65 @@ class PersonalMonitorDb(unittest.TestCase):
         store.close()
         self.assertEqual([row['user_id'] for row in rows], [1]); self.assertEqual(enabled, {(1, -100500)})
         assert_no_open_transaction(self, self.journal)
+
+    # Public catalog chats the service reader already reads are not ingested a second time.
+    def beat(self, state='running', connected=True, age=10):
+        at = (datetime.now(timezone.utc)-timedelta(seconds=age)).isoformat()
+        value = json.dumps({'state': state, 'connected': connected, 'at': at})
+        self.sql("INSERT INTO settings(key,value) VALUES('reader:heartbeat','" + value + "') "
+                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+
+    def source(self, username, status='active', enabled=1):
+        self.sql("INSERT INTO telegram_sources(username,url,title,status,enabled) VALUES('%s','u','t','%s',%d)"
+                 % (username, status, enabled))
+
+    def handle(self, shared, entity, chat_id=-100500, msg_id=9):
+        store = ta.MonitorStore(self.path, opener=self.opener)
+        try:
+            return asyncio.run(ta.handle_personal_message(group_event(chat_id=chat_id, msg_id=msg_id, entity=entity),
+                                                          1, store, {(1, -100500)}, CONFIG, shared))
+        finally:
+            store.close()
+
+    def test_catalog_public_chat_is_skipped_without_a_database_call(self):
+        entity = SimpleNamespace(id=500, username='Orders_Group', broadcast=False, megagroup=True)
+        self.assertFalse(self.handle({'orders_group'}, entity))
+        self.assertEqual((self.opened, self.leads()), (0, []))
+
+    def test_private_group_and_public_chat_outside_the_catalog_are_still_ingested(self):
+        private = SimpleNamespace(id=500, username=None, broadcast=False, megagroup=True)
+        self.assertTrue(self.handle({'orders_group'}, private, msg_id=1))
+        public = SimpleNamespace(id=500, username='Orders_Group', broadcast=False, megagroup=True)
+        self.assertTrue(self.handle({'another_chat'}, public, msg_id=2))
+        self.assertEqual(self.leads(), ['https://t.me/Orders_Group/2', 'https://t.me/c/500/1'])
+        db = db_open(self.path)
+        try:
+            origins = {row['origin_user_id'] for row in db.execute('SELECT origin_user_id FROM leads')}
+        finally:
+            db.close()
+        self.assertEqual(origins, {1})  # personal-only leads stay visible to their owner only
+
+    def test_shared_chats_are_the_selected_groups_the_reader_reads(self):
+        db_open(self.path).close()  # creates telegram_sources and settings
+        self.sql("UPDATE user_telegram_dialogs SET username='Orders_Group' WHERE peer_id=-100500",
+                 "INSERT INTO user_telegram_dialogs(user_id,peer_id,title,username,enabled) VALUES(2,-1007,'x','Moderated',1)",
+                 "INSERT INTO user_telegram_dialogs(user_id,peer_id,title,username,enabled) VALUES(2,-1008,'y','Off_Chat',1)",
+                 "INSERT INTO user_telegram_dialogs(user_id,peer_id,title,username,enabled) VALUES(2,-1009,'z','Unselected',0)")
+        self.source('orders_group'); self.source('moderated', status='moderation'); self.source('off_chat', enabled=0)
+        self.source('unselected')
+        def load():
+            db = db_open(self.path)
+            try:
+                return ta._load_shared_chats(db)
+            finally:
+                db.close()
+        self.assertEqual(load(), set())                      # no reader heartbeat: personal monitors keep reading
+        self.beat()
+        self.assertEqual(load(), {'orders_group'})
+        self.beat(age=ta.HEARTBEAT_STALE_SECONDS+60)
+        self.assertEqual(load(), set())                      # reader gone: nothing is skipped
+        self.beat(state='reconnecting', connected=False)
+        self.assertEqual(load(), set())
 
 
 class DroppedConnection(unittest.TestCase):
