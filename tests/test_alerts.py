@@ -165,6 +165,20 @@ class AlertTests(unittest.TestCase):
         self.assertNotIn('owner@example.com', self.sent[0][1])
         self.assertIn('Telegram', ' '.join(str(c.args[0]) for c in printed.call_args_list))
 
+    def test_ops_alert_is_sent_synchronously_to_every_chat(self):
+        with patch('leadgen.app.env_load'):
+            self.assertTrue(obs.send_ops_alert('Сбой  leadfinder-backup.service\n на сервере'))
+        self.assertEqual([chat for chat, _ in self.sent], ['111', '222'])
+        self.assertIn('Сбой leadfinder-backup.service на сервере', self.sent[0][1])
+
+    def test_ops_alert_without_chat_id_or_text_is_not_sent(self):
+        with patch('leadgen.app.env_load'), patch('builtins.print'):
+            self.assertFalse(obs.send_ops_alert('   '))
+            with patch.dict(os.environ, {'ERROR_ALERT_CHAT_ID': ''}):
+                obs._reset_alerts()
+                self.assertFalse(obs.send_ops_alert('Сбой'))
+        self.assertEqual(self.sent, [])
+
 
 if __name__ == '__main__':
     unittest.main()

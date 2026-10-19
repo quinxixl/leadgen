@@ -505,8 +505,27 @@ def send_test_event():
     return bool(channels)
 
 
+OPS_ALERT_MAX = 300
+
+
+def send_ops_alert(message, service='сервер'):
+    """Deliver one operational alert (e.g. a failed systemd unit) to ERROR_ALERT_CHAT_ID now; True if sent.
+
+    Used by deploy/leadfinder-alert@.service: the token stays in .env inside the container, never in argv."""
+    from .app import env_load
+    env_load()
+    text = ' '.join(str(message or '').split())[:OPS_ALERT_MAX]
+    if not text or not init_alerts(service, sync=True):
+        print('ERROR_ALERT_CHAT_ID не задан или сообщение пустое — алерт не отправлен.')
+        return False
+    alert_message(text, fingerprint='ops:' + text)
+    return _alerts['sent'] > 0
+
+
 if __name__ == '__main__':
+    if sys.argv[1:2] == ['--alert'] and len(sys.argv) == 3:
+        raise SystemExit(0 if send_ops_alert(sys.argv[2]) else 1)
     if sys.argv[1:] != ['--test']:
-        print('Использование: python -m leadgen.observability --test')
+        print('Использование: python -m leadgen.observability --test | --alert "текст"')
         raise SystemExit(2)
     raise SystemExit(0 if send_test_event() else 1)

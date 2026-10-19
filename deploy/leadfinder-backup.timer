@@ -1,0 +1,11 @@
+[Unit]
+Description=Back up IT Lead Finder Postgres every night
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 Europe/Moscow
+RandomizedDelaySec=10min
+Persistent=true
+Unit=leadfinder-backup.service
+
+[Install]
+WantedBy=timers.target

@@ -122,7 +122,7 @@ docker compose down
 
 Миграции нужно применить до старта нового воркера: код читает новые колонки (например, `user_preferences.delivery_cursor`). `deploy/leadfinder-update.sh` делает это в том же порядке.
 
-Том `leadgen/data` сохраняет MTProto-сессию Telegram. База и настройки находятся в Supabase. Контейнер запускается непривилегированным пользователем и автоматически перезапускается; healthcheck раз в 30 с проверяет свежесть heartbeat воркера (`healthcheck`).
+Том `leadgen/data` сохраняет MTProto-сессию Telegram. База — сервис `db` (Postgres 17 в томе `pgdata`, пароли в `.env.db`) в `compose.yaml`; переезд с Supabase, резервные копии и откат описаны в `DEPLOY.md`, раздел 16. Перед `run --no-deps … web_migrate` база должна работать: `docker compose up -d --wait db`. Контейнер запускается непривилегированным пользователем и автоматически перезапускается; healthcheck раз в 30 с проверяет свежесть heartbeat воркера (`healthcheck`).
 
 Необязательные переменные `.env` (секунды):
 
