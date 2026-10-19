@@ -44,6 +44,8 @@ FEEDBACK={'fit':'Подходит','ad':'Реклама','job':'Ищет раб�
           'too_cold':'Слишком холодный','wrong_geo':'Неверная география','competitor':'Конкурент',
           'vacancy':'Вакансия','duplicate':'Дубль'}
 MISS_REASONS=tuple(key for key in FEEDBACK if key!='fit')
+# Label a single tap on «👎 Мимо» records before the user picks a reason.
+MISS_DEFAULT='not_service'
 BUDGET_PRESETS=((0,'Без ограничения'),(10000,'от 10 000 ₽'),(30000,'от 30 000 ₽'),(100000,'от 100 000 ₽'))
 TOPIC_INDEX={name:i for i,name in enumerate(TOPICS)}
 AI_MIN_STEPS=(0,4,6,8)
@@ -105,12 +107,13 @@ def register_text():
 
 
 def lead_buttons(lead_id,url,feedback=None):
-    """Compact card: open in the cabinet, the original, two-way rating and an optional Telegram reply."""
+    """Compact card: two-way rating first (one tap records it), then open in the cabinet, the original and an
+    optional Telegram reply."""
     fit='✓ 👍 Подходит' if feedback=='fit' else '👍 Подходит'
     miss='✓ 👎 '+FEEDBACK[feedback] if feedback in MISS_REASONS else '👎 Мимо'
     original={'text':'Оригинал','url':url} if (url or '').startswith(('https://','http://')) else None
-    rows=[[button for button in (lead_link(lead_id),original) if button],
-          [{'text':fit,'callback_data':f'feedback:fit:{lead_id}'},{'text':miss,'callback_data':f'miss:{lead_id}'}]]
+    rows=[[{'text':fit,'callback_data':f'feedback:fit:{lead_id}'},{'text':miss,'callback_data':f'miss:{lead_id}'}],
+          [button for button in (lead_link(lead_id),original) if button]]
     from .telegram_replies import source_message
     try:source_message(url)
     except ValueError:pass
@@ -131,8 +134,8 @@ def crm_buttons(lead_id,current=None):
         [{'text':'← Назад','callback_data':f'card:{lead_id}'}]]}
 
 
-def miss_buttons(lead_id):
-    reasons=[{'text':FEEDBACK[key],'callback_data':f'feedback:{key}:{lead_id}'} for key in MISS_REASONS]
+def miss_buttons(lead_id,current=None):
+    reasons=[{'text':('✓ ' if current==key else '')+FEEDBACK[key],'callback_data':f'feedback:{key}:{lead_id}'} for key in MISS_REASONS]
     rows=[reasons[i:i+2] for i in range(0,len(reasons),2)]
     rows.append([{'text':'← Назад','callback_data':f'card:{lead_id}'}])
     return {'inline_keyboard':rows}
@@ -1122,8 +1125,14 @@ class ProductController:
             elif action in ('miss','card') and len(parts)==2 and parts[1].isdigit():
                 lid=int(parts[1]);row,lead=self._lead(lid)
                 if not row:return self._answer('Лид не найден')
-                self._answer('Почему не подходит?' if action=='miss' else None)
-                self._edit_markup(miss_buttons(lid) if action=='miss' else lead_buttons(lid,lead.url,self._feedback(user['id'],lid)))
+                current=self._feedback(user['id'],lid)
+                if action=='miss' and current not in MISS_REASONS:
+                    # One tap is enough: «Мимо» is recorded right away, the reasons only refine it.
+                    current=MISS_DEFAULT
+                    with self.db:self.db.execute('''INSERT INTO lead_feedback(user_id,lead_id,label) VALUES(?,?,?)
+                        ON CONFLICT(user_id,lead_id) DO UPDATE SET label=excluded.label,updated_at=now()''',(user['id'],lid,MISS_DEFAULT))
+                self._answer('👎 Отмечено. Уточните причину, если хотите' if action=='miss' else None)
+                self._edit_markup(miss_buttons(lid,current) if action=='miss' else lead_buttons(lid,lead.url,current))
             elif action=='crm' and len(parts)==2 and parts[1].isdigit():
                 lid=int(parts[1]);row,_=self._lead(lid)
                 if not row:return self._answer('Лид не найден')

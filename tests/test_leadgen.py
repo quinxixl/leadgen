@@ -235,21 +235,23 @@ class Filters(unittest.TestCase):
         from leadgen.product import miss_buttons
         with patch.dict(os.environ,{'WEB_PUBLIC_URL':'','MINIAPP_ENABLED':''}):
             rows=lead_buttons(42,'https://example.org/lead')['inline_keyboard']
-        self.assertEqual(rows[0],[{'text':'Оригинал','url':'https://example.org/lead'}])
-        self.assertEqual([b['callback_data'] for b in rows[1]],['feedback:fit:42','miss:42'])
+        # Rating is the first row: the most visible buttons of the card.
+        self.assertEqual([b['callback_data'] for b in rows[0]],['feedback:fit:42','miss:42'])
+        self.assertEqual(rows[1],[{'text':'Оригинал','url':'https://example.org/lead'}])
         self.assertEqual(rows[2],[{'text':'📋 Статус','callback_data':'crm:42'}])
         with patch.dict(os.environ,{'WEB_PUBLIC_URL':'https://signalid.test/','MINIAPP_ENABLED':'0'}):
             rows=lead_buttons(42,'https://t.me/business_chat/7','ad')['inline_keyboard']
-        self.assertEqual(rows[0][0],{'text':'Открыть','url':'https://signalid.test/app/leads/42'})
-        self.assertEqual(rows[1][1]['text'],'✓ 👎 Реклама')
+        self.assertEqual(rows[1][0],{'text':'Открыть','url':'https://signalid.test/app/leads/42'})
+        self.assertEqual(rows[0][1]['text'],'✓ 👎 Реклама')
         self.assertEqual(rows[2],[{'text':'✉️ Ответить','callback_data':'tgcompose:42'}])
         with patch.dict(os.environ,{'WEB_PUBLIC_URL':'https://signalid.test','MINIAPP_ENABLED':'1'}):
             rows=lead_buttons(42,'https://example.org/lead','fit')['inline_keyboard']
-        self.assertEqual(rows[0][0],{'text':'Открыть','web_app':{'url':'https://signalid.test/tg/leads/42'}})
-        self.assertEqual(rows[1][0]['text'],'✓ 👍 Подходит')
+        self.assertEqual(rows[1][0],{'text':'Открыть','web_app':{'url':'https://signalid.test/tg/leads/42'}})
+        self.assertEqual(rows[0][0]['text'],'✓ 👍 Подходит')
         reasons=[b['callback_data'] for row in miss_buttons(42)['inline_keyboard'] for b in row]
         self.assertIn('feedback:ad:42',reasons);self.assertNotIn('feedback:fit:42',reasons)
         self.assertEqual(reasons[-1],'card:42')
+        self.assertIn('✓ Не моя услуга',[b['text'] for row in miss_buttons(42,'not_service')['inline_keyboard'] for b in row])
         self.assertLessEqual(max(len(data.encode()) for data in reasons),64)
 
     def test_onboarding_callbacks_fit_telegram_limit(self):

@@ -301,6 +301,19 @@ class WebPostgres(unittest.TestCase):
         prefs=self.db.execute('SELECT * FROM user_preferences WHERE user_id=?',(self.u,)).fetchone()
         self.assertEqual(prefs['min_budget'],8000);self.assertEqual(prefs['topics'],['Сайты'])
 
+    def test_one_tap_rating_on_lead_page_keeps_status_and_amount(self):
+        lid=self.ids[0]
+        self.client.post(f'/app/leads/{lid}',data={'csrf':'test-csrf','status':'in_progress','amount':'5000'})
+        page=self.client.get(f'/app/leads/{lid}').text
+        self.assertIn('aria-label="Оценка лида"',page);self.assertIn('value="not_service"',page)
+        # The quick form re-sends the current status and amount, so a tap only changes the rating.
+        self.assertEqual(self.client.post(f'/app/leads/{lid}',data={'csrf':'test-csrf','status':'in_progress','amount':'5000',
+                                                                    'feedback':'not_service'}).status_code,302)
+        row=self.db.execute('SELECT pipeline_status,deal_amount FROM user_leads WHERE lead_id=?',(lid,)).fetchone()
+        self.assertEqual((row['pipeline_status'],row['deal_amount']),('in_progress',5000))
+        self.assertEqual(self.db.execute('SELECT label FROM lead_feedback WHERE lead_id=?',(lid,)).fetchone()['label'],'not_service')
+        self.assertIn('✓ 👎 Не моя услуга',self.client.get(f'/app/leads/{lid}').text)
+
     def test_login_flow(self):
         c=self.app.test_client();c.get('/login')
         with c.session_transaction() as s:csrf=s['csrf']
