@@ -229,7 +229,9 @@ sudo deploy/install-auto-update.sh
 Установщик выполняет эти шаги сам, и запускать его повторно безопасно:
 
 1. Создаёт `leadfinder-deploy`, если такого пользователя ещё нет, и добавляет его в группу `docker`.
-2. Передаёт ему владение `/opt/leadfinder`, включая `.git` и `.env`. Каталог `leadgen/data` остаётся за пользователем контейнера (uid 10001).
+2. Передаёт ему владение `/opt/leadfinder`, включая `.git` и `.env`. Каталог `leadgen/data` остаётся за пользователем контейнера (uid 10001). Группа каталога — `leadfinder-deploy`, права `750`. Если каталога нет, установщик его создаёт. Файлы внутри не трогает.
+
+`.dockerignore` устроен так, чтобы сборка вообще не открывала `leadgen/data`. BuildKit пропускает исключённый каталог, только если каждое исключение `!` — обычный путь, допускается лишь `/**` в конце. Одной строки вроде `!leadgen/*.py` или `!supabase/migrations/*.sql` достаточно, чтобы он полез во все каталоги, включая `leadgen/data`. Поэтому модули `leadgen/*.py` перечислены поимённо. Новый модуль нужно добавить в `.dockerignore`, иначе его не будет в образе. Тест `tests/test_deploy.py` это проверяет.
 3. Ставит обновлённые юниты. Если `leadfinder-renew.service` уже был установлен, юнит заменяется, а состояние таймера сохраняется.
 
 Что сделать на сервере, где автообновление уже работало от root:
@@ -349,10 +351,13 @@ free -h
 systemctl stop leadfinder-update.timer leadfinder-update.service
 systemctl stop leadfinder-renew.timer 2>/dev/null || true
 systemctl is-active leadfinder-update.timer leadfinder-update.service   # обе строки: inactive
-git -C /opt/leadfinder rev-parse HEAD > /root/leadfinder-rollback.sha && cat /root/leadfinder-rollback.sha
+cp .leadfinder-deployed-sha /root/leadfinder-rollback.sha && cat /root/leadfinder-rollback.sha
+git -C /opt/leadfinder cat-file -e "$(cat /root/leadfinder-rollback.sha)^{commit}" && echo "Коммит для отката найден"
 install -m 600 .env /root/env-supabase.bak && ls -l /root/env-supabase.bak
 docker compose $F stop && docker compose $F ps
 ```
+
+Откатываться нужно на код, который сейчас запущен. Его записывает автообновление в `.leadfinder-deployed-sha`. `git rev-parse HEAD` для этого не годится: если последнее обновление упало на сборке или миграции, checkout уже впереди работающего кода. Если файла `.leadfinder-deployed-sha` нет, автообновление ни разу не завершилось. Тогда возьмите коммит, с которого собирали работающий образ, и запишите его в `/root/leadfinder-rollback.sha` вручную.
 
 **2. Получить новый код** (после слияния PR).
 
@@ -456,7 +461,11 @@ LEADFINDER_WEB=1 sh deploy/install-auto-update.sh   # только бот: LEADF
 systemctl start leadfinder-backup.service && journalctl -u leadfinder-backup.service -n 20 --no-pager
 ls -lh backups/
 systemctl start leadfinder-renew.timer 2>/dev/null || true   # если продление было включено
+ls -ld leadgen/data   # drwxr-x--- 10001 leadfinder-deploy
+journalctl -u leadfinder-update.service -n 30 --no-pager   # сборка без «open leadgen/data: permission denied»
 ```
+
+Установщик открывает `leadgen/data` группе `leadfinder-deploy` на чтение (владелец 10001, группа `leadfinder-deploy`, права `750`). Со старым `.dockerignore` без этого `docker compose build` от `leadfinder-deploy` падал с ошибкой `open leadgen/data: permission denied`. Текущий `.dockerignore` в каталог не заходит, права оставлены как вторая страховка. Права файлов внутри каталога, включая `telegram_reader.session`, установщик не меняет.
 
 **12. Через 1–2 недели, когда откат точно не понадобится.**
 

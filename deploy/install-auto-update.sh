@@ -38,6 +38,12 @@ install -d -m 0750 -o "$DEPLOY_USER" -g "$DEPLOY_USER" "$DEPLOY_HOME"
 # The checkout and .env belong to the deploy account. leadgen/data keeps the container user (uid 10001).
 find "$APP_DIR" -path "$APP_DIR/leadgen/data" -prune -o ! -user "$DEPLOY_USER" \
     -exec chown -h "$DEPLOY_USER:$DEPLOY_USER" {} +
+# docker compose build (as the deploy user) must be able to list leadgen/data, or BuildKit stops with
+# "open leadgen/data: permission denied". Only the directory itself changes; files inside are left as is.
+DATA_DIR="$APP_DIR/leadgen/data"
+mkdir -p "$DATA_DIR"
+chown 10001:"$DEPLOY_USER" "$DATA_DIR"
+chmod 0750 "$DATA_DIR"
 
 chmod 0755 "$APP_DIR/deploy/leadfinder-update.sh" "$APP_DIR/deploy/leadfinder-renew.sh" \
     "$APP_DIR/deploy/leadfinder-backup.sh" "$APP_DIR/deploy/postgres/init/10-leadgen.sh"

@@ -179,7 +179,10 @@ class Runbook(unittest.TestCase):
         self.assertIn('install-auto-update.sh',after)
         self.assertIn('systemctl stop leadfinder-update.timer leadfinder-update.service',before)
         self.assertIn('systemctl is-active leadfinder-update.timer leadfinder-update.service',before)
-        self.assertIn('git -C /opt/leadfinder rev-parse HEAD > /root/leadfinder-rollback.sha',before)
+        # roll back to what is running, not to a checkout that a failed update may have moved ahead
+        self.assertIn('cp .leadfinder-deployed-sha /root/leadfinder-rollback.sha',before)
+        self.assertNotIn('rev-parse HEAD > /root/leadfinder-rollback.sha',text)
+        self.assertIn('ls -ld leadgen/data',after)
         self.assertIn('LEADGEN_MIGRATE_STATEMENT_TIMEOUT=2h',before)
         self.assertEqual(before.count('vacuumdb -U postgres -d leadgen --analyze-in-stages'),2)   # after restore and after migrations
         self.assertIn('exec db pg_restore -U leadgen -d leadgen --no-owner --no-privileges --single-transaction --exit-on-error /backups/',before)
@@ -271,3 +274,48 @@ class Units(unittest.TestCase):
         self.assertIn('usermod -aG docker "$DEPLOY_USER"',text)
         self.assertIn('-path "$APP_DIR/leadgen/data" -prune',text)
         self.assertEqual(subprocess.run(['sh','-n','deploy/install-auto-update.sh']).returncode,0)
+
+    def test_installer_lets_the_deploy_group_list_container_data(self):
+        text=Path('deploy/install-auto-update.sh').read_text()
+        self.assertIn('DATA_DIR="$APP_DIR/leadgen/data"',text)
+        steps=['mkdir -p "$DATA_DIR"','chown 10001:"$DEPLOY_USER" "$DATA_DIR"','chmod 0750 "$DATA_DIR"']
+        positions=[text.index(step) for step in steps]
+        self.assertEqual(positions,sorted(positions))
+        self.assertGreater(positions[0],text.index('-prune -o ! -user'))     # after the checkout chown, which skips data
+        for line in text.splitlines():                                     # the directory only, never the session inside
+            if 'DATA_DIR' in line:
+                self.assertNotRegex(line,r'(chown|chmod|chgrp) -R|find ')
+
+
+DOCKERIGNORE_GLOB=re.compile(r'[*?\[\\]')
+
+
+def dockerignore():
+    return [line for line in Path('.dockerignore').read_text().splitlines() if line and not line.startswith('#')]
+
+
+class BuildContext(unittest.TestCase):
+    def test_exceptions_are_plain_paths_so_buildkit_skips_container_data(self):
+        # BuildKit (fsutil) skips excluded directories only while no "!" pattern has a glob before a trailing /**.
+        # One such pattern makes `docker compose build` open leadgen/data and fail as leadfinder-deploy.
+        for pattern in dockerignore():
+            if pattern.startswith('!'):
+                self.assertNotRegex(pattern[1:].removesuffix('/**'),DOCKERIGNORE_GLOB,pattern)
+        self.assertEqual(dockerignore()[0],'*')
+        self.assertEqual(dockerignore()[-1],'leadgen/data')
+
+    def test_every_module_is_listed_and_nothing_else_from_leadgen_root(self):
+        listed={p[1:] for p in dockerignore() if re.fullmatch(r'!leadgen/[^/]+\.py',p)}
+        self.assertEqual(listed,{p.as_posix() for p in Path('leadgen').glob('*.py')})
+        for pattern in dockerignore():
+            if pattern.startswith('!leadgen/'):
+                self.assertTrue(pattern in {'!leadgen/'+name for name in ('sources.json','web_templates/**','web_static/**')}
+                                or pattern[1:] in listed,pattern)
+
+    def test_dockerfile_sources_are_in_the_context(self):
+        patterns=dockerignore()
+        for source in ('requirements.txt','leadgen/sources.json'):
+            self.assertIn('!'+source,patterns)
+        for directory in ('leadgen/web_templates','leadgen/web_static','supabase/migrations'):
+            self.assertIn('!'+directory+'/**',patterns)
+        self.assertIn('COPY leadgen/*.py leadgen/',Path('Dockerfile').read_text())
