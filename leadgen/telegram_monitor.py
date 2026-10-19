@@ -715,8 +715,20 @@ class ReaderThread:
 
 # --- Status -------------------------------------------------------------------------------
 
-def reader_status(db, now=None):
-    """Heartbeat of the shared reader plus registry facts, for `status` and the admin page."""
+def source_counts(db, now):
+    """(sources with messages in the last 24 h, sources joined by the service account): two registry scans."""
+    cutoff = (now-timedelta(hours=24)).isoformat()
+    realtime = db.execute('SELECT count(*) AS total FROM telegram_sources WHERE check_reason=? AND last_message_at>=?',
+                          (REALTIME_REASON, cutoff)).fetchone()['total']
+    joined = db.execute('SELECT count(*) AS total FROM telegram_sources WHERE selection_group=? OR metadata LIKE ?',
+                        (JOINED, '%"joined": true%')).fetchone()['total']
+    return realtime, joined
+
+
+def reader_status(db, now=None, counts=source_counts):
+    """Heartbeat of the shared reader plus registry facts, for `status` and the admin page.
+
+    counts(db, now) gives the registry facts; the admin page passes a cached version."""
     now = now or datetime.now(UTC)
     row = db.execute('SELECT value FROM settings WHERE key=?', (HEARTBEAT_KEY,)).fetchone()
     try:
@@ -728,11 +740,7 @@ def reader_status(db, now=None):
         age = max(0, int((now-datetime.fromisoformat(beat['at'])).total_seconds())) if beat.get('at') else None
     except (TypeError, ValueError):
         pass
-    cutoff = (now-timedelta(hours=24)).isoformat()
-    realtime = db.execute('SELECT count(*) AS total FROM telegram_sources WHERE check_reason=? AND last_message_at>=?',
-                          (REALTIME_REASON, cutoff)).fetchone()['total']
-    joined = db.execute('SELECT count(*) AS total FROM telegram_sources WHERE selection_group=? OR metadata LIKE ?',
-                        (JOINED, '%"joined": true%')).fetchone()['total']
+    realtime, joined = counts(db, now)
     state = beat.get('state') or 'never_started'
     if age is not None and age > HEARTBEAT_STALE_SECONDS:
         state = 'stale'  # the bot process or its reader thread is gone

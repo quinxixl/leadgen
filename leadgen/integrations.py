@@ -81,6 +81,10 @@ def send_webhook(url,body,headers,resolver=socket.getaddrinfo):
 
 def enqueue_lead_event(db,owner_user_id,lead_id,event_type='lead.updated'):
     if not integrations_enabled():return 0
+    # Most workspaces have no webhooks: one indexed lookup first, the lead snapshot only when someone listens.
+    hooks=db.execute('''SELECT h.id FROM webhooks h JOIN workspaces w ON w.id=h.workspace_id
+        WHERE w.owner_user_id=? AND h.active=true''',(owner_user_id,)).fetchall()
+    if not hooks:return 0
     row=db.execute('''SELECT w.id AS workspace_id,l.payload,ul.pipeline_status,ul.deal_amount,
         f.label AS feedback,a.assignee_user_id,
         coalesce((SELECT jsonb_agg(t.tag ORDER BY t.tag) FROM lead_tags t
@@ -103,7 +107,6 @@ def enqueue_lead_event(db,owner_user_id,lead_id,event_type='lead.updated'):
         'feedback':row['feedback'],'tags':row['tags'],'assignee_user_id':row['assignee_user_id'],
         'last_activity':row['last_activity']}}
     suffix=str(lead_id) if event_type=='lead.created' else str(lead_id)+':'+secrets.token_hex(8)
-    hooks=db.execute('SELECT id FROM webhooks WHERE workspace_id=? AND active=true',(row['workspace_id'],)).fetchall()
     for hook in hooks:
         db.execute('''INSERT INTO webhook_outbox(webhook_id,event_type,event_key,payload)
             VALUES(?,?,?,?::jsonb) ON CONFLICT(webhook_id,event_key) DO NOTHING''',

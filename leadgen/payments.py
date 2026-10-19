@@ -440,6 +440,8 @@ def refresh(db, client, payment_id, owner_id, now=None, check=True):
     row = db.execute('SELECT * FROM payments WHERE id=? AND user_id=?', (payment_id, owner_id)).fetchone()
     result = None
     if check and row and row['status'] == 'pending' and row['yookassa_payment_id']:
+        # The API call can take seconds: end the read transaction first so the connection is not left idle in it.
+        db.release()
         result = process_payment(db, client.get_payment(row['yookassa_payment_id']), now)
         row = db.execute('SELECT * FROM payments WHERE id=?', (payment_id,)).fetchone()
     return row, result

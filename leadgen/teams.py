@@ -24,11 +24,19 @@ def ensure_workspace(db, user):
     return workspace['id']
 
 
-def load_workspace(db, user, selected=None):
-    ensure_workspace(db, user)
-    rows = db.execute('''SELECT w.id,w.name,w.owner_user_id,m.role
+def member_workspaces(db, user_id):
+    return db.execute('''SELECT w.id,w.name,w.owner_user_id,m.role
         FROM workspace_members m JOIN workspaces w ON w.id=m.workspace_id
-        WHERE m.user_id=? ORDER BY (m.role='owner') DESC,w.name''', (user['id'],)).fetchall()
+        WHERE m.user_id=? ORDER BY (m.role='owner') DESC,w.name''', (user_id,)).fetchall()
+
+
+def load_workspace(db, user, selected=None):
+    """The user's workspaces and the selected one. The user's own workspace is created (a write) only
+    when it is missing, not on every request."""
+    rows = member_workspaces(db, user['id'])
+    if not any(row['owner_user_id'] == user['id'] and row['role'] == 'owner' for row in rows):
+        ensure_workspace(db, user)
+        rows = member_workspaces(db, user['id'])
     chosen = next((row for row in rows if str(row['id']) == str(selected)), rows[0])
     return rows, chosen
 
