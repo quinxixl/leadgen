@@ -485,6 +485,91 @@ class WebPostgres(unittest.TestCase):
         self.client.post('/app/telegram/password',data={'csrf':'test-csrf','password':'correct'})
         self.assertEqual(self.db.execute('SELECT status FROM telegram_connections WHERE user_id=?',(self.u,)).fetchone()['status'],'active')
 
+    def _link_telegram_account(self,user_id,status,session='other-session'):
+        cipher=SessionCipher(self.app.config['TELEGRAM_CIPHER_KEY'])
+        with self.db:
+            self.db.execute('''INSERT INTO telegram_connections(user_id,telegram_user_id,display_name,session_cipher,status)
+                VALUES(?,9001,'Чужой',?,?)''',(user_id,cipher.encrypt({'session':session}) if session else '',status))
+            self.db.execute('''INSERT INTO user_telegram_dialogs(user_id,peer_id,title,kind,enabled)
+                VALUES(?,-10009,'Чат','supergroup',true)''',(user_id,))
+
+    def _connect_by_code(self,gateway):
+        from leadgen import telegram_accounts as ta
+        cipher=SessionCipher(self.app.config['TELEGRAM_CIPHER_KEY'])
+        ta.begin_connection(self.db,self.u,'+79991234567',cipher,gateway)
+        return ta.verify_code(self.db,self.u,'1111',cipher,gateway)
+
+    class LoggingOutGateway(FakeTelegramGateway):
+        def __init__(self):self.logged_out=[]
+        def logout(self,session):
+            self.logged_out.append(session);return True
+
+    def _assert_new_session_dropped(self,gateway,session):
+        self.assertEqual(gateway.logged_out,[session])
+        self.assertFalse(self.db.execute('SELECT 1 FROM telegram_connection_auth WHERE user_id=?',(self.u,)).fetchone())
+        mine=self.db.execute('SELECT status,telegram_user_id,session_cipher FROM telegram_connections WHERE user_id=?',(self.u,)).fetchone()
+        self.assertEqual((mine['status'],mine['telegram_user_id'],mine['session_cipher']),('pending',None,''))
+        other=self.db.execute('SELECT status,telegram_user_id FROM telegram_connections WHERE user_id=?',(self.other,)).fetchone()
+        self.assertEqual((other['status'],other['telegram_user_id']),('active',9001))
+
+    def test_telegram_account_active_on_another_user_is_not_taken_over(self):
+        from leadgen.telegram_accounts import ACCOUNT_LINKED_ELSEWHERE,TelegramAccountError
+        self._link_telegram_account(self.other,'active')
+        gateway=self.LoggingOutGateway()
+        with self.assertRaises(TelegramAccountError) as caught:self._connect_by_code(gateway)
+        self.assertEqual(str(caught.exception),ACCOUNT_LINKED_ELSEWHERE)
+        self._assert_new_session_dropped(gateway,'active-session')
+        self.assertTrue(self.db.execute('SELECT enabled FROM user_telegram_dialogs WHERE user_id=?',(self.other,)).fetchone()['enabled'])
+
+    def test_qr_scan_of_account_linked_elsewhere_returns_a_message_not_500(self):
+        self._link_telegram_account(self.other,'active')
+        self.client.post('/app/telegram/qr/start',data={'csrf':'test-csrf'})
+        response=self.client.post('/app/telegram/qr/wait',data={'csrf':'test-csrf'})
+        self.assertEqual(response.status_code,409)
+        self.assertEqual(response.json['status'],'error')
+        self.assertIn('уже подключён к другому аккаунту Сигналида',response.json['message'])
+        self.assertFalse(self.db.execute('SELECT 1 FROM telegram_connection_auth WHERE user_id=?',(self.u,)).fetchone())
+
+    def test_stale_link_on_another_user_is_reassigned(self):
+        for status,session in (('revoked',''),('error','dead-session')):
+            with self.subTest(status=status):
+                with self.db:self.db.execute('DELETE FROM telegram_connections')
+                self._link_telegram_account(self.other,status,session)
+                gateway=self.LoggingOutGateway()
+                self.assertEqual(self._connect_by_code(gateway),('active',2))
+                self.assertEqual(gateway.logged_out,[])
+                mine=self.db.execute('SELECT status,telegram_user_id FROM telegram_connections WHERE user_id=?',(self.u,)).fetchone()
+                self.assertEqual((mine['status'],mine['telegram_user_id']),('active',9001))
+                other=self.db.execute('SELECT status,telegram_user_id,session_cipher FROM telegram_connections WHERE user_id=?',(self.other,)).fetchone()
+                self.assertEqual((other['status'],other['telegram_user_id'],other['session_cipher']),('revoked',None,''))
+                self.assertFalse(self.db.execute('SELECT enabled FROM user_telegram_dialogs WHERE user_id=?',(self.other,)).fetchone()['enabled'])
+
+    def test_same_user_reconnects_the_same_telegram_account(self):
+        self._link_telegram_account(self.u,'active')
+        gateway=self.LoggingOutGateway()
+        self.assertEqual(self._connect_by_code(gateway),('active',2))
+        mine=self.db.execute('SELECT status,telegram_user_id,session_cipher FROM telegram_connections WHERE user_id=?',(self.u,)).fetchone()
+        self.assertEqual((mine['status'],mine['telegram_user_id']),('active',9001))
+        cipher=SessionCipher(self.app.config['TELEGRAM_CIPHER_KEY'])
+        self.assertEqual(cipher.decrypt(mine['session_cipher'])['session'],'active-session')
+        self.assertEqual(gateway.logged_out,[])
+
+    def test_concurrent_connection_of_the_same_account_gets_a_friendly_error(self):
+        from leadgen import telegram_accounts as ta
+        claim=ta._claim_telegram_user
+        def lose_the_race(db,user_id,telegram_user_id):
+            claim(db,user_id,telegram_user_id)  # nothing to see yet ...
+            rival=db_open(DSN)  # ... while another user's scan commits first
+            try:
+                with rival:rival.execute('''INSERT INTO telegram_connections(user_id,telegram_user_id,session_cipher,status)
+                    VALUES(?,9001,'x','active')''',(self.other,))
+            finally:rival.close()
+        gateway=self.LoggingOutGateway()
+        with patch.object(ta,'_claim_telegram_user',lose_the_race):
+            with self.assertRaises(ta.TelegramAccountError) as caught:self._connect_by_code(gateway)
+        self.assertEqual(str(caught.exception),ta.ACCOUNT_LINKED_ELSEWHERE)
+        self._assert_new_session_dropped(gateway,'active-session')
+
     def test_personal_telegram_qr_connection(self):
         response=self.client.post('/app/telegram/qr/start',data={'csrf':'test-csrf'})
         self.assertEqual(response.status_code,302)
