@@ -7,6 +7,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    # Caps the bot so a leak cannot push the database out of RAM (4 GB host, no swap); check with docker stats.
+    mem_limit: 768m
     volumes:
       - ./leadgen/data:/app/leadgen/data
       - ./leadgen/sources.json:/app/leadgen/sources.json:ro
@@ -28,11 +30,13 @@ services:
 
   # Self-hosted Postgres for both stacks (compose.yaml alone and with compose.web.yaml).
   # Not published to the host: reachable only as db:5432 on the compose network.
-  # Admin: docker compose exec db psql -U postgres -d leadgen. Init (first start of an empty volume):
-  # deploy/postgres/init creates the app role, Supabase roles anon/authenticated and schema extensions.
+  # Admin: docker compose exec db psql -U postgres -d leadgen (local socket). Init (first start of an empty
+  # volume): deploy/postgres/init creates the app role, Supabase roles anon/authenticated and schema extensions.
+  # The updater starts it with `up --no-recreate`: a config change here is applied by hand (DEPLOY.md, §16).
   db:
-    # Exact pin; the major must match pg_dump/pg_restore used in DEPLOY.md and backups.
-    image: postgres:17.11-bookworm
+    # Tag and digest pinned. The major must match pg_dump/pg_restore in DEPLOY.md (PGIMG there).
+    # Minor updates are manual: new tag + digest here and in DEPLOY.md, then recreate db (DEPLOY.md, §16).
+    image: postgres:17.11-bookworm@sha256:3645570cccdfa447589da9f57dd740faa29b30938e861289a5574b6ca6b03826
     restart: unless-stopped
     # POSTGRES_PASSWORD (superuser), LEADGEN_DB_USER, LEADGEN_DB_PASSWORD. Kept out of .env so the app
     # containers never see the superuser password; the app gets only its own role in DATABASE_URL.
@@ -40,7 +44,8 @@ services:
     environment:
       POSTGRES_USER: postgres
       POSTGRES_DB: leadgen
-    # Sized for a 4 GB host without swap that also runs the bot and the web app.
+    # Sized for a 4 GB host without swap that also runs the bot and the web app. Timeouts for the app are set
+    # on its role (init script), not server-wide, so pg_dump/pg_restore/vacuum as postgres are not cut off.
     command:
       - postgres
       - -c
@@ -64,15 +69,22 @@ services:
       - -c
       - effective_io_concurrency=200
       - -c
-      - idle_in_transaction_session_timeout=15min
-      - -c
       - shared_preload_libraries=pg_stat_statements
       - -c
       - pg_stat_statements.track=top
       - -c
+      - pg_stat_statements.track_utility=off
+      - -c
       - log_min_duration_statement=1000
       - -c
       - log_lock_waits=on
+      # Slow-query and error log lines must not carry bound values (tokens, phones, message text).
+      - -c
+      - log_parameter_max_length=0
+      - -c
+      - log_parameter_max_length_on_error=0
+    # The kernel OOM killer picks the app containers before the database.
+    oom_score_adj: -800
     # Parallel query workers use /dev/shm; Docker's default 64 MB is too small.
     shm_size: 256mb
     # Time for a clean shutdown checkpoint instead of SIGKILL and crash recovery.
@@ -80,6 +92,8 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./deploy/postgres/init:/docker-entrypoint-initdb.d:ro
+      # Dumps to restore are read from here (pg_restore ... /backups/<file>), not piped through stdin.
+      - ./backups:/backups:ro
     # TCP check: during first-start init the server listens on the socket only, so the app waits for the real start.
     healthcheck:
       test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "postgres", "-d", "leadgen"]
