@@ -476,8 +476,62 @@ def wait_qr_connection(db, user_id, cipher, gateway):
     return 'active', _finish(db, user_id, result, cipher, gateway)
 
 
-def _finish(db, user_id, result, cipher, gateway):
+ACCOUNT_LINKED_ELSEWHERE = ('Этот Telegram-аккаунт уже подключён к другому аккаунту Сигналида. '
+                           'Отключите его там или войдите в тот аккаунт.')
+TELEGRAM_USER_UNIQUE = 'telegram_connections_telegram_user_id_key'
+
+
+class TelegramAccountTaken(TelegramAccountError):
+    """The Telegram account is live on another app user: the new session must not be kept."""
+
+
+def _live_elsewhere(row):
+    """An active connection, or one being reconnected that still holds its session, belongs to its user.
+
+    'error' (session revoked by Telegram) and 'revoked' (disconnected) rows are stale: the account is free."""
+    return row['status'] == 'active' or (row['status'] == 'pending' and bool(row['session_cipher']))
+
+
+def _is_telegram_user_conflict(exc):
+    """A concurrent connection of the same Telegram account won the UNIQUE(telegram_user_id) race."""
+    if getattr(exc, 'sqlstate', None) != '23505':
+        return False
+    constraint = getattr(getattr(exc, 'diag', None), 'constraint_name', None) or ''
+    return constraint == TELEGRAM_USER_UNIQUE or TELEGRAM_USER_UNIQUE in str(exc)
+
+
+def _claim_telegram_user(db, user_id, telegram_user_id):
+    """Inside the write transaction: refuse a live link of this Telegram account to another user,
+    detach a stale one so the UNIQUE(telegram_user_id) insert can proceed."""
+    lock = ' FOR UPDATE' if getattr(db, 'backend', 'postgres') == 'postgres' else ''
+    other = db.execute('SELECT user_id,status,session_cipher FROM telegram_connections '
+                       'WHERE telegram_user_id=? AND user_id<>?' + lock, (telegram_user_id, user_id)).fetchone()
+    if not other:
+        return
+    if _live_elsewhere(other):
+        raise TelegramAccountTaken(ACCOUNT_LINKED_ELSEWHERE)
+    db.execute("""UPDATE telegram_connections SET telegram_user_id=NULL,session_cipher='',status='revoked',
+        last_error='Telegram-аккаунт подключён к другому аккаунту Сигналида.',updated_at=now()
+        WHERE user_id=?""", (other['user_id'],))
+    db.execute('UPDATE user_telegram_dialogs SET enabled=false,updated_at=now() WHERE user_id=?', (other['user_id'],))
+
+
+def _reject_taken_account(db, user_id, session_string, gateway):
+    """Forget the half-finished flow and end the just-authorized Telegram session: it is never stored."""
     with db:
+        db.execute('DELETE FROM telegram_connection_auth WHERE user_id=?', (user_id,))
+        db.execute('UPDATE telegram_connections SET last_error=?,updated_at=now() WHERE user_id=?',
+                   (ACCOUNT_LINKED_ELSEWHERE, user_id))
+    try:
+        gateway.logout(session_string)
+    except Exception as exc:
+        _log(f'Telegram-подключение {user_id}: новая сессия не завершена ({type(exc).__name__}).')
+    raise TelegramAccountError(ACCOUNT_LINKED_ELSEWHERE)
+
+
+def _store_connection(db, user_id, result, cipher):
+    with db:
+        _claim_telegram_user(db, user_id, result['telegram_user_id'])
         db.execute('''INSERT INTO telegram_connections
             (user_id,telegram_user_id,display_name,session_cipher,status,last_connected_at,updated_at)
             VALUES(?,?,?,?,'active',now(),now()) ON CONFLICT(user_id) DO UPDATE SET
@@ -485,6 +539,18 @@ def _finish(db, user_id, result, cipher, gateway):
             session_cipher=excluded.session_cipher,status='active',last_connected_at=now(),last_error='',updated_at=now()''',
             (user_id, result['telegram_user_id'], result['display_name'], cipher.encrypt({'session': result['session']})))
         db.execute('DELETE FROM telegram_connection_auth WHERE user_id=?', (user_id,))
+
+
+def _finish(db, user_id, result, cipher, gateway):
+    try:
+        _store_connection(db, user_id, result, cipher)
+    except TelegramAccountTaken:
+        _reject_taken_account(db, user_id, result['session'], gateway)
+    except Exception as exc:
+        # `with db` already rolled back; only the UNIQUE(telegram_user_id) race is a user-facing case.
+        if not _is_telegram_user_conflict(exc):
+            raise
+        _reject_taken_account(db, user_id, result['session'], gateway)
     try:
         dialogs = gateway.dialogs(result['session'])
     except Exception as exc:
