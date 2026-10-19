@@ -129,7 +129,9 @@ curl -fsS http://127.0.0.1:8000/healthz
 
 Для production-домена `signalid.ru` направьте A-записи `@` и `www` на выделенный
 публичный IP сервера. Готовая конфигурация Nginx находится в
-`deploy/nginx/signalid.ru.conf`; установите её командами:
+`deploy/nginx/signalid.ru.conf` (HTTPS, HTTP/2, gzip, статика без gunicorn, лимиты на вход и API).
+Она ссылается на сертификат certbot, поэтому сначала выпустите его
+(`sudo certbot certonly --nginx -d signalid.ru -d www.signalid.ru`), затем установите файл:
 
 ```sh
 sudo install -m 0644 deploy/nginx/signalid.ru.conf /etc/nginx/sites-available/leadfinder
@@ -137,6 +139,8 @@ sudo ln -sf /etc/nginx/sites-available/leadfinder /etc/nginx/sites-enabled/leadf
 sudo nginx -t
 sudo systemctl reload nginx
 ```
+
+Обновление уже работающего сервера, проверка и откат — в `DEPLOY.md`, раздел 17.
 
 Для другого домена замените `server_name` в копии конфигурации. Эквивалентный пример прокси Nginx:
 

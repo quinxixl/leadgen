@@ -319,3 +319,88 @@ class BuildContext(unittest.TestCase):
         for directory in ('leadgen/web_templates','leadgen/web_static','supabase/migrations'):
             self.assertIn('!'+directory+'/**',patterns)
         self.assertIn('COPY leadgen/*.py leadgen/',Path('Dockerfile').read_text())
+
+
+def nginx_site():
+    """The site config with comments stripped, so directives mentioned in comments do not count."""
+    text=Path('deploy/nginx/signalid.ru.conf').read_text()
+    return '\n'.join(line.split('#',1)[0].rstrip() for line in text.splitlines())
+
+
+def nginx_block(config,header):
+    """The `header { ... }` block, braces balanced."""
+    start=config.index(header+' {')
+    depth=0
+    for index in range(start,len(config)):
+        depth+={'{':1,'}':-1}.get(config[index],0)
+        if config[index]=='}' and depth==0:return config[start:index+1]
+    raise AssertionError(header)
+
+
+class Nginx(unittest.TestCase):
+    def test_https_http2_and_certbot_files(self):
+        config=nginx_site()
+        self.assertIn('listen 443 ssl http2;',config)
+        self.assertIn('listen [::]:443 ssl http2 ipv6only=on;',config)
+        self.assertNotIn('http2 on;',config)            # nginx 1.25.1+; the server runs 1.24
+        for line in ('ssl_certificate /etc/letsencrypt/live/signalid.ru/fullchain.pem;',
+                     'ssl_certificate_key /etc/letsencrypt/live/signalid.ru/privkey.pem;',
+                     'include /etc/letsencrypt/options-ssl-nginx.conf;',
+                     'ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;'):
+            self.assertIn(line,config)
+        # certbot's options-ssl-nginx.conf sets these; repeating one makes `nginx -t` fail.
+        # Let's Encrypt has no OCSP any more, so no stapling either.
+        for directive in ('ssl_session_cache','ssl_session_timeout','ssl_session_tickets','ssl_protocols','ssl_stapling'):
+            self.assertNotRegex(config,rf'(?m)^\s*{directive}\b')
+
+    def test_plain_http_redirects_both_names(self):
+        config=nginx_site()
+        redirect=nginx_block(config,'server')
+        self.assertIn('listen 80;',redirect)
+        self.assertIn('server_name signalid.ru www.signalid.ru;',redirect)
+        self.assertIn('return 301 https://$host$request_uri;',redirect)
+        self.assertNotIn('default_server',config)
+
+    def test_gzip_and_rate_limits(self):
+        config=nginx_site()
+        for line in ('gzip on;','gzip_vary on;','gzip_proxied any;','server_tokens off;','client_max_body_size 2m;',
+                     'proxy_read_timeout 60s;','limit_req_status 429;',
+                     'limit_req_zone $binary_remote_addr zone=signalid_login:10m rate=10r/m;',
+                     'limit_req_zone $binary_remote_addr zone=signalid_api:10m rate=60r/m;'):
+            self.assertIn(line,config)
+        for mime in ('text/css','application/javascript','image/svg+xml','application/json'):
+            self.assertRegex(config,rf'gzip_types[^;]*{re.escape(mime)}')
+        for location in ('location = /login','location = /tg/auth','location ~ ^/app/telegram/(connect|code|resend|password)$'):
+            self.assertIn('limit_req zone=signalid_login',nginx_block(config,location))
+        self.assertIn('limit_req zone=signalid_api',nginx_block(config,'location /api/'))
+        self.assertNotIn('limit_req',nginx_block(config,'location /'))
+
+    def test_proxy_sets_forwarded_host_and_keeps_upstream_connections(self):
+        config=nginx_site()
+        self.assertIn('proxy_set_header X-Forwarded-Host $host;',config)   # ProxyFix(x_host=1) trusts it
+        self.assertNotIn('$http_x_forwarded_host',config)
+        self.assertIn('proxy_set_header Connection "";',config)
+        upstream=nginx_block(config,'upstream signalid_app')
+        self.assertIn('server 127.0.0.1:8000;',upstream)
+        self.assertIn('keepalive 16;',upstream)
+        self.assertEqual(set(re.findall(r'proxy_pass (\S+);',config)),{'http://signalid_app'})
+
+    def test_static_is_served_by_nginx_with_versioned_cache(self):
+        config=nginx_site()
+        static=nginx_block(config,'location /web_static/')
+        self.assertIn('root /opt/leadfinder/leadgen;',static)
+        self.assertIn('try_files $uri =404;',static)
+        self.assertIn('access_log off;',static)
+        self.assertIn('add_header Cache-Control $static_cache_control;',static)
+        self.assertIn('add_header X-Content-Type-Options nosniff always;',static)
+        cache=nginx_block(config,'map $arg_v $static_cache_control')
+        self.assertIn('default "public, max-age=31536000, immutable";',cache)
+        self.assertRegex(cache,r'""\s+"public, max-age=3600";')
+        # The URL prefix and directory must be what Flask serves.
+        self.assertIn("static_folder='web_static'",Path('leadgen/web.py').read_text())
+        self.assertTrue(Path('leadgen/web_static/app.css').is_file())
+        favicon=nginx_block(config,'location = /favicon.ico')
+        self.assertIn('root /opt/leadfinder/leadgen/web_static;',favicon)
+        self.assertIn('try_files /favicon.ico @app;',favicon)
+        self.assertIn('max-age=86400',favicon)
+        self.assertTrue(Path('leadgen/web_static/favicon.ico').is_file())
