@@ -66,6 +66,64 @@ class Filters(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(budget(text)[0],expected)
 
+    def test_budget_spelled_out_units_and_labelled_numbers(self):
+        for text,expected in [('30 тысяч рублей',30000),('30 т.р.',30000),('150 т.р.',150000),('40 тр',40000),
+                              ('бюджет 40 тысяч',40000),('30к',30000),('30 000 ₽',30000),('20–40 тыс',20000),
+                              ('Бюджет 10 000',10000),('Оплата: 15000',15000)]:
+            with self.subTest(text=text):
+                self.assertEqual(budget(text)[0],expected)
+        # A bare number is an amount only right after a budget word, and never a year.
+        for text in ['1500 за ролик','бюджет 2026 год','10 000 подписчиков']:
+            with self.subTest(text=text):
+                self.assertIsNone(budget(text)[0])
+
+    def test_client_wording_is_not_mistaken_for_an_offer_or_an_ad(self):
+        for text in ['Мы делаем мебель на заказ, нужен сайт-каталог. Бюджет 60 000 ₽',
+                     'Сделаем предоплату 50%. Нужен сайт для автосервиса, бюджет 40 000 ₽',
+                     'Нужен бот для розыгрыша в Telegram-канале, бюджет 10 000',
+                     'Помогите сделать лендинг на Тильде для курса по английскому, бюджет 20 000 ₽',
+                     'Нужен бот, который будет парсить вакансии с hh, 15 000 ₽',
+                     'Нужен разработчик в команду проекта на 2 недели: доделать бота, 40 000 ₽ за проект']:
+            with self.subTest(text=text):
+                self.assertEqual(classify(lead(title=text,text=text,budget_text=text))[0],'ready')
+
+    def test_freelancer_self_ads_and_vacancies_are_rejected(self):
+        cases={'Принимаю заказы на разработку Telegram-ботов, пишите в личку':'предложение услуг другого подрядчика',
+               'Ищу заказчиков! Создаю лендинги. Цены от 10к':'предложение услуг другого подрядчика',
+               '#резюме Python-разработчик, ищу проекты':'предложение услуг другого подрядчика',
+               'Беру в работу проекты по настройке amoCRM':'предложение услуг другого подрядчика',
+               'Нужна реклама? Настрою Яндекс Директ под ключ, от 10 000 ₽':'предложение услуг другого подрядчика',
+               'Разработка Telegram ботов. Цены от 5 000 ₽. Пишите в ЛС':'предложение услуг другого подрядчика',
+               'Ищем в команду frontend-разработчика на React. ЗП от 150 000 ₽':'вакансия',
+               'В стартап нужен backend-разработчик на Python, частичная занятость':'вакансия',
+               'Ребята, кто чем пользуется для CRM, amoCRM или Битрикс24?':'обсуждение, а не заказ'}
+        for text,reason in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(classify(lead(title=text,text=text,budget_text=text))[:2],('rejected',reason))
+
+    def test_legal_entity_wording_is_not_a_legal_service(self):
+        from leadgen.core import topics
+        self.assertEqual(topics('Нужен сайт, оплата на юр. лицо'),['Сайты'])
+        self.assertEqual(topics('Нужен сайт для юридической компании'),['Сайты'])
+        self.assertEqual(topics('Ищу юриста проверить договор'),['Юридические услуги'])
+
+    def test_stack_names_map_to_services(self):
+        from leadgen.core import topics
+        for text,name in [('Нужен Django разработчик','Программирование и ПО'),('Доделать фронт на Vue','Программирование и ПО'),
+                          ('Интернет-магазин на Bitrix','Сайты'),('Настроить ИИ-агента','Нейросети и AI'),
+                          ('Спарсить цены Ozon','Автоматизации'),('Интеграция с МойСклад','CRM'),('Вёрстка email-рассылки','Email-маркетинг')]:
+            with self.subTest(text=text):
+                self.assertIn(name,topics(text))
+        self.assertNotIn('Программирование и ПО',topics('Нужен community manager'))
+        self.assertEqual(topics('Нужен битрикс24'),['CRM'])
+
+    def test_fingerprint_ignores_repost_decorations(self):
+        from leadgen.core import fingerprint
+        first=lead(text='Нужен сайт для кофейни! Бюджет 30 000 ₽ 🔥 #заказ https://t.me/chat/1',budget_text='')
+        second=lead(text='нужен   сайт для кофейни, бюджет 30 000 ₽. @poster #сайты',budget_text='')
+        self.assertEqual(fingerprint(first),fingerprint(second))
+        self.assertNotEqual(fingerprint(first),fingerprint(lead(text='Нужен сайт для кофейни! Бюджет 50 000 ₽',budget_text='')))
+
     def test_ambiguous_budget(self):
         for text in ['до 10000 ₽','10000 ₽/месяц','5000 рублей в час','7000 $','договорная','срок 5000 дней','2000 ₽ + 10000 ₽','20 000–5 000 ₽']:
             with self.subTest(text=text):
@@ -256,6 +314,13 @@ class Delivery(unittest.TestCase):
             ingest(self.db,lead(),CONFIG)
             ingest(self.db,lead(source='second',url='https://example.org/2'),CONFIG)
         self.assertEqual(self.db.execute("SELECT count(*) FROM leads WHERE status='ready'").fetchone()[0],1)
+
+    def test_decorated_repost_is_a_duplicate(self):
+        with self.db:
+            ingest(self.db,lead(text='Нужно создать бота для записи клиентов 🔥 #заказ'),CONFIG)
+            ingest(self.db,lead(source='second',url='https://example.org/2',text='нужно создать бота для записи клиентов! @owner'),CONFIG)
+        statuses=[row[0] for row in self.db.execute('SELECT status FROM leads ORDER BY url')]
+        self.assertEqual(statuses,['ready','duplicate'])
 
     def test_send_once_after_rescan(self):
         calls=[]

@@ -18,7 +18,7 @@ import urllib.request
 
 from .ai_offers import GROQ_URL
 from .ai_prompts import active_prompt, model_caps, paused
-from .core import TOPICS, classify, load_lead, normalize, possible_need_topics, topics
+from .core import TOPICS, classify, load_lead, normalize, possible_need_topics, strong_order_signal, topics
 
 DEFAULT_SCORING_MODEL='openai/gpt-oss-20b'
 CATEGORIES=('service_request','ad','job','spam','other')
@@ -113,6 +113,9 @@ def prefilter(lead):
     if len(normalize(lead_text(lead)))<20:return {'category':'other','error':'слишком короткий текст'}
     state,reason,_=classify(lead,0,10**7)
     if state!='rejected':return None
+    # No keyword service matched, yet the client explicitly asks and names a project budget: the LLM may still
+    # find one of the services (its topics replace the keyword ones at delivery).
+    if reason=='другая услуга' and strong_order_signal(lead):return None
     if reason=='вакансия':category='job'
     elif reason in ('предложение услуг другого подрядчика','самореклама или обучение'):category='ad'
     else:category='other'
