@@ -11,3 +11,5 @@ outputs/
 supabase/.temp/
 .leadfinder-deployed-sha
 .claude/worktrees/
+.env.db
+backups/

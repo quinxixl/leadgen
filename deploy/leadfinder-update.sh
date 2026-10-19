@@ -20,6 +20,8 @@ else
     set -- -f compose.yaml
 fi
 docker compose "$@" build --pull
+# `run --no-deps` below does not start dependencies: bring the database up and healthy first.
+docker compose "$@" up -d --wait --wait-timeout 120 db
 if [ -f leadgen/web_migrate.py ]; then
     docker compose "$@" run --rm --no-deps leadfinder python -m leadgen.web_migrate
 fi
