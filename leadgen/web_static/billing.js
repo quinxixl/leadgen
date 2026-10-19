@@ -8,7 +8,8 @@
   var tg=sdk&&sdk.initData?sdk:null;
   var reduce=window.matchMedia?window.matchMedia('(prefers-reduced-motion: reduce)'):{matches:false};
   var EMAIL=/^[^@\s]+@[^@\s]+\.[^@\s]+$/;
-  var POLL_EVERY=2000,POLL_FOR=60000;
+  // Poll delay: 2 s at first, +1 s per answer, up to 5 s (a payment usually settles in seconds).
+  var POLL_FIRST=2000,POLL_STEP=1000,POLL_MAX=5000,POLL_FOR=60000;
   var KINDS={initial:'Новая подписка',upgrade:'Переход на тариф выше',same:'Текущий тариф'};
   var OFFLINE='Нет соединения. Проверьте интернет и попробуйте ещё раз.';
   var dateFormat=null;
@@ -51,13 +52,14 @@
     if(el&&el.scrollIntoView)el.scrollIntoView({behavior:reduce.matches?'auto':'smooth',block:block||'nearest'});
   }
 
-  // Polls the return JSON every 2 s for up to 60 s; done(data) gets the final payment, or the last
-  // pending answer (or null when offline) after the timeout.
+  // Polls the return JSON with a growing delay (2 s → 5 s) for up to 60 s; done(data) gets the final payment,
+  // or the last pending answer (or null when offline) after the timeout.
   function poll(base,id,done){
-    var started=Date.now(),timer=null,stopped=false,last=null;
+    var started=Date.now(),timer=null,stopped=false,last=null,delay=POLL_FIRST;
     function again(){
       if(Date.now()-started>=POLL_FOR){done(last);return}
-      timer=setTimeout(tick,POLL_EVERY);
+      timer=setTimeout(tick,delay);
+      delay=Math.min(POLL_MAX,delay+POLL_STEP);
     }
     function tick(){
       getJSON(base+'/return?payment='+encodeURIComponent(id)).then(function(data){

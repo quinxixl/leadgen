@@ -17,6 +17,7 @@
 !leadgen/bot.py
 !leadgen/core.py
 !leadgen/crm.py
+!leadgen/dashboard.py
 !leadgen/database.py
 !leadgen/db_store.py
 !leadgen/demand.py
