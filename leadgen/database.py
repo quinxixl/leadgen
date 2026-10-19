@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 log=logging.getLogger(__name__)
-POOL_MAX_DEFAULT=2
+POOL_MAX_DEFAULT=4
 POOL_MIN_DEFAULT=1
 POOL_TIMEOUT_DEFAULT=10.0
 POOL_CLOSE_TIMEOUT=5.0

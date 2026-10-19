@@ -53,7 +53,7 @@ class FakePool:
 
 class PoolSettings(unittest.TestCase):
     def test_defaults(self):
-        self.assertEqual(pool_settings({}),{'min_size':1,'max_size':2,'timeout':10.0,'connection_kwargs':{}})
+        self.assertEqual(pool_settings({}),{'min_size':1,'max_size':4,'timeout':10.0,'connection_kwargs':{}})
 
     def test_custom_values_and_prepare_threshold(self):
         settings=pool_settings({'DB_POOL_MAX':'5','DB_POOL_MIN':'3','DB_POOL_TIMEOUT':'2.5','DB_PREPARE_THRESHOLD':'None'})
