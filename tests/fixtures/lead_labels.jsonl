@@ -1,0 +1,195 @@
+{"id": "o001", "source": "telegram", "text": "Нужен лендинг для студии маникюра на Tilda. Бюджет 25 000 ₽, срок неделя.", "expected": "order", "topics": ["Сайты"]}
+{"id": "o002", "source": "telegram", "text": "Ищу разработчика Telegram-бота для записи клиентов в барбершоп. Бюджет 30 тысяч рублей", "expected": "order", "topics": ["Боты"]}
+{"id": "o003", "source": "telegram", "text": "Требуется python-разработчик: написать парсер Авито, выгрузка в Google Sheets. Оплата 15к", "expected": "order", "topics": ["Автоматизации"]}
+{"id": "o004", "source": "telegram", "text": "Мы делаем мебель на заказ, нужен сайт-каталог с формой заявки. Бюджет 60 000 ₽", "expected": "order", "topics": ["Сайты"]}
+{"id": "o005", "source": "telegram", "text": "Нужен бот для розыгрыша в Telegram-канале, бюджет 10 000", "expected": "order", "topics": ["Боты"]}
+{"id": "o006", "source": "telegram", "text": "Нужно доработать сайт на WordPress: поправить вёрстку и ускорить загрузку. 20–40 тыс", "expected": "order", "topics": ["Сайты"]}
+{"id": "o007", "source": "telegram", "text": "Кто может сделать интернет-магазин на Bitrix? Бюджет 150 т.р.", "expected": "order", "topics": ["Сайты"]}
+{"id": "o008", "source": "telegram", "text": "Нужен чат-бот для WhatsApp, отвечать на однотипные вопросы клиентов. 40 000 ₽", "expected": "order", "topics": ["Боты"]}
+{"id": "o009", "source": "telegram", "text": "Ищем React разработчика на проект: доделать личный кабинет, оплата за проект 80к", "expected": "order", "topics": ["Программирование и ПО"]}
+{"id": "o010", "source": "telegram", "text": "Нужно настроить amoCRM и интеграцию с сайтом, бюджет 35 000 руб.", "expected": "order", "topics": ["CRM"]}
+{"id": "o011", "source": "telegram", "text": "Требуется дизайнер для логотипа кофейни, бюджет 8000 р.", "expected": "order", "topics": ["Логотипы и брендинг"]}
+{"id": "o012", "source": "telegram", "text": "Нужен монтажёр: смонтировать 10 рилс для салона красоты, 1500 за ролик", "expected": "order", "topics": ["Видеомонтаж"]}
+{"id": "o013", "source": "telegram", "text": "Сделаем предоплату 50%. Нужен сайт для автосервиса, бюджет 40 000 ₽", "expected": "order", "topics": ["Сайты"]}
+{"id": "o014", "source": "telegram", "text": "Нужна презентация для инвесторов на 15 слайдов, бюджет 12 000 ₽", "expected": "order", "topics": ["Презентации"]}
+{"id": "o015", "source": "telegram", "text": "Ищу SEO-специалиста для продвижения сайта стоматологии в Яндексе. Бюджет 30 000 ₽ за проект", "expected": "order", "topics": ["SEO"]}
+{"id": "o016", "source": "telegram", "text": "Нужен таргетолог: настроить рекламу ВКонтакте для фитнес-клуба, разово, бюджет 15 000 ₽", "expected": "order", "topics": ["Таргетированная реклама"]}
+{"id": "o017", "source": "telegram", "text": "Нужен копирайтер: написать тексты для сайта, 10 страниц, 7000 ₽", "expected": "order", "topics": ["Копирайтинг и контент"]}
+{"id": "o018", "source": "telegram", "text": "Нужно перевести документы с английского на русский, 20 страниц. Оплата 10 000 рублей", "expected": "order", "topics": ["Переводы и локализация"]}
+{"id": "o019", "source": "telegram", "text": "Ищу юриста: составить договор оказания услуг для ООО. 5 000 ₽", "expected": "order", "topics": ["Юридические услуги"]}
+{"id": "o020", "source": "telegram", "text": "Нужен бухгалтер для ИП на УСН, сдать декларацию. 6000 руб", "expected": "order", "topics": ["Бухгалтерия и налоги"]}
+{"id": "o021", "source": "telegram", "text": "Нужно сделать мобильное приложение на Flutter для доставки еды, бюджет от 300 000 ₽", "expected": "order", "topics": ["Мобильные приложения"]}
+{"id": "o022", "source": "telegram", "text": "Нужен специалист по n8n: связать форму сайта, Telegram и Google Таблицы. Бюджет 20к", "expected": "order", "topics": ["Автоматизации"]}
+{"id": "o023", "source": "telegram", "text": "Нужно внедрить ChatGPT в поддержку: бот отвечает по базе знаний. Бюджет 70 000 руб", "expected": "order", "topics": ["Нейросети и AI"]}
+{"id": "o024", "source": "telegram", "text": "Нужен дашборд в Power BI по продажам, данные из 1С. 45 000 ₽", "expected": "order", "topics": ["Аналитика данных и BI"]}
+{"id": "o025", "source": "telegram", "text": "Нужно настроить VPS и задеплоить Django проект через Docker. Бюджет 10 000 ₽", "expected": "order", "topics": ["DevOps и серверы"]}
+{"id": "o026", "source": "telegram", "text": "Срочно нужен дизайнер баннеров для маркетплейса, 10 штук, 5 000 ₽", "expected": "order", "topics": ["Графический дизайн"]}
+{"id": "o027", "source": "telegram", "text": "Нужен 3D визуализатор интерьера кухни, 3 ракурса, 9 000 ₽", "expected": "order", "topics": ["3D и визуализация"]}
+{"id": "o028", "source": "telegram", "text": "Нужна озвучка рекламного ролика, мужской голос, 2 минуты. Бюджет 5000 ₽", "expected": "order", "topics": ["Аудио и озвучка"]}
+{"id": "o029", "source": "telegram", "text": "Ищу директолога: настроить Яндекс Директ для клининга. 20 000 ₽", "expected": "order", "topics": ["Контекстная реклама"]}
+{"id": "o030", "source": "telegram", "text": "Нужен SMM-специалист: контент-план и оформление сообщества, разово 15 000 руб.", "expected": "order", "topics": ["SMM"]}
+{"id": "o031", "source": "telegram", "text": "Нужно сверстать лендинг по макету Figma, адаптив. 18 000 ₽", "expected": "order", "topics": ["Сайты"]}
+{"id": "o032", "source": "telegram", "text": "Нужен парсер сайтов конкурентов на Python, выгрузка цен в Excel. 25 т.р.", "expected": "order", "topics": ["Автоматизации"]}
+{"id": "o033", "source": "telegram", "text": "Нужен telegram-бот на aiogram с оплатой через ЮKassa. Бюджет 50 000 рублей", "expected": "order", "topics": ["Боты"]}
+{"id": "o034", "source": "telegram", "text": "Нужен телеграм бот для приёма заказов в пекарне, бюджет до 20 000 ₽", "expected": "order", "topics": ["Боты"]}
+{"id": "o035", "source": "telegram", "text": "Кто делает сайты на Тильде? Нужен сайт-визитка для психолога, 15к", "expected": "order", "topics": ["Сайты"]}
+{"id": "o036", "source": "telegram", "text": "Есть задача: доработать конфигурацию 1С УТ, добавить отчёт. Бюджет 30 000 ₽", "expected": "order", "topics": ["Программирование и ПО"]}
+{"id": "o037", "source": "telegram", "text": "Нужен Vue/Nuxt разработчик доделать фронт админки. Оплата за проект 60 000 ₽", "expected": "order", "topics": ["Программирование и ПО"]}
+{"id": "o038", "source": "telegram", "text": "Ищу разработчика на Next.js: перенести сайт с WordPress. 90 тыс руб", "expected": "order", "topics": ["Сайты"]}
+{"id": "o039", "source": "telegram", "text": "Нужна интеграция сайта с МойСклад через API. 25 000 ₽", "expected": "order", "topics": ["CRM"]}
+{"id": "o040", "source": "telegram", "text": "Требуется сделать чат бота в Телеграм для онлайн-школы: воронка, рассылки. 40к", "expected": "order", "topics": ["Боты"]}
+{"id": "o041", "source": "telegram", "text": "Нужен дизайнер для оформления обложек Reels, 10 000 руб.", "expected": "order", "topics": ["Графический дизайн"]}
+{"id": "o042", "source": "telegram", "text": "Нужно сделать ретушь 50 фотографий для каталога, 5000 ₽", "expected": "order", "topics": ["Фото и ретушь"]}
+{"id": "o043", "source": "telegram", "text": "Ищем подрядчика на разработку CRM-системы под наш бизнес. Бюджет 500 000 ₽", "expected": "order", "topics": ["CRM"]}
+{"id": "o044", "source": "telegram", "text": "Помогите настроить рассылку в Unisender и цепочку писем. 12 000 ₽", "expected": "order", "topics": ["Email-маркетинг"]}
+{"id": "o045", "source": "telegram", "text": "Нужен лендинг, бюджет 30 000 ₽, пишите в ЛС", "expected": "order", "topics": ["Сайты"]}
+{"id": "o046", "source": "telegram", "text": "Нужна помощь: сломался сайт на WordPress после обновления, срочно починить. Заплачу 5000 ₽", "expected": "order", "topics": ["Сайты"]}
+{"id": "o047", "source": "telegram", "text": "Ищу человека, который сделает бота в Telegram для записи на массаж. Бюджет 15 000 ₽", "expected": "order", "topics": ["Боты"]}
+{"id": "o048", "source": "telegram", "text": "Нужно разработать логотип и фирменный стиль для кофейни. 25 000 ₽", "expected": "order", "topics": ["Логотипы и брендинг"]}
+{"id": "o049", "source": "telegram", "text": "Нужен видеомонтажёр для YouTube канала, ролик 15 минут, 6000 ₽ за ролик", "expected": "order", "topics": ["Видеомонтаж"]}
+{"id": "o050", "source": "telegram", "text": "Нужно написать скрипт на Python для автоматической выгрузки отчётов из Wildberries. 20 000 рублей", "expected": "order", "topics": ["Программирование и ПО"]}
+{"id": "o051", "source": "telegram", "text": "Нужен юрист для регистрации товарного знака, бюджет 20 000 ₽", "expected": "order", "topics": ["Юридические услуги"]}
+{"id": "o052", "source": "telegram", "text": "Ищем специалиста, кто настроит Битрикс24 под отдел продаж. Бюджет 40 тысяч", "expected": "order", "topics": ["CRM"]}
+{"id": "o053", "source": "telegram", "text": "Нужен чат-бот для сайта, чтобы отвечал клиентам ночью. 20 000 руб.", "expected": "order", "topics": ["Боты"]}
+{"id": "o054", "source": "telegram", "text": "Нужна вёрстка email-рассылки, 3 шаблона. 9 000 ₽", "expected": "order", "topics": ["Email-маркетинг"]}
+{"id": "o055", "source": "telegram", "text": "Требуется настроить Google Ads для интернет-магазина. 25 000 ₽", "expected": "order", "topics": ["Контекстная реклама"]}
+{"id": "o056", "source": "telegram", "text": "Нужен бот, который будет парсить вакансии с hh и присылать в Telegram. 15 000 ₽", "expected": "order", "topics": ["Боты"]}
+{"id": "o057", "source": "telegram", "text": "Нужен сайт для юридической компании, бюджет 40 000 ₽", "expected": "order", "topics": ["Сайты"], "not_topics": ["Юридические услуги"]}
+{"id": "o058", "source": "telegram", "text": "Нужен сайт для ИП, оплата по счёту на юр. лицо, 30 000 ₽", "expected": "order", "topics": ["Сайты"], "not_topics": ["Юридические услуги"]}
+{"id": "o059", "source": "telegram", "text": "Нужно сделать Telegram Mini App для записи в салон. Бюджет 100к", "expected": "order", "topics": ["Боты"]}
+{"id": "o060", "source": "telegram", "text": "Ищу фрилансера: сделать квиз-лендинг для ремонта квартир. 15 000 ₽", "expected": "order", "topics": ["Сайты"]}
+{"id": "o061", "source": "telegram", "text": "Нужна настройка автоворонки в Telegram и бота-рассыльщика, 30 000 ₽", "expected": "order", "topics": ["Боты"]}
+{"id": "o062", "source": "telegram", "text": "Хочу заказать сайт для кондитерской, бюджет 35 000 руб.", "expected": "order", "topics": ["Сайты"]}
+{"id": "o063", "source": "telegram", "text": "Необходимо разработать дизайн мобильного приложения в Figma, 40 000 ₽", "expected": "order", "topics": ["UI/UX-дизайн"]}
+{"id": "o064", "source": "telegram", "text": "Нужен motion-дизайнер: анимировать логотип, 8000 ₽", "expected": "order", "topics": ["Motion-дизайн и анимация"]}
+{"id": "o065", "source": "telegram", "text": "Нужен маркетолог для анализа конкурентов и стратегии продвижения, 30 000 ₽ за проект", "expected": "order", "topics": ["Маркетинг"]}
+{"id": "o066", "source": "telegram", "text": "Нужно сделать сайт-каталог, бюджет 30 000 ₽ 🔥 #заказ #сайт", "expected": "order", "topics": ["Сайты"]}
+{"id": "o067", "source": "telegram", "text": "Ищу разработчика: нужен бот для Discord-сервера, 10 000 руб.", "expected": "order", "topics": ["Боты"]}
+{"id": "o068", "source": "telegram", "text": "Помогите сделать лендинг на Тильде для курса по английскому, бюджет 20 000 ₽", "expected": "order", "topics": ["Сайты"]}
+{"id": "o069", "source": "telegram", "text": "Нужен дизайнер презентации для вебинара, 7000 ₽", "expected": "order", "topics": ["Презентации"]}
+{"id": "o070", "source": "telegram", "text": "Нужно восстановить доступ к сайту и защитить сайт от взлома. 10 000 ₽", "expected": "order", "topics": ["Кибербезопасность"]}
+{"id": "o071", "source": "telegram", "text": "Нужен специалист по 1С: настроить обмен с сайтом. 15 000 ₽", "expected": "order", "topics": ["Программирование и ПО"]}
+{"id": "o072", "source": "telegram", "text": "Нужно разработать игру на Unity, бюджет 200 000 ₽", "expected": "order", "topics": ["Программирование и ПО"]}
+{"id": "o073", "source": "telegram", "text": "Нужен wordpress-разработчик доработать плагин WooCommerce. 12 000 руб.", "expected": "order", "topics": ["Сайты"]}
+{"id": "o074", "source": "telegram", "text": "Нужно настроить ИИ-агента для обработки заявок, бюджет 50к", "expected": "order", "topics": ["Нейросети и AI"]}
+{"id": "o075", "source": "telegram", "text": "Нужен Django разработчик доработать API, за проект 40 000 ₽", "expected": "order", "topics": ["Программирование и ПО"]}
+{"id": "o076", "source": "telegram", "text": "Нужен сайт для стоматологии, бюджет обсудим", "expected": "order", "topics": ["Сайты"]}
+{"id": "o077", "source": "telegram", "text": "Ищу дизайнера сделать карточки товаров для Wildberries, 10 штук, 6000 ₽", "expected": "order", "topics": ["Графический дизайн"]}
+{"id": "o078", "source": "telegram", "text": "Нужно создать бота-ассистента на GPT для HR-отдела, 60 000 ₽", "expected": "order", "topics": ["Боты", "Нейросети и AI"]}
+{"id": "o079", "source": "telegram", "text": "Есть небольшая задача по вёрстке страницы, кто возьмётся? 5000 ₽", "expected": "order", "topics": ["Сайты"]}
+{"id": "o080", "source": "telegram", "text": "Подскажите, сколько стоит сделать бота для записи клиентов?", "expected": "order", "topics": ["Боты"]}
+{"id": "o081", "source": "telegram", "text": "Оплата за проект 50 000 ₽, нужен разработчик бота для интернет-магазина", "expected": "order", "topics": ["Боты"]}
+{"id": "o082", "source": "telegram", "text": "Нужен разработчик в команду проекта на 2 недели: доделать бота, оплата 40 000 ₽ за проект", "expected": "order", "topics": ["Боты"]}
+{"id": "o083", "source": "telegram", "text": "Нужен React Native разработчик: доработать приложение под iOS. 70 000 ₽", "expected": "order", "topics": ["Мобильные приложения"]}
+{"id": "o084", "source": "telegram", "text": "Нужен человек, который сделает парсинг Ozon и выгрузку остатков, 12 000 ₽", "expected": "order", "topics": ["Автоматизации"]}
+{"id": "o085", "source": "telegram", "text": "Ищу верстальщика: перенести сайт с Тильды на WordPress. 25 000 руб.", "expected": "order", "topics": ["Сайты"]}
+{"id": "o086", "source": "telegram", "text": "Нужно сделать Telegram-бота-магазин, бюджет 30 000 – 50 000 ₽", "expected": "order", "topics": ["Боты"]}
+{"id": "o087", "source": "telegram", "text": "Ищем дизайнера для разработки упаковки и этикетки, бюджет 30 т.р.", "expected": "order", "topics": ["Графический дизайн"]}
+{"id": "o088", "source": "telegram", "text": "Нужна помощь с настройкой GetCourse и интеграцией с amoCRM, 15 000 ₽", "expected": "order", "topics": ["CRM"]}
+{"id": "o089", "source": "telegram", "text": "Нужен программист 1С, доработка отчётов, оплата сдельно за задачу 10 000 ₽", "expected": "order", "topics": ["Программирование и ПО"]}
+{"id": "o090", "source": "telegram", "text": "Нужен бот для учёта заявок в Google Sheets, бюджет 8000 рублей", "expected": "order", "topics": ["Боты"]}
+{"id": "o091", "source": "fl", "title": "Разработать сайт для строительной компании", "text": "Требуется создать корпоративный сайт: 8 страниц, форма заявки, каталог услуг.", "budget_text": "50 000 ₽", "trusted_order": true, "expected": "order", "topics": ["Сайты"]}
+{"id": "o092", "source": "fl", "title": "Telegram-бот для учета заказов", "text": "Нужен бот: приём заказов, уведомления менеджеру, выгрузка в таблицу.", "budget_text": "30 000 ₽", "trusted_order": true, "expected": "order", "topics": ["Боты"]}
+{"id": "o093", "source": "fl", "title": "Парсер маркетплейса Ozon", "text": "Собрать цены и остатки конкурентов раз в сутки.", "budget_text": "15 000 ₽", "trusted_order": true, "expected": "order", "topics": ["Автоматизации"]}
+{"id": "o094", "source": "fl", "title": "Логотип для фермерского хозяйства", "text": "Нужен логотип и простой гайд по цветам.", "budget_text": "10 000 ₽", "trusted_order": true, "expected": "order", "topics": ["Логотипы и брендинг"]}
+{"id": "n001", "source": "telegram", "text": "Делаю сайты на Tilda под ключ от 15 000 ₽. Портфолио в ЛС", "expected": "noise", "category": "seller"}
+{"id": "n002", "source": "telegram", "text": "Принимаю заказы на разработку Telegram-ботов. Опыт 5 лет, пишите в личку", "expected": "noise", "category": "seller"}
+{"id": "n003", "source": "telegram", "text": "Ищу заказчиков! Создаю лендинги и интернет-магазины. Цены от 10к", "expected": "noise", "category": "seller"}
+{"id": "n004", "source": "telegram", "text": "#резюме Python-разработчик, 3 года опыта, Django, FastAPI. Ищу проекты", "expected": "noise", "category": "seller"}
+{"id": "n005", "source": "telegram", "text": "Беру в работу проекты по настройке amoCRM. Недорого, быстро", "expected": "noise", "category": "seller"}
+{"id": "n006", "source": "telegram", "text": "Выполню парсинг любых сайтов, сбор данных в Excel. Стоимость от 3000 руб", "expected": "noise", "category": "seller"}
+{"id": "n007", "source": "telegram", "text": "Создам чат-бота для вашего бизнеса за 3 дня! Пишите в ЛС", "expected": "noise", "category": "seller"}
+{"id": "n008", "source": "telegram", "text": "Монтирую видео для YouTube и Reels. Цена от 1000 р за ролик. Портфолио в ЛС", "expected": "noise", "category": "seller"}
+{"id": "n009", "source": "telegram", "text": "Я веб-дизайнер, рисую сайты в Figma. Ищу клиентов, первым трём скидка 20%", "expected": "noise", "category": "seller"}
+{"id": "n010", "source": "telegram", "text": "Предлагаю услуги SEO-продвижения, вывод в топ-10 Яндекса", "expected": "noise", "category": "seller"}
+{"id": "n011", "source": "telegram", "text": "Разрабатываю мобильные приложения на Flutter. Обращайтесь!", "expected": "noise", "category": "seller"}
+{"id": "n012", "source": "telegram", "text": "Ищу проекты по таргетированной рекламе ВК, кейсы в профиле", "expected": "noise", "category": "seller"}
+{"id": "n013", "source": "telegram", "text": "Оказываю бухгалтерские услуги для ИП и ООО, от 3000 ₽/мес", "expected": "noise", "category": "seller"}
+{"id": "n014", "source": "telegram", "text": "Нужен сайт? Сделаю быстро и недорого! Пишите @webmaster_pro", "expected": "noise", "category": "seller"}
+{"id": "n015", "source": "telegram", "text": "Нужна реклама? Настрою Яндекс Директ под ключ, от 10 000 ₽", "expected": "noise", "category": "seller"}
+{"id": "n016", "source": "telegram", "text": "Студия веб-разработки: создаём сайты, ботов и CRM под ключ. Бесплатная консультация", "expected": "noise", "category": "seller"}
+{"id": "n017", "source": "telegram", "text": "Делаю логотипы и фирменный стиль. Портфолио на Behance", "expected": "noise", "category": "seller"}
+{"id": "n018", "source": "telegram", "text": "Пишу тексты для сайтов и соцсетей, 500 ₽ за 1000 знаков", "expected": "noise", "category": "seller"}
+{"id": "n019", "source": "telegram", "text": "Ищу работу: junior frontend разработчик, React, готов на стажировку", "expected": "noise", "category": "seller"}
+{"id": "n020", "source": "telegram", "text": "Готов взять ваш проект: вёрстка, WordPress, доработка сайтов. Пишите в ЛС", "expected": "noise", "category": "seller"}
+{"id": "n021", "source": "telegram", "text": "Есть свободное время, возьмусь за ваш проект по сайтам", "expected": "noise", "category": "seller"}
+{"id": "n022", "source": "telegram", "text": "Специалист по n8n и Make. Автоматизирую ваш бизнес. Пишите", "expected": "noise", "category": "seller"}
+{"id": "n023", "source": "telegram", "text": "Опытный таргетолог. Привожу заявки от 150 ₽. Портфолио в ЛС", "expected": "noise", "category": "seller"}
+{"id": "n024", "source": "telegram", "text": "Ищу заказы на дизайн презентаций. Цена от 300 р/слайд", "expected": "noise", "category": "seller"}
+{"id": "n025", "source": "telegram", "text": "Здравствуйте! Меня зовут Анна, я SMM-специалист. Веду соцсети, создаю контент. Ищу новых клиентов", "expected": "noise", "category": "seller"}
+{"id": "n026", "source": "telegram", "text": "Помогаю экспертам запускать онлайн-курсы под ключ", "expected": "noise", "category": "seller"}
+{"id": "n027", "source": "telegram", "text": "Сделаю сайт за 5000 рублей за 2 дня. Пишите", "expected": "noise", "category": "seller"}
+{"id": "n028", "source": "telegram", "text": "Разработка Telegram ботов любой сложности. Цены от 5 000 ₽. Пишите в ЛС @botdev", "expected": "noise", "category": "seller"}
+{"id": "n029", "source": "telegram", "text": "Настройка Яндекс Директ и Google Ads под ключ. Гарантия результата. Обращайтесь", "expected": "noise", "category": "seller"}
+{"id": "n030", "source": "telegram", "text": "Верстаю сайты по макетам, быстро и качественно. Портфолио в ЛС", "expected": "noise", "category": "seller"}
+{"id": "n031", "source": "telegram", "text": "Создание сайтов на WordPress от 20 000 ₽, сроки от 5 дней. Пишите в личку", "expected": "noise", "category": "seller"}
+{"id": "n032", "source": "telegram", "text": "Выполню любые задачи по 1С, опыт 10 лет. Обращайтесь в ЛС", "expected": "noise", "category": "seller"}
+{"id": "n033", "source": "telegram", "text": "Вакансия: менеджер по продажам в IT-компанию, оклад 60 000 + %", "expected": "noise", "category": "job"}
+{"id": "n034", "source": "telegram", "text": "Ищем в команду frontend-разработчика на React. ЗП от 150 000 ₽, удалёнка", "expected": "noise", "category": "job"}
+{"id": "n035", "source": "telegram", "text": "В стартап нужен backend-разработчик на Python, частичная занятость", "expected": "noise", "category": "job"}
+{"id": "n036", "source": "telegram", "text": "Ищем SMM-менеджера в штат, график 5/2, офис в Москве", "expected": "noise", "category": "job"}
+{"id": "n037", "source": "telegram", "text": "Требуется дизайнер на постоянку, оплата 2 раза в месяц", "expected": "noise", "category": "job"}
+{"id": "n038", "source": "telegram", "text": "#hiring Senior Python Developer, full-time, remote", "expected": "noise", "category": "job"}
+{"id": "n039", "source": "telegram", "text": "Ищем менеджера проектов в digital-агентство, опыт от 2 лет, доход 80-120 тыс в месяц", "expected": "noise", "category": "job"}
+{"id": "n040", "source": "telegram", "text": "Ищем ассистента руководителя на удалёнку, 4 часа в день, 30 000 ₽ в месяц", "expected": "noise", "category": "job"}
+{"id": "n041", "source": "telegram", "text": "Открыта вакансия контент-менеджера, удалённо", "expected": "noise", "category": "job"}
+{"id": "n042", "source": "telegram", "text": "Нужен оператор чата на постоянной основе, график 2/2", "expected": "noise", "category": "job"}
+{"id": "n043", "source": "telegram", "text": "Требуется таргетолог в агентство, оплата: фикс + % от бюджета, трудоустройство", "expected": "noise", "category": "job"}
+{"id": "n044", "source": "telegram", "text": "Ищем в команду дизайнера, задачи на постоянной основе, ставка 500 ₽/час", "expected": "noise", "category": "job"}
+{"id": "n045", "source": "telegram", "text": "🎁 РОЗЫГРЫШ! Разыгрываем 3 бесплатных аудита сайта. Подпишитесь на канал", "expected": "noise", "category": "ad"}
+{"id": "n046", "source": "telegram", "text": "Курс по созданию Telegram-ботов с нуля! Старт 1 ноября, места ограничены", "expected": "noise", "category": "ad"}
+{"id": "n047", "source": "telegram", "text": "Заработала 200 000 за месяц на нейросетях — расскажу как на бесплатном вебинаре", "expected": "noise", "category": "ad"}
+{"id": "n048", "source": "telegram", "text": "Обучим профессии веб-дизайнера за 3 месяца. Трудоустройство гарантируем", "expected": "noise", "category": "ad"}
+{"id": "n049", "source": "telegram", "text": "Интенсив по SMM: 5 дней практики, скидка 50% до пятницы", "expected": "noise", "category": "ad"}
+{"id": "n050", "source": "telegram", "text": "Как создать сайт самому за вечер — читайте статью в нашем блоге", "expected": "noise", "category": "ad"}
+{"id": "n051", "source": "telegram", "text": "Запустили бесплатный курс по нейросетям для предпринимателей", "expected": "noise", "category": "ad"}
+{"id": "n052", "source": "telegram", "text": "Ищу партнёра в бизнес по созданию сайтов, вложения пополам", "expected": "noise", "category": "ad"}
+{"id": "n053", "source": "telegram", "text": "Продаю готовый интернет-магазин с трафиком, 300 000 ₽", "expected": "noise", "category": "ad"}
+{"id": "n054", "source": "telegram", "text": "Марафон «Свой Telegram-бот за 7 дней» — регистрация по ссылке в профиле", "expected": "noise", "category": "ad"}
+{"id": "n055", "source": "telegram", "text": "Ребята, а кто чем пользуется для CRM, amoCRM или Битрикс24?", "expected": "noise", "category": "chatter"}
+{"id": "n056", "source": "telegram", "text": "Всем привет! Я веб-разработчик, давайте знакомиться 🙂", "expected": "noise", "category": "chatter"}
+{"id": "n057", "source": "telegram", "text": "Как вы находите клиентов на разработку сайтов? Поделитесь опытом", "expected": "noise", "category": "chatter"}
+{"id": "n058", "source": "telegram", "text": "Сделал сайт клиенту на Тильде за 2 дня, доволен результатом 💪", "expected": "noise", "category": "chatter"}
+{"id": "n059", "source": "telegram", "text": "Какой конструктор сайтов лучше: Тильда или WordPress?", "expected": "noise", "category": "chatter"}
+{"id": "n060", "source": "telegram", "text": "Кто-нибудь работал с API Wildberries? Есть подводные камни?", "expected": "noise", "category": "chatter"}
+{"id": "n061", "source": "telegram", "text": "Спасибо всем за помощь с ботом, всё заработало!", "expected": "noise", "category": "chatter"}
+{"id": "n062", "source": "telegram", "text": "Отзыв: заказывал сайт у @ivan_dev, всё сделали в срок, рекомендую", "expected": "noise", "category": "chatter"}
+{"id": "n063", "source": "telegram", "text": "Друзья, у кого есть опыт продвижения в Яндекс Картах? Поделитесь", "expected": "noise", "category": "chatter"}
+{"id": "n064", "source": "telegram", "text": "Напоминаю правила чата: заказы публикуем с бюджетом и тегом #заказ", "expected": "noise", "category": "chatter"}
+{"id": "n065", "source": "telegram", "text": "Какую нейросеть лучше использовать для генерации картинок для сайта?", "expected": "noise", "category": "chatter"}
+{"id": "n066", "source": "telegram", "text": "Коллеги, как считаете, сколько брать за лендинг на Тильде в 2026?", "expected": "noise", "category": "chatter"}
+{"id": "n067", "source": "telegram", "text": "Нужен электрик в квартиру, заменить проводку, 15 000 ₽", "expected": "noise", "category": "other_service"}
+{"id": "n068", "source": "telegram", "text": "Ищу репетитора по математике для ребёнка", "expected": "noise", "category": "other_service"}
+{"id": "n069", "source": "telegram", "text": "Нужен грузчик на 3 часа, оплата 2000", "expected": "noise", "category": "other_service"}
+{"id": "n070", "source": "telegram", "text": "Нужен дизайнер интерьера для квартиры 60 м², бюджет 80 000 ₽", "expected": "noise", "category": "other_service"}
+{"id": "n071", "source": "telegram", "text": "Нужен мастер по ремонту стиральной машины", "expected": "noise", "category": "other_service"}
+{"id": "n072", "source": "telegram", "text": "Требуется сантехник, срочно", "expected": "noise", "category": "other_service"}
+{"id": "n073", "source": "telegram", "text": "Нужен курьер для доставки документов", "expected": "noise", "category": "other_service"}
+{"id": "n074", "source": "telegram", "text": "Ищу няню на выходные", "expected": "noise", "category": "other_service"}
+{"id": "h001", "source": "telegram", "text": "Всем привет! Нужен сайт для небольшой пекарни, 5 страниц, бюджет 20 тыс", "held_out": true, "expected": "order", "topics": ["Сайты"]}
+{"id": "h002", "source": "telegram", "text": "Требуется помощь с ботом в Телеграм: перестал отвечать после обновления. Оплачу 5000р", "held_out": true, "expected": "order", "topics": ["Боты"]}
+{"id": "h003", "source": "telegram", "text": "Ищу исполнителя на настройку Яндекс Директа для мебельного магазина, бюджет на работу 15 000 ₽", "held_out": true, "expected": "order", "topics": ["Контекстная реклама"]}
+{"id": "h004", "source": "telegram", "text": "Нужно сделать 20 карточек товаров для Ozon с инфографикой. Бюджет 10 000 руб", "held_out": true, "expected": "order", "topics": ["Графический дизайн"]}
+{"id": "h005", "source": "telegram", "text": "Кто возьмётся доработать интернет-магазин на OpenCart? Бюджет 25 т.р.", "held_out": true, "expected": "order", "topics": ["Сайты"]}
+{"id": "h006", "source": "telegram", "text": "Нужен специалист по Google Таблицам и скриптам: автоматизировать отчёт для склада. 12 000 ₽", "held_out": true, "expected": "order", "topics": ["Автоматизации"]}
+{"id": "h007", "source": "telegram", "text": "Нужно спроектировать UX для мобильного приложения доставки, 60 000 ₽", "held_out": true, "expected": "order", "topics": ["Мобильные приложения"]}
+{"id": "h008", "source": "telegram", "text": "Ищем копирайтера на серию статей для блога компании, 10 статей, 15 000 ₽ за проект", "held_out": true, "expected": "order", "topics": ["Копирайтинг и контент"]}
+{"id": "h009", "source": "telegram", "text": "Нужен монтажёр для подкаста, 4 выпуска по часу, бюджет 12 000 ₽", "held_out": true, "expected": "order", "topics": ["Аудио и озвучка"]}
+{"id": "h010", "source": "telegram", "text": "Срочно! Нужен разработчик на FastAPI, доделать бэкенд для сервиса бронирования. 50 000 ₽", "held_out": true, "expected": "order", "topics": ["Программирование и ПО"]}
+{"id": "h011", "source": "telegram", "text": "Нам нужна интеграция amoCRM с телефонией, бюджет 20 тысяч рублей", "held_out": true, "expected": "order", "topics": ["CRM"]}
+{"id": "h012", "source": "telegram", "text": "Нужен человек, кто сделает сайт на Тильде для фотографа, бюджет до 15 тыс", "held_out": true, "expected": "order", "topics": ["Сайты"]}
+{"id": "h013", "source": "telegram", "text": "Сделаю лендинг на Тильде за 3 дня. Цена от 7000 ₽. Пишите в ЛС", "held_out": true, "expected": "noise", "category": "seller"}
+{"id": "h014", "source": "telegram", "text": "Разрабатываю Telegram-ботов на Python. Кейсы и отзывы — в профиле", "held_out": true, "expected": "noise", "category": "seller"}
+{"id": "h015", "source": "telegram", "text": "Занимаюсь настройкой таргета ВК 4 года. Есть свободные места на ноябрь", "held_out": true, "expected": "noise", "category": "seller"}
+{"id": "h016", "source": "telegram", "text": "Наше агентство создаёт сайты под ключ. Скидка 15% до конца месяца", "held_out": true, "expected": "noise", "category": "seller"}
+{"id": "h017", "source": "telegram", "text": "Если вам нужен сайт — обращайтесь, сделаю качественно", "held_out": true, "expected": "noise", "category": "seller"}
+{"id": "h018", "source": "telegram", "text": "Дизайнер с опытом 6 лет ищет интересные проекты. Портфолио по запросу", "held_out": true, "expected": "noise", "category": "seller"}
+{"id": "h019", "source": "telegram", "text": "Ищем оператора колл-центра, график 5/2, оклад 45 000 ₽", "held_out": true, "expected": "noise", "category": "job"}
+{"id": "h020", "source": "telegram", "text": "В нашу команду требуется менеджер по работе с клиентами, оформление по ТК", "held_out": true, "expected": "noise", "category": "job"}
+{"id": "h021", "source": "telegram", "text": "Требуется SMM-менеджер на постоянную работу, зарплата 70 000", "held_out": true, "expected": "noise", "category": "job"}
+{"id": "h022", "source": "telegram", "text": "Бесплатный вебинар: как найти первых клиентов на фрилансе. Регистрация по ссылке", "held_out": true, "expected": "noise", "category": "ad"}
+{"id": "h023", "source": "telegram", "text": "Розыгрыш дизайна логотипа среди подписчиков канала! Условия в закрепе", "held_out": true, "expected": "noise", "category": "ad"}
+{"id": "h024", "source": "telegram", "text": "Кто-нибудь знает хорошего юриста по защите прав потребителей? Посоветуйте", "held_out": true, "expected": "order", "topics": ["Юридические услуги"]}
+{"id": "h025", "source": "telegram", "text": "Как вы оформляете договор с заказчиком на разработку сайта?", "held_out": true, "expected": "noise", "category": "chatter"}
+{"id": "h026", "source": "telegram", "text": "Нужен мастер по маникюру на дом, завтра", "held_out": true, "expected": "noise", "category": "other_service"}
+{"id": "h027", "source": "telegram", "text": "Ищу перевозчика для переезда, газель на 3 часа, 6000 ₽", "held_out": true, "expected": "noise", "category": "other_service"}
