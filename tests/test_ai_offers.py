@@ -1,9 +1,13 @@
+import inspect
 import json
+import re
 import unittest
 import urllib.error
 from datetime import datetime,timezone
+from pathlib import Path
 
-from leadgen.ai_offers import AIOfferError,DEFAULT_MODEL,build_request,groq_offer_drafts
+from leadgen.ai_offers import (AIOfferError,DEFAULT_MODEL,OFFER_TIMEOUT_SECONDS,build_request,groq_offer_drafts,
+                               post_offer_request)
 from leadgen.core import Lead
 
 
@@ -46,7 +50,7 @@ class AIOffers(unittest.TestCase):
         self.assertNotIn('гарантия',drafts['Короткий'].lower())
         self.assertEqual(usage['completion_tokens'],80)
         self.assertEqual(captured['request'].headers['Authorization'],'Bearer test-key')
-        self.assertEqual(captured['timeout'],35)
+        self.assertEqual(captured['timeout'],OFFER_TIMEOUT_SECONDS)
 
     def test_provider_errors_are_safe(self):
         def unauthorized(request,timeout):
@@ -57,6 +61,19 @@ class AIOffers(unittest.TestCase):
         def malformed(request,timeout):return FakeResponse({'choices':[]})
         with self.assertRaisesRegex(AIOfferError,'неожиданном формате'):
             groq_offer_drafts(self.lead,api_key='test',model=DEFAULT_MODEL,opener=malformed)
+
+    def test_groq_timeout_is_below_the_gunicorn_timeout(self):
+        command=json.loads(re.search(r'command:\s*(\[.*\])',Path('compose.web.yaml').read_text()).group(1))
+        gunicorn=int(command[command.index('--timeout')+1])
+        self.assertLessEqual(OFFER_TIMEOUT_SECONDS,20)
+        self.assertLess(OFFER_TIMEOUT_SECONDS,gunicorn)
+        self.assertEqual(inspect.signature(post_offer_request).parameters['timeout'].default,OFFER_TIMEOUT_SECONDS)
+        timeouts=[]
+        def slow(request,timeout):
+            timeouts.append(timeout);raise TimeoutError('The read operation timed out')
+        with self.assertRaisesRegex(AIOfferError,'Не удалось связаться с Groq'):
+            groq_offer_drafts(self.lead,api_key='test',model=DEFAULT_MODEL,opener=slow)
+        self.assertEqual(timeouts,[OFFER_TIMEOUT_SECONDS])
 
 
 if __name__=='__main__':unittest.main()

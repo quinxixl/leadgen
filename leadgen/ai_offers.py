@@ -17,6 +17,10 @@ GROQ_URL='https://api.groq.com/openai/v1/chat/completions'
 DEFAULT_MODEL='openai/gpt-oss-120b'
 DISPLAY_KEYS={'short':'Короткий','expert':'Экспертный','friendly':'Дружелюбный'}
 MAX_DRAFT_CHARS=1500
+# The web request waits for Groq: stay well under gunicorn --timeout (30 s, compose.web.yaml), otherwise the worker
+# is killed mid-request (502) and the 'pending' generation row is left behind. A timeout is an AIOfferError, so
+# generate_for_lead marks the row failed.
+OFFER_TIMEOUT_SECONDS=20
 FACTORY_TEMPERATURE=0.3
 FACTORY_MAX_TOKENS=1800
 # Editable part (the «factory» version shown read-only in /admin/ai).
@@ -117,7 +121,7 @@ def build_request(lead,profile_services='',portfolio='',settings=None,model=DEFA
     return body,data
 
 
-def post_offer_request(body,api_key,opener=urllib.request.urlopen,timeout=35):
+def post_offer_request(body,api_key,opener=urllib.request.urlopen,timeout=OFFER_TIMEOUT_SECONDS):
     request=urllib.request.Request(GROQ_URL,data=json.dumps(body,ensure_ascii=False).encode(),method='POST',headers={
         'Authorization':'Bearer '+api_key,'Content-Type':'application/json','User-Agent':'Signalid/1.0'})
     try:
