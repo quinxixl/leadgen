@@ -121,7 +121,9 @@ class BotUX(unittest.TestCase):
         self.assertEqual(len(sent_ids),5);self.assertTrue(sent_ids<=set(matching))
         self.assertNotIn(old,sent_ids);self.assertNotIn(other,sent_ids)
         for card in cards:
-            self.assertEqual(buttons(card['reply_markup'])[0]['url'].split('/app/leads/')[0],'https://signalid.test')
+            # Rating buttons come first on every card; the cabinet link follows them.
+            self.assertEqual([b['callback_data'].split(':')[0] for b in buttons(card['reply_markup'])[:2]],['feedback','miss'])
+            self.assertEqual(buttons(card['reply_markup'])[2]['url'].split('/app/leads/')[0],'https://signalid.test')
         # The live stream keeps its registration boundary; the batch never repeats.
         later=[];deliver_registered(self.db,CONFIG,lambda method,data:later.append(data),limit_per_user=10)
         self.assertEqual(later,[])
@@ -217,11 +219,18 @@ class BotUX(unittest.TestCase):
         self.callback(f'miss:{lid}',message_id=77)
         reasons=[b['callback_data'] for b in buttons(self.calls('editMessageReplyMarkup')[-1]['reply_markup'])]
         self.assertIn(f'feedback:ad:{lid}',reasons);self.assertNotIn(f'feedback:fit:{lid}',reasons);self.assertIn(f'card:{lid}',reasons)
+        # One tap on «Мимо» already records a negative label; a reason only refines it.
+        self.assertEqual(self.db.execute('SELECT label FROM lead_feedback WHERE lead_id=?',(lid,)).fetchone()['label'],'not_service')
+        self.assertIn('👎 Отмечено',self.calls('answerCallbackQuery')[-1]['text'])
         self.callback(f'feedback:ad:{lid}',message_id=77)
         self.assertIn('реклама',self.calls('answerCallbackQuery')[-1]['text'])
         self.assertIn('✓ 👎 Реклама',[b['text'] for b in buttons(self.calls('editMessageReplyMarkup')[-1]['reply_markup'])])
         self.callback(f'card:{lid}',message_id=77)
         self.assertIn('✓ 👎 Реклама',[b['text'] for b in buttons(self.calls('editMessageReplyMarkup')[-1]['reply_markup'])])
+        # Opening the reasons again keeps the chosen one.
+        self.callback(f'miss:{lid}',message_id=77)
+        self.assertEqual(self.db.execute('SELECT label FROM lead_feedback WHERE lead_id=?',(lid,)).fetchone()['label'],'ad')
+        self.callback(f'card:{lid}',message_id=77)
         self.assertEqual(self.calls('sendMessage'),[])
         self.callback(f'feedback:fit:{self.ids[1]}')
         self.assertIn('не найден',self.calls('answerCallbackQuery')[-1]['text'])
@@ -262,7 +271,7 @@ class BotUX(unittest.TestCase):
         self.text(LATEST)
         card=self.calls('sendMessage')[-1]
         self.assertIn('https://t.me/test/0',card['text'])
-        self.assertEqual(buttons(card['reply_markup'])[0],{'text':'Открыть','url':f'https://signalid.test/app/leads/{self.ids[0]}'})
+        self.assertEqual(buttons(card['reply_markup'])[2],{'text':'Открыть','url':f'https://signalid.test/app/leads/{self.ids[0]}'})
         self.text(CABINET)
         self.assertEqual(buttons(self.calls('sendMessage')[-1]['reply_markup'])[0]['url'],'https://signalid.test/app')
         with patch.dict(os.environ,{'MINIAPP_ENABLED':'1'}):self.text(CABINET)

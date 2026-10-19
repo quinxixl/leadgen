@@ -49,6 +49,12 @@ class Pure(unittest.TestCase):
         self.assertEqual(prefilter(lead('Продам велосипед, почти новый, недорого'))['category'],'other')
         self.assertEqual(prefilter(lead('Нужен сайт'))['category'],'other')
 
+    def test_prefilter_lets_explicit_paid_requests_without_keyword_service_reach_the_llm(self):
+        self.assertIsNone(prefilter(lead('Нужен специалист по маркетплейсам: вывести магазин в топ Ozon, бюджет 30 000 ₽')))
+        # Without a budget, or without an explicit request, the rule verdict stays final.
+        self.assertEqual(prefilter(lead('Нужен специалист по маркетплейсам: вывести магазин в топ Ozon'))['error'],'другая услуга')
+        self.assertEqual(prefilter(lead('Продаю диван, почти новый, 30 000 ₽'))['error'],'другая услуга')
+
     def test_request_is_strict_json_batch_with_examples(self):
         body=build_request([(7,lead(REQUEST)),(8,lead('Нужен бот '+'x'*5000))],'openai/gpt-oss-20b',
                            [('Нужен лендинг','service_request')])

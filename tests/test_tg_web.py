@@ -249,6 +249,9 @@ class MiniAppPostgres(unittest.TestCase):
         self.assertIn('Статус: В работе', page.text)
         self.assertIn('data-haptic="success"', page.text)
         self.assertIn('aria-pressed="true">В работе', page.text)
+        # Rating comes before the status block, and the chosen reason shows on the one-tap 👎 button.
+        self.assertLess(page.text.index('Подходит ли лид?'), page.text.index('<h2>Статус</h2>'))
+        self.assertIn('value="ad" aria-pressed="true">👎 Реклама', page.text)
         self.tg.post(f'/tg/leads/{lid}', data={'csrf': 'tg-csrf', 'action': 'feedback', 'feedback': ''})
         self.assertFalse(self.db.execute('SELECT 1 FROM lead_feedback WHERE user_id=? AND lead_id=?', (self.u, lid)).fetchone())
         self.tg.post(f'/tg/leads/{lid}', data={'csrf': 'tg-csrf', 'action': 'remind'})

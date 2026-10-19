@@ -14,6 +14,17 @@
 </article>
 {% if can_edit %}
 <section class="tg-section">
+<h2>Подходит ли лид?</h2>
+<form method="post" class="feedback"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="action" value="feedback">
+<div class="row"><button class="chip-btn" name="feedback" value="fit"{% if row.feedback=='fit' %} aria-pressed="true"{% endif %}>👍 Подходит</button>
+<button class="chip-btn" name="feedback" value="{{ row.feedback if row.feedback in reasons else 'not_service' }}"{% if row.feedback in reasons %} aria-pressed="true"{% endif %}>👎 {{ reasons[row.feedback] if row.feedback in reasons else 'Мимо' }}</button>
+{% if row.feedback %}<button class="chip-btn quiet" name="feedback" value="">Снять оценку</button>{% endif %}</div>
+<details{% if row.feedback and row.feedback!='fit' %} open{% endif %}><summary class="hint small">Уточнить причину</summary>
+<div class="grid-buttons">{% for key,label in reasons.items() %}<button class="chip-btn" name="feedback" value="{{ key }}"{% if row.feedback==key %} aria-pressed="true"{% endif %}>{{ label }}</button>{% endfor %}</div>
+</details>
+</form>
+</section>
+<section class="tg-section">
 <h2>Статус</h2>
 <form method="post" class="grid-buttons"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="action" value="status">
 {% for key in statuses %}<button class="chip-btn" name="status" value="{{ key }}"{% if row.pipeline_status==key %} aria-pressed="true"{% endif %}>{{ pipeline[key] }}</button>{% endfor %}
@@ -24,16 +35,6 @@
 <label>Заметка<textarea name="crm_note" maxlength="1000" rows="2">{{ row.crm_note }}</textarea></label>
 <button class="btn wide">Сохранить сделку</button></form>
 {% endif %}
-</section>
-<section class="tg-section">
-<h2>Подходит ли лид?</h2>
-<form method="post" class="feedback"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="action" value="feedback">
-<div class="row"><button class="chip-btn" name="feedback" value="fit"{% if row.feedback=='fit' %} aria-pressed="true"{% endif %}>👍 Подходит</button>
-{% if row.feedback %}<button class="chip-btn quiet" name="feedback" value="">Снять оценку</button>{% endif %}</div>
-<details{% if row.feedback and row.feedback!='fit' %} open{% endif %}><summary class="chip-btn">👎 Не подходит</summary>
-<div class="grid-buttons">{% for key,label in reasons.items() %}<button class="chip-btn" name="feedback" value="{{ key }}"{% if row.feedback==key %} aria-pressed="true"{% endif %}>{{ label }}</button>{% endfor %}</div>
-</details>
-</form>
 </section>
 <section class="tg-section">
 <h2>Напоминание</h2>
