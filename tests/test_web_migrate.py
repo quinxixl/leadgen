@@ -262,5 +262,17 @@ class WebMigrateParsing(unittest.TestCase):
         self.assertIn('WHERE status IN '+LIVE_STATUSES,dedup.sql)
 
 
+class MigrateEntryPoint(unittest.TestCase):
+    def test_connect_message_names_no_provider(self):
+        db=mock.Mock()
+        with mock.patch.object(web_migrate,'env_load'),mock.patch.object(web_migrate,'load_migrations',return_value=[]),\
+             mock.patch.object(web_migrate,'db_open',return_value=db),mock.patch.object(web_migrate,'run'),\
+             contextlib.redirect_stdout(io.StringIO()) as out:
+            web_migrate.migrate()
+        self.assertIn('Подключение к Postgres…',out.getvalue())
+        self.assertNotIn('Supabase',out.getvalue())   # the database is self-hosted now
+        db.close.assert_called_once()
+
+
 if __name__=='__main__':
     unittest.main()

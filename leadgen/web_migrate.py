@@ -303,7 +303,7 @@ def migrate():
     env_load()
     settings=Settings.from_env()
     migrations=load_migrations()
-    print('Подключение к Supabase Postgres…',flush=True)
+    print('Подключение к Postgres…',flush=True)
     db=db_open()
     try:
         print('Подключение установлено. Проверка блокировки миграций…',flush=True)
