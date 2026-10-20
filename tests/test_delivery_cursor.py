@@ -473,6 +473,40 @@ class CursorPostgres(unittest.TestCase):
         self.assertEqual(self.cursor(),0)                          # trigger: the lead is evaluated again
         self.assertEqual(self.deliver(),1)
 
+    def narrow_and_settle(self):
+        lead=self.add(1,60)
+        with self.db:self.db.execute("UPDATE user_preferences SET topics='[\"Боты\"]'::jsonb WHERE user_id=?",(self.u,))
+        self.assertEqual(self.deliver(),0)
+        self.assertEqual(self.cursor(),lead)
+        return lead
+
+    def test_saving_non_filter_settings_keeps_the_cursor(self):
+        from leadgen.web import save_preferences
+        lead=self.narrow_and_settle()
+        bot=product.ProductController.__new__(product.ProductController);bot.db=self.db
+        for column,value in [('state',json.dumps({'await':'x'})),('portfolio','Примеры'),('monitoring_active',True)]:
+            bot._update_pref(self.u,column,value)
+        save_preferences(self.db,self.u,topics=['Боты'],portfolio='Другие примеры')  # the web form posts every field
+        self.assertEqual(self.cursor(),lead)
+        self.assertEqual(self.db.execute("SELECT count(*) AS n FROM user_leads WHERE user_id=? AND delivery_status='filtered'",
+                                         (self.u,)).fetchone()['n'],1)
+
+    def test_changing_a_filter_through_the_settings_resets_the_cursor(self):
+        from leadgen.web import save_preferences
+        self.narrow_and_settle()
+        save_preferences(self.db,self.u,topics=list(product.TOPICS))
+        self.assertEqual(self.cursor(),0)
+        self.assertEqual(self.deliver(),1)
+
+    def test_changing_a_project_filter_resets_the_cursor(self):
+        self.narrow_and_settle()
+        before=product.filter_state(self.db,self.u)
+        with self.db:
+            ws=self.db.execute("INSERT INTO workspaces(owner_user_id,name) VALUES(?,'Команда') ON CONFLICT(owner_user_id) DO UPDATE SET name=excluded.name RETURNING id",(self.u,)).fetchone()['id']
+            self.db.execute("INSERT INTO projects(user_id,workspace_id,name,enabled) VALUES(?,?,'Сайты',true)",(self.u,ws))
+            product.reevaluate_if_filters_changed(self.db,self.u,before)
+        self.assertEqual(self.cursor(),0)
+
     def test_stale_pass_does_not_move_a_reset_cursor(self):
         self.add(1,60)
         prefs=dict(self.db.execute(product.RECIPIENTS+' AND u.id=?',(self.u,)).fetchone())

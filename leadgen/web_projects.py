@@ -53,7 +53,9 @@ def register_projects(app, db):
                 return json.dumps(words,ensure_ascii=False)
             reply_length=request.form.get('reply_max_length',str(project['reply_max_length']))
             if not reply_length.isdigit() or not 200<=int(reply_length)<=1500:abort(400)
+            from .product import filter_state,reevaluate_if_filters_changed
             with db():
+                before=filter_state(db(),g.owner_id)
                 db().execute('''UPDATE projects SET name=?,description=?,keywords=?::jsonb,stop_words=?::jsonb,
                     topics=?::jsonb,source_names=?::jsonb,min_budget=?,min_score=?,show_without_budget=?,
                     show_possible_needs=?,enabled=?,reply_sender=?,reply_offer=?,reply_proof=?::jsonb,
@@ -66,7 +68,7 @@ def register_projects(app, db):
                     reply_lines('reply_proof'),request.form.get('reply_question','').strip()[:300],
                     request.form.get('reply_signature','').strip()[:300],reply_lines('forbidden_phrases'),
                     int(reply_length),pid,g.owner_id))
-                db().execute("DELETE FROM user_leads WHERE user_id=? AND delivery_status='filtered'",(g.owner_id,))
+                reevaluate_if_filters_changed(db(),g.owner_id,before)
             flash('Фильтры проекта сохранены. Они применяются при доставке лидов.');return redirect(request.path)
         return render_template('project.html',project=project,topics=TOPICS,topic_categories=TOPIC_CATEGORIES)
 

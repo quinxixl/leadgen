@@ -212,12 +212,14 @@ PREFERENCE_COLUMNS={'min_budget':'?','topics':'?::jsonb','show_without_budget':'
 
 
 def save_preferences(db,owner_id,**values):
-    """Update the owner's lead filters; leads filtered out earlier are re-evaluated under the new rules."""
+    """Update the owner's preferences; leads filtered out earlier are re-evaluated only if the filters changed."""
+    from .product import filter_state,reevaluate_if_filters_changed
     columns=','.join(f'{name}={PREFERENCE_COLUMNS[name]}' for name in values)
     params=[json.dumps(value) if name=='topics' else value for name,value in values.items()]
     with db:
+        before=filter_state(db,owner_id)
         db.execute(f'UPDATE user_preferences SET {columns},updated_at=now() WHERE user_id=?',params+[owner_id])
-        db.execute("DELETE FROM user_leads WHERE user_id=? AND delivery_status='filtered'",(owner_id,))
+        reevaluate_if_filters_changed(db,owner_id,before)
 
 
 def start_user_session(db,user_id,permanent=True):
