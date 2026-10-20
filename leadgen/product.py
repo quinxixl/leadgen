@@ -220,6 +220,27 @@ def user_config(base,row):
     return result
 
 
+# Everything that decides which leads a user gets: their filters and their projects' filters. Saving anything else
+# (dialog state, portfolio, the monitoring switch, reply templates) keeps the filtered rows and the delivery cursor,
+# because a reset makes the worker re-evaluate the user's whole freshness window.
+FILTER_STATE='''SELECT row(p.min_budget,p.topics,p.source_switches,p.show_without_budget,p.show_possible_needs,
+    p.ai_hide_noise,p.ai_min_score,(SELECT array_agg(row(j.keywords,j.stop_words,j.topics,j.source_names,j.min_budget,
+    j.min_score,j.show_without_budget,j.show_possible_needs,j.enabled) ORDER BY j.id) FROM projects j
+    WHERE j.user_id=p.user_id))::text AS f FROM user_preferences p WHERE p.user_id=?'''
+NON_FILTER_PREFS={'state','portfolio','profile_services','monitoring_active'}
+
+
+def filter_state(db,user_id):
+    row=db.execute(FILTER_STATE,(user_id,)).fetchone()
+    return row['f'] if row else None
+
+
+def reevaluate_if_filters_changed(db,user_id,before):
+    """Drop the user's filtered rows (the trigger resets the cursor) only when the filters really changed."""
+    if filter_state(db,user_id)!=before:
+        db.execute("DELETE FROM user_leads WHERE user_id=? AND delivery_status='filtered'",(user_id,))
+
+
 def eligible_for_user(lead,config,prefs,ai_topics=None):
     state,reason=classify_for_config(lead,config,ai_topics)
     if state=='ready':
@@ -710,8 +731,9 @@ class ProductController:
                  'profile_services','portfolio','state','source_switches','ai_hide_noise','ai_min_score'}
         if column not in allowed:raise ValueError('unknown preference')
         with self.db:
+            before=None if column in NON_FILTER_PREFS else filter_state(self.db,user_id)
             self.db.execute(f'UPDATE user_preferences SET {column}=?,updated_at=now() WHERE user_id=?',(value,user_id))
-            self.db.execute("DELETE FROM user_leads WHERE user_id=? AND delivery_status='filtered'",(user_id,))
+            if column not in NON_FILTER_PREFS:reevaluate_if_filters_changed(self.db,user_id,before)
 
     def _filters(self,user,edit=False):
         keys={'inline_keyboard':[
